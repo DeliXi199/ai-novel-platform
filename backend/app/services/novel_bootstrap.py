@@ -1,4 +1,6 @@
+from app.core.config import settings
 from app.schemas.novel import NovelCreate
+from app.services.openai_story_engine import generate_bootstrap_chapter, is_openai_enabled
 
 
 def build_story_bible(payload: NovelCreate) -> dict:
@@ -14,6 +16,7 @@ def build_story_bible(payload: NovelCreate) -> dict:
         "reader_preferences": payload.style_preferences,
         "core_conflict": f"围绕‘{premise}’展开的主线冲突。",
         "forbidden_rules": payload.style_preferences.get("forbidden", []),
+        "target_words_per_chapter": settings.chapter_target_words,
     }
 
 
@@ -30,6 +33,21 @@ def generate_title(payload: NovelCreate) -> str:
 
 
 def generate_first_chapter(payload: NovelCreate, story_bible: dict) -> tuple[str, str, dict, dict]:
+    if is_openai_enabled():
+        chapter = generate_bootstrap_chapter(payload.model_dump(mode="python"), story_bible)
+        return (
+            chapter.title,
+            chapter.content,
+            chapter.generation_meta,
+            {
+                "event_summary": chapter.event_summary,
+                "character_updates": chapter.character_updates,
+                "new_clues": chapter.new_clues,
+                "open_hooks": chapter.open_hooks,
+                "closed_hooks": chapter.closed_hooks,
+            },
+        )
+
     title = "第1章 开端"
     content = (
         f"{payload.protagonist_name}第一次意识到不对劲，是在那个普通得不能再普通的夜晚。\n\n"
