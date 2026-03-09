@@ -1,5 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
+from starlette.responses import StreamingResponse
 
 from app.db.session import get_db
 from app.models.chapter import Chapter
@@ -10,6 +13,7 @@ from app.schemas.chapter import ChapterResponse
 from app.schemas.intervention import InterventionCreate, InterventionResponse
 from app.schemas.novel import NovelCreate, NovelResponse
 from app.services.chapter_generation import generate_next_chapter, parse_reader_instruction
+from app.services.export_service import export_novel_bytes
 from app.services.novel_bootstrap import build_story_bible, generate_first_chapter, generate_title
 
 router = APIRouter(prefix="/novels", tags=["novels"])
@@ -75,6 +79,25 @@ def get_chapter(novel_id: int, chapter_no: int, db: Session = Depends(get_db)):
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
     return chapter
+
+
+@router.get("/{novel_id}/export")
+def export_novel(
+    novel_id: int,
+    export_format: str = Query("txt", alias="format", pattern="^(txt|md|docx|pdf)$"),
+    db: Session = Depends(get_db),
+):
+    buffer, filename, media_type = export_novel_bytes(db, novel_id, export_format)
+
+    ascii_fallback = f"novel_{novel_id}.{export_format}"
+    quoted_filename = quote(filename)
+    headers = {
+        "Content-Disposition": (
+            f'attachment; filename="{ascii_fallback}"; '
+            f"filename*=UTF-8''{quoted_filename}"
+        )
+    }
+    return StreamingResponse(buffer, media_type=media_type, headers=headers)
 
 
 @router.post("/{novel_id}/interventions", response_model=InterventionResponse, status_code=status.HTTP_201_CREATED)

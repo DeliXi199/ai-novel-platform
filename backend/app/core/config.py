@@ -12,9 +12,7 @@ class Settings(BaseSettings):
     postgres_user: str = "novel_user"
     postgres_password: str = "novel_password"
     postgres_db: str = "novel_db"
-    database_url: str = (
-        "postgresql+psycopg2://novel_user:novel_password@127.0.0.1:5432/novel_db"
-    )
+    database_url: str = "postgresql+psycopg2://novel_user:novel_password@127.0.0.1:5432/novel_db"
 
     llm_provider: str = "mock"
 

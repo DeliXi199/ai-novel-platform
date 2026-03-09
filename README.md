@@ -10,7 +10,9 @@
 - Docker Compose 数据库
 - Novel / Chapter / Intervention 基础接口
 - Mock 生成模式
-- OpenAI 真实生成模式（OpenAI Python SDK + Responses API）
+- OpenAI 真实生成模式（Responses API）
+- Groq 免费层真实生成模式（OpenAI-compatible Responses API）
+- 整本导出：txt / md / docx / pdf
 
 ---
 
@@ -25,6 +27,7 @@ ai-novel-platform-mvp/
 │   ├── architecture.md
 │   ├── database.md
 │   ├── roadmap.md
+│   ├── export.md
 │   └── openai_integration.md
 └── backend/
     ├── requirements.txt
@@ -41,9 +44,24 @@ ai-novel-platform-mvp/
 
 ---
 
-## 2. 快速启动
+## 2. 你真正要改的地方
 
-### 2.1 启动 PostgreSQL
+**只需要改 `backend/.env` 里的 API key 和 provider。**
+
+推荐流程：
+
+1. 复制项目根目录 `.env.example` 到根目录 `.env`
+2. 再复制到 `backend/.env`
+3. 在 `backend/.env` 里填你的 key
+4. 启动后端
+
+> 注意：因为 `backend/app/core/config.py` 读取的是当前工作目录下的 `.env`，所以你从 `backend/` 目录启动时，**真正生效的是 `backend/.env`**。
+
+---
+
+## 3. 快速启动
+
+### 3.1 启动 PostgreSQL
 
 在项目根目录执行：
 
@@ -51,47 +69,63 @@ ai-novel-platform-mvp/
 docker compose up -d
 ```
 
-### 2.2 配置环境变量
+### 3.2 配置环境变量
 
-复制：
+先在项目根目录复制：
 
 ```bash
 cp .env.example .env
 ```
 
-默认情况下：
+然后再进入 `backend` 目录复制：
+
+```bash
+cd backend
+cp ../.env.example .env
+```
+
+### 3.3 填 API key
+
+#### 方案 A：Groq 免费层（推荐先跑通）
+
+把 `backend/.env` 改成：
+
+```env
+LLM_PROVIDER=groq
+GROQ_API_KEY=你的_groq_key
+GROQ_BASE_URL=https://api.groq.com/openai/v1
+GROQ_MODEL=openai/gpt-oss-20b
+
+OPENAI_API_KEY=
+```
+
+#### 方案 B：OpenAI
+
+```env
+LLM_PROVIDER=openai
+OPENAI_API_KEY=你的_openai_key
+OPENAI_MODEL=gpt-5.4
+```
+
+#### 方案 C：Mock（不调模型）
 
 ```env
 LLM_PROVIDER=mock
 ```
 
-这表示先使用本地占位生成逻辑。
-
-如果你要真实调用 OpenAI：
-
-```env
-LLM_PROVIDER=openai
-OPENAI_API_KEY=你的key
-OPENAI_MODEL=gpt-5.4
-```
-
-### 2.3 安装后端依赖
+### 3.4 安装后端依赖
 
 ```bash
-cd backend
-python -m venv .venv
-source .venv/bin/activate  # Windows 用 .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2.4 初始化数据库
+### 3.5 初始化数据库
 
 ```bash
-cp ../.env .env
 python -m app.db.init_db
 ```
 
-### 2.5 启动服务
+### 3.6 启动服务
 
 ```bash
 uvicorn app.main:app --reload
@@ -105,9 +139,9 @@ http://127.0.0.1:8000/docs
 
 ---
 
-## 3. 核心接口
+## 4. 核心接口
 
-### 3.1 创建小说
+### 4.1 创建小说
 
 `POST /api/v1/novels`
 
@@ -115,21 +149,21 @@ http://127.0.0.1:8000/docs
 
 ```json
 {
-  "genre": "都市悬疑",
-  "premise": "海边小城连续失踪案背后隐藏家族秘密",
-  "protagonist_name": "沈昼",
+  "genre": "凡人流修仙",
+  "premise": "灵气衰败的时代，一个边陲少年意外得到残缺古卷，从散修一步步卷入宗门、王朝与上古遗迹的争斗。",
+  "protagonist_name": "林玄",
   "style_preferences": {
-    "tone": "压抑慢热",
-    "forbidden": ["后宫", "无脑爽文"]
+    "tone": "冷峻慢热",
+    "forbidden": ["后宫", "无脑开挂", "纯爽文"]
   }
 }
 ```
 
-### 3.2 获取章节
+### 4.2 获取章节
 
 `GET /api/v1/novels/{novel_id}/chapters/{chapter_no}`
 
-### 3.3 提交读者干预
+### 4.3 提交读者干预
 
 `POST /api/v1/novels/{novel_id}/interventions`
 
@@ -138,70 +172,49 @@ http://127.0.0.1:8000/docs
 ```json
 {
   "chapter_no": 1,
-  "raw_instruction": "下一章轻松一点，别太虐，节奏快一点",
+  "raw_instruction": "下一章轻松一点，多写某个角色的戏份，别太虐",
   "effective_chapter_span": 5
 }
 ```
 
-### 3.4 生成下一章
+### 4.4 生成下一章
 
 `POST /api/v1/novels/{novel_id}/next-chapter`
 
----
+### 4.5 导出整本小说
 
-## 4. 当前生成链路
-
-### 创建新书
-
-1. 用户提交题材 / 背景 / 主角名 / 风格偏好  
-2. 系统构建 `story_bible`  
-3. 生成标题  
-4. 生成第 1 章  
-5. 自动生成第 1 章摘要并写入数据库  
-
-### 续写下一章
-
-1. 读取小说上下文  
-2. 读取上一章尾段  
-3. 读取最近几章摘要  
-4. 读取仍生效的读者干预  
-5. 生成下一章正文  
-6. 提取章节摘要并写回数据库  
+- `GET /api/v1/novels/{novel_id}/export?format=txt`
+- `GET /api/v1/novels/{novel_id}/export?format=md`
+- `GET /api/v1/novels/{novel_id}/export?format=docx`
+- `GET /api/v1/novels/{novel_id}/export?format=pdf`
 
 ---
 
-## 5. OpenAI / Codex 接入
+## 5. 一次完整测试顺序
 
-详细见：
-
-- `docs/openai_integration.md`
-
-当前这一版采用：
-
-- OpenAI Python SDK
-- Responses API
-- 默认模型：`gpt-5.4`
-- 可选模型：`gpt-5.3-codex`
+1. `POST /api/v1/novels` 创建新书
+2. `GET /api/v1/novels/{id}/chapters/1` 读取第 1 章
+3. `POST /api/v1/novels/{id}/next-chapter` 生成第 2 章
+4. `POST /api/v1/novels/{id}/interventions` 提建议
+5. `POST /api/v1/novels/{id}/next-chapter` 生成第 3 章
+6. `GET /api/v1/novels/{id}/export?format=docx` 或 `pdf` 导出整本
 
 ---
 
-## 6. 下一步建议
+## 6. 常见问题
 
-当前版本已经完成“能跑的生成骨架”。下一步最值得做的是：
+### Q1：为什么我填了根目录 `.env` 但没生效？
+因为你通常是从 `backend/` 目录启动 `uvicorn`，此时配置默认读的是 **`backend/.env`**。
 
-1. 前端阅读页（开书 / 阅读 / 下一章 / 提建议）
-2. 更强的读者偏好解析
-3. 角色状态表自动更新
-4. 严格结构化输出 / 重试机制
-5. 章节流式生成
-6. 分支宇宙 / 回滚能力
+### Q2：为什么正文还是像模板？
+因为当前很可能还在 `mock` 模式，或者真实 provider key 没生效。新生成章节的 `generation_meta.generator` 应该不是 `mock_*`。
+
+### Q3：导出中文文件名为什么以前报错？
+这个版本已经修好，使用了 `filename` + `filename*` 双写法，兼容中文文件名。
 
 ---
 
-## 7. 开发模式建议
+## 7. 说明
 
-- 先用 `mock` 跑通数据库和 API
-- 再切换到 `openai`
-- 先验证 10 章以内连续性
-- 再扩展到 50 章、100 章
-
+- 这是一版 **MVP 骨架**，重点是跑通：创建 → 连载 → 干预 → 导出。
+- 真正上线前，建议再加：重试、流式生成、章节规划器、更强的状态提取器、前端阅读页。

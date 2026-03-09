@@ -50,8 +50,8 @@ def _provider() -> str:
 
 def is_openai_enabled() -> bool:
     """
-    为了不改其他文件里的 import，函数名保留。
-    实际上这里变成：只要 provider 不是 mock 且 key 存在，就启用真实 LLM。
+    保留旧函数名，避免改其他调用点。
+    实际含义：只要 provider 不是 mock 且对应 key 已配置，就启用真实 LLM。
     """
     if OpenAI is None:
         return False
@@ -137,19 +137,48 @@ def _response_to_text(response: Any) -> str:
     return "\n".join(chunks).strip()
 
 
-def _extract_json(text: str) -> dict[str, Any]:
+def _extract_json(text: str) -> dict:
     text = text.strip()
+
+    # 先直接尝试完整 JSON
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
+    # 去掉 markdown code fence
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 3:
+            text = "\n".join(lines[1:-1]).strip()
+
+    # 截取第一个 { 到最后一个 }
     start = text.find("{")
     end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError(f"Model response does not contain JSON: {text[:300]}")
-    candidate = text[start : end + 1]
-    return json.loads(candidate)
+    if start != -1 and end != -1 and end > start:
+        candidate = text[start : end + 1]
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+    # 如果是被截断的 JSON，尽量补齐
+    if start != -1 and end == -1:
+        candidate = text[start:]
+
+        # 尝试简单补尾
+        if candidate.count("{") > candidate.count("}"):
+            candidate += "}" * (candidate.count("{") - candidate.count("}"))
+
+        if candidate.count('"') % 2 == 1:
+            candidate += '"'
+
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+
+    raise ValueError(f"Model response does not contain valid JSON: {text[:500]}")
 
 
 def _call_json_response(
@@ -170,7 +199,6 @@ def _call_json_response(
         "store": False,
     }
 
-    # 只在 OpenAI 侧传 reasoning，避免 Groq 免费模型不兼容导致报错
     if provider == "openai":
         request_kwargs["reasoning"] = {"effort": settings.openai_reasoning_effort}
 
@@ -230,7 +258,7 @@ def generate_serial_chapter(
 
 def parse_instruction_with_openai(raw_instruction: str) -> ParsedInstructionPayload:
     """
-    函数名保留，避免改其他调用点。
+    保留旧函数名，避免改其他调用点。
     现在它既可走 OpenAI，也可走 Groq。
     """
     data = _call_json_response(

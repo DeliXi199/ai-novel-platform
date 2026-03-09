@@ -1,50 +1,53 @@
-# OpenAI / Codex 接入说明
+# 模型接入说明（OpenAI / Groq / Mock）
 
-这个项目现在支持两种生成模式：
+这个项目支持三种模式：
 
-- `LLM_PROVIDER=mock`：本地占位逻辑，方便先跑通接口。
-- `LLM_PROVIDER=openai`：调用 OpenAI Python SDK + Responses API，真实生成章节。
+- `LLM_PROVIDER=mock`：本地占位逻辑，先跑通流程。
+- `LLM_PROVIDER=openai`：调用 OpenAI Python SDK + Responses API。
+- `LLM_PROVIDER=groq`：调用 Groq 的 OpenAI-compatible Responses API（适合先用免费层验证流程）。
 
-## 为什么这里默认推荐 `gpt-5.4`
+## 1. 最省事的做法
 
-当前 OpenAI 官方文档把 `gpt-5.4` 作为广义默认模型，也说明它是 Codex 和 Codex CLI 当前使用的最新模型；如果你的工作流同时包含代码开发、规划和写作，它是更好的默认选择。文档也提到 `gpt-5.3-codex` 仍可在 Responses API 中使用，更偏 agentic coding 场景。  
-参考：
-- Using GPT-5.4（OpenAI official）
-- Code generation guide（OpenAI official）
-- API deprecations（`codex-mini-latest` 已移除，推荐迁移到 `gpt-5-codex-mini` / 新模型）
+直接修改：
 
-## 环境变量
+```text
+backend/.env
+```
 
-复制根目录的 `.env.example` 为 `.env`，然后至少修改：
+### 用 Groq 免费层
+
+```env
+LLM_PROVIDER=groq
+GROQ_API_KEY=你的真实_groq_key
+GROQ_BASE_URL=https://api.groq.com/openai/v1
+GROQ_MODEL=openai/gpt-oss-20b
+```
+
+### 用 OpenAI
 
 ```env
 LLM_PROVIDER=openai
-OPENAI_API_KEY=你的key
+OPENAI_API_KEY=你的真实_openai_key
 OPENAI_MODEL=gpt-5.4
 ```
 
-## 安装依赖
+## 2. 如何判断已经走真实模型
 
-```bash
-cd backend
-pip install -r requirements.txt
+新生成章节的 `generation_meta` 里：
+
+- 如果看到 `generator=mock_*`，说明还在 mock
+- 如果看到 `generator=responses_api`，且 `provider=openai` 或 `provider=groq`，说明已经走真实模型
+
+## 3. 关键代码位置
+
+```text
+backend/app/services/openai_story_engine.py
 ```
 
-## 当前接入方式
+这个文件现在同时负责：
 
-项目目前通过 `backend/app/services/openai_story_engine.py` 调用 OpenAI：
+- OpenAI
+- Groq
+- 统一 Responses API 请求
 
-- 创建新书时：生成真实第 1 章
-- 续写时：根据故事圣经、最近章节摘要、上一章尾段、读者干预来写下一章
-- 解析读者干预时：可选调用模型将自然语言转成结构化控制参数
-
-## 重要提醒
-
-1. 这一版先追求“稳定可跑”，所以没有上 streaming。
-2. 这一版用的是“严格 JSON 输出 + 本地解析”策略，足够做 MVP。
-3. 真正上线前，建议再加：
-   - 重试机制
-   - 更严格的结构化输出
-   - 请求日志 / trace id
-   - 成本统计
-   - 安全审核
+虽然文件名还叫 `openai_story_engine.py`，但内部已经支持两个 provider。
