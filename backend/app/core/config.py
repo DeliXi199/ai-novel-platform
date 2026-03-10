@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import field_validator, model_validator
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -76,102 +76,42 @@ class Settings(BaseSettings):
     # Layered-outline flow
     bootstrap_initial_chapters: int = 0
     global_outline_acts: int = 4
-    arc_outline_size: int = 5
-    arc_prefetch_threshold: int = 0
+    arc_outline_size: int = 7
+    arc_prefetch_threshold: int = 2
+    planning_window_size: int = 7
+    planning_strict_mode: bool = True
+    arc_outline_chunk_size: int = 2
+    json_repair_attempts: int = 1
+    json_invalid_regeneration_attempts: int = 1
+    json_repair_max_output_tokens: int = 2200
+
+    @field_validator(
+        "llm_provider",
+        "openai_api_key",
+        "openai_base_url",
+        "openai_model",
+        "deepseek_api_key",
+        "deepseek_base_url",
+        "deepseek_model",
+        "groq_api_key",
+        "groq_base_url",
+        "groq_model",
+        mode="before",
+    )
+    @classmethod
+    def _strip_text_like_values(cls, value: str | None):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            cleaned = value.strip().strip("\"").strip("'").strip()
+            return cleaned or None
+        return value
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
-
-    @field_validator("llm_provider")
-    @classmethod
-    def _normalize_provider(cls, value: str) -> str:
-        provider = (value or "").strip().lower()
-        if provider not in {"openai", "deepseek", "groq"}:
-            raise ValueError("LLM_PROVIDER must be one of: openai, deepseek, groq")
-        return provider
-
-    @field_validator("chapter_context_mode")
-    @classmethod
-    def _normalize_context_mode(cls, value: str) -> str:
-        mode = (value or "").strip().lower()
-        if mode not in {"light", "full"}:
-            raise ValueError("CHAPTER_CONTEXT_MODE must be 'light' or 'full'")
-        return mode
-
-    @field_validator("chapter_summary_mode")
-    @classmethod
-    def _normalize_summary_mode(cls, value: str) -> str:
-        mode = (value or "").strip().lower()
-        if mode not in {"auto", "llm", "heuristic"}:
-            raise ValueError("CHAPTER_SUMMARY_MODE must be 'auto', 'llm', or 'heuristic'")
-        return mode
-
-    @field_validator(
-        "openai_reasoning_effort",
-        mode="before",
-    )
-    @classmethod
-    def _normalize_reasoning_effort(cls, value: str) -> str:
-        effort = (value or "").strip().lower()
-        if effort not in {"minimal", "low", "medium", "high"}:
-            raise ValueError("OPENAI_REASONING_EFFORT must be minimal, low, medium, or high")
-        return effort
-
-    @model_validator(mode="after")
-    def _validate_numeric_ranges(self) -> "Settings":
-        positive_fields = [
-            "openai_timeout_seconds",
-            "deepseek_timeout_seconds",
-            "groq_timeout_seconds",
-            "openai_max_output_tokens",
-            "deepseek_max_output_tokens",
-            "groq_max_output_tokens",
-            "openai_chapter_max_output_tokens",
-            "deepseek_chapter_max_output_tokens",
-            "groq_chapter_max_output_tokens",
-            "chapter_target_words",
-            "chapter_hard_min_visible_chars",
-            "chapter_min_visible_chars",
-            "chapter_recent_summary_limit",
-            "chapter_last_excerpt_chars",
-            "chapter_live_hook_limit",
-            "chapter_recent_summary_chars",
-            "chapter_prompt_max_chars",
-            "chapter_draft_max_attempts",
-            "chapter_too_short_retry_attempts",
-            "chapter_tail_fix_attempts",
-            "chapter_summary_max_output_tokens",
-            "llm_call_min_interval_ms",
-            "llm_trace_limit",
-            "chapter_probe_target_min_visible_chars",
-            "chapter_probe_target_max_visible_chars",
-            "chapter_progress_target_min_visible_chars",
-            "chapter_progress_target_max_visible_chars",
-            "chapter_turning_point_target_min_visible_chars",
-            "chapter_turning_point_target_max_visible_chars",
-            "global_outline_acts",
-            "arc_outline_size",
-        ]
-        for name in positive_fields:
-            if getattr(self, name) <= 0:
-                raise ValueError(f"{name} must be greater than 0")
-
-        if not 0 <= self.chapter_similarity_threshold <= 1:
-            raise ValueError("chapter_similarity_threshold must be between 0 and 1")
-
-        if self.chapter_hard_min_visible_chars > self.chapter_min_visible_chars:
-            raise ValueError("chapter_hard_min_visible_chars cannot exceed chapter_min_visible_chars")
-
-        for prefix in ("chapter_probe", "chapter_progress", "chapter_turning_point"):
-            low = getattr(self, f"{prefix}_target_min_visible_chars")
-            high = getattr(self, f"{prefix}_target_max_visible_chars")
-            if low > high:
-                raise ValueError(f"{prefix}_target_min_visible_chars cannot exceed {prefix}_target_max_visible_chars")
-
-        return self
 
 
 settings = Settings()

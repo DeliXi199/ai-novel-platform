@@ -14,21 +14,25 @@ from app.schemas.chapter import (
     ChapterBatchResponse,
     ChapterResponse,
 )
+from app.schemas.control_console import ControlConsoleResponse
 from app.schemas.intervention import InterventionCreate, InterventionResponse
 from app.schemas.novel import NovelCreate, NovelResponse
 from app.services.chapter_generation import (
     generate_next_chapter,
     generate_next_chapters_batch,
     parse_reader_instruction,
+    prepare_next_planning_window,
 )
 from app.services.export_service import export_novel_bytes
 from app.services.generation_exceptions import GenerationError
 from app.services.novel_bootstrap import (
+    build_base_story_bible,
     build_story_bible,
     generate_arc_outline_bundle,
     generate_global_story_outline,
     generate_title,
 )
+from app.services.story_architecture import build_control_console_snapshot
 
 router = APIRouter(prefix="/novels", tags=["novels"])
 
@@ -62,27 +66,30 @@ def _batch_payload(chapters: list[Chapter], requested_count: int, started_from_c
 @router.post("", response_model=NovelResponse, status_code=status.HTTP_201_CREATED)
 def create_novel(payload: NovelCreate, db: Session = Depends(get_db)):
     try:
-        story_bible = build_story_bible(payload)
         title = generate_title(payload)
+        base_story_bible = build_base_story_bible(payload)
 
-        global_outline = generate_global_story_outline(payload, story_bible)
-        story_bible["global_outline"] = global_outline
+        global_outline = generate_global_story_outline(payload, base_story_bible)
+        base_story_bible["global_outline"] = global_outline
 
         first_arc = generate_arc_outline_bundle(
             payload=payload,
-            story_bible=story_bible,
+            story_bible=base_story_bible,
             global_outline=global_outline,
             start_chapter=1,
-            end_chapter=story_bible["outline_engine"]["arc_outline_size"],
+            end_chapter=base_story_bible["outline_engine"]["arc_outline_size"],
             arc_no=1,
             recent_summaries=[],
         )
+
+        story_bible = build_story_bible(payload, title, global_outline, first_arc)
+        story_bible["global_outline"] = global_outline
         story_bible["active_arc"] = first_arc
         story_bible["pending_arc"] = None
         story_bible["outline_state"] = {
             "planned_until": first_arc["end_chapter"],
             "next_arc_no": 2,
-            "bootstrap_generated_until": 0,
+            "bootstrap_generated_until": first_arc["end_chapter"],
         }
 
         novel = Novel(
@@ -93,6 +100,7 @@ def create_novel(payload: NovelCreate, db: Session = Depends(get_db)):
             style_preferences=payload.style_preferences,
             story_bible=story_bible,
             current_chapter_no=0,
+            status="planning_ready",
         )
         db.add(novel)
         db.commit()
@@ -109,6 +117,42 @@ def get_novel(novel_id: int, db: Session = Depends(get_db)):
     if not novel:
         raise HTTPException(status_code=404, detail="Novel not found")
     return novel
+
+
+@router.get("/{novel_id}/planning-state")
+def get_planning_state(novel_id: int, db: Session = Depends(get_db)):
+    novel = db.query(Novel).filter(Novel.id == novel_id).first()
+    if not novel:
+        raise HTTPException(status_code=404, detail="Novel not found")
+    snapshot = build_control_console_snapshot(novel)
+    return {
+        "novel_id": novel.id,
+        "current_chapter_no": novel.current_chapter_no,
+        "planning_layers": snapshot.get("planning_layers", {}),
+        "planning_state": snapshot.get("planning_state", {}),
+        "planning_status": snapshot.get("control_console", {}).get("planning_status", {}),
+        "chapter_card_queue": snapshot.get("control_console", {}).get("chapter_card_queue", []),
+    }
+
+
+@router.post("/{novel_id}/prepare-next-window")
+def create_next_planning_window(novel_id: int, force: bool = Query(False), db: Session = Depends(get_db)):
+    novel = db.query(Novel).filter(Novel.id == novel_id).first()
+    if not novel:
+        raise HTTPException(status_code=404, detail="Novel not found")
+    try:
+        return prepare_next_planning_window(db, novel, force=force)
+    except GenerationError as exc:
+        db.rollback()
+        _raise_http_from_generation_error(exc)
+
+
+@router.get("/{novel_id}/control-console", response_model=ControlConsoleResponse)
+def get_control_console(novel_id: int, db: Session = Depends(get_db)):
+    novel = db.query(Novel).filter(Novel.id == novel_id).first()
+    if not novel:
+        raise HTTPException(status_code=404, detail="Novel not found")
+    return build_control_console_snapshot(novel)
 
 
 @router.get("/{novel_id}/chapters/{chapter_no}", response_model=ChapterResponse)

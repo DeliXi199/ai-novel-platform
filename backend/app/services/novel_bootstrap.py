@@ -6,9 +6,10 @@ from app.services.openai_story_engine import (
     generate_arc_outline,
     generate_global_outline,
 )
+from app.services.story_architecture import compose_story_bible
 
 
-def build_story_bible(payload: NovelCreate) -> dict:
+def build_base_story_bible(payload: NovelCreate) -> dict:
     genre = payload.genre.strip()
     premise = payload.premise.strip()
     protagonist = payload.protagonist_name.strip()
@@ -26,7 +27,20 @@ def build_story_bible(payload: NovelCreate) -> dict:
         "outline_engine": {
             "global_outline_acts": settings.global_outline_acts,
             "arc_outline_size": settings.arc_outline_size,
+            "planning_window_size": settings.planning_window_size,
             "arc_prefetch_threshold": settings.arc_prefetch_threshold,
+        },
+        "workflow_mode": {
+            "bootstrap_documents_only": True,
+            "strict_manual_pipeline": settings.planning_strict_mode,
+            "chapter_generation_sequence": [
+                "project_card",
+                "current_volume_card",
+                "near_outline",
+                "chapter_execution_card",
+                "chapter_draft",
+                "summary_and_review",
+            ],
         },
         "quality_guardrails": {
             "chapter_min_visible_chars": settings.chapter_min_visible_chars,
@@ -98,13 +112,52 @@ def generate_arc_outline_bundle(
     arc_no: int,
     recent_summaries: list[dict] | None = None,
 ) -> dict:
-    outline = generate_arc_outline(
-        payload=payload.model_dump(mode="python"),
-        story_bible=story_bible,
-        global_outline=global_outline,
-        recent_summaries=recent_summaries or [],
-        start_chapter=start_chapter,
-        end_chapter=end_chapter,
-        arc_no=arc_no,
-    )
-    return outline.model_dump(mode="python")
+    chunk_size = max(int(getattr(settings, "arc_outline_chunk_size", 1)), 1)
+    recent = recent_summaries or []
+    chapters: list[dict] = []
+    focus_parts: list[str] = []
+    bridge_parts: list[str] = []
+
+    cursor = start_chapter
+    while cursor <= end_chapter:
+        chunk_end = min(cursor + chunk_size - 1, end_chapter)
+        outline = generate_arc_outline(
+            payload=payload.model_dump(mode="python"),
+            story_bible=story_bible,
+            global_outline=global_outline,
+            recent_summaries=recent,
+            start_chapter=cursor,
+            end_chapter=chunk_end,
+            arc_no=arc_no,
+        )
+        dumped = outline.model_dump(mode="python")
+        if dumped.get("focus"):
+            focus_parts.append(str(dumped["focus"]).strip())
+        if dumped.get("bridge_note"):
+            bridge_parts.append(str(dumped["bridge_note"]).strip())
+        chapters.extend(dumped.get("chapters", []))
+        cursor = chunk_end + 1
+
+    seen_focus: list[str] = []
+    for item in focus_parts:
+        if item and item not in seen_focus:
+            seen_focus.append(item)
+    seen_bridge: list[str] = []
+    for item in bridge_parts:
+        if item and item not in seen_bridge:
+            seen_bridge.append(item)
+
+    return {
+        "arc_no": arc_no,
+        "start_chapter": start_chapter,
+        "end_chapter": end_chapter,
+        "focus": " / ".join(seen_focus[:2]) if seen_focus else "稳定推进当前阶段主线。",
+        "bridge_note": " ".join(seen_bridge[:2]) if seen_bridge else "这一段先稳住承接，再把风险轻轻抬高。",
+        "chapters": chapters,
+    }
+
+
+
+def build_story_bible(payload: NovelCreate, title: str, global_outline: dict, first_arc: dict) -> dict:
+    base = build_base_story_bible(payload)
+    return compose_story_bible(payload, title, base, global_outline, first_arc)
