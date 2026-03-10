@@ -1,54 +1,46 @@
-# 系统架构说明
+# Architecture (Layered Outline Edition)
 
-## 1. 产品定位
+## Goal
 
-这是一个面向读者的互动式 AI 连载小说平台。
+将小说生成从“直接写一章”改成分层规划：
 
-核心流程：
-1. 用户输入小说类型、背景、主角名、偏好
-2. 系统创建小说基础设定
-3. 系统生成第 1 章
-4. 用户继续阅读，或在章间提交偏好
-5. 系统读取状态并生成下一章
-6. 系统更新章节摘要、人物状态、剧情状态
+1. Story Bible
+2. Global Outline
+3. Arc Outline
+4. Chapter Draft
+5. Chapter Summary
 
-## 2. 后端分层
+## Build Flow
 
-### API 层
-负责接收 HTTP 请求和返回 JSON。
+### On novel creation
 
-### Service 层
-负责业务逻辑：
-- 初始化小说
-- 生成章节
-- 写入章节摘要
-- 应用用户干预
+- Build story bible
+- Generate global outline
+- Generate first arc outline (default 5 chapters)
+- Pre-generate first 3 chapters
 
-### Model 层
-SQLAlchemy ORM 模型，对应数据库表。
+### On next chapter request
 
-### Schema 层
-Pydantic 输入输出结构，保证 API 契约清晰。
+- Read current active arc
+- Use stored chapter plan directly
+- Generate chapter draft
+- Summarize chapter
+- If active arc remaining chapters <= threshold, prefetch next arc outline
+- Promote pending arc when current arc is exhausted
 
-### DB 层
-数据库连接、Session 管理、初始化。
+## Why this is faster
 
-## 3. 未来扩展架构
+The system no longer pre-generates 10 full chapters on novel creation.
+It only pre-generates:
 
-建议后续增加：
-- `planner_service`：本章节拍规划
-- `writer_service`：正文生成
-- `critic_service`：一致性检查
-- `memory_service`：长期记忆召回
-- `state_extractor_service`：章节状态提取
-- `branch_service`：平行分支管理
+- 1 global outline
+- 1 first arc outline
+- 3 chapter drafts
 
-## 4. 当前仓库为什么先做 mock 生成
+This reduces latency while preserving long-range coherence.
 
-因为真正难点不只是“让模型写字”，而是：
-- 数据结构是否合理
-- 状态更新是否稳定
-- API 是否好扩展
-- 前后端契约是否明确
+## Anti-repetition strategy
 
-先把工程骨架搭好，再接真实模型最省返工。
+- Arc outline gives each chapter distinct scene / goal / conflict
+- Draft step includes anti-repetition instruction
+- Simple similarity check retries once if chapter is too similar to previous chapter

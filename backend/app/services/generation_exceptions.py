@@ -1,0 +1,37 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(slots=True)
+class GenerationError(Exception):
+    code: str
+    message: str
+    stage: str
+    retryable: bool = True
+    http_status: int = 503
+    provider: str | None = None
+    details: dict | None = None
+
+    def __str__(self) -> str:  # pragma: no cover
+        return f"[{self.stage}:{self.code}] {self.message}"
+
+
+class ErrorCodes:
+    PROVIDER_NOT_CONFIGURED = "PROVIDER_NOT_CONFIGURED"
+    PROVIDER_UNSUPPORTED = "PROVIDER_UNSUPPORTED"
+    API_TIMEOUT = "API_TIMEOUT"
+    API_CONNECTION_FAILED = "API_CONNECTION_FAILED"
+    API_AUTH_FAILED = "API_AUTH_FAILED"
+    API_RATE_LIMITED = "API_RATE_LIMITED"
+    API_STATUS_ERROR = "API_STATUS_ERROR"
+    MODEL_RESPONSE_INVALID = "MODEL_RESPONSE_INVALID"
+    CHAPTER_TOO_SHORT = "CHAPTER_TOO_SHORT"
+    CHAPTER_TOO_SIMILAR = "CHAPTER_TOO_SIMILAR"
+    CHAPTER_META_TEXT = "CHAPTER_META_TEXT"
+    CHAPTER_DUPLICATED_PARAGRAPHS = "CHAPTER_DUPLICATED_PARAGRAPHS"
+    CHAPTER_TOO_MESSY = "CHAPTER_TOO_MESSY"
+    CHAPTER_PROGRESS_TOO_WEAK = "CHAPTER_PROGRESS_TOO_WEAK"
+    CHAPTER_ENDING_INCOMPLETE = "CHAPTER_ENDING_INCOMPLETE"
+    CHAPTER_ALREADY_GENERATING = "CHAPTER_ALREADY_GENERATING"
+    CHAPTER_PLAN_MISSING = "CHAPTER_PLAN_MISSING"
