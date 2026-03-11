@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_debug: bool = True
     api_v1_prefix: str = "/api/v1"
+    cors_allow_origins: str = "http://127.0.0.1:5173,http://localhost:5173"
 
     postgres_server: str = "127.0.0.1"
     postgres_port: int = 5432
@@ -54,11 +55,12 @@ class Settings(BaseSettings):
     chapter_live_hook_limit: int = 6
     chapter_recent_summary_chars: int = 120
     chapter_prompt_max_chars: int = 7600
-    chapter_draft_max_attempts: int = 4
-    chapter_too_short_retry_attempts: int = 3
-    chapter_too_short_retry_delay_ms: int = 1800
-    chapter_tail_fix_attempts: int = 2
-    chapter_tail_fix_delay_ms: int = 900
+    chapter_draft_max_attempts: int = 2
+    chapter_too_short_retry_attempts: int = 1
+    chapter_too_short_retry_delay_ms: int = 1200
+    chapter_tail_fix_attempts: int = 1
+    chapter_tail_fix_delay_ms: int = 600
+    chapter_generation_wall_clock_limit_seconds: int = 300
     chapter_summary_max_output_tokens: int = 320
     chapter_summary_mode: str = "auto"
     llm_call_min_interval_ms: int = 1200
@@ -112,6 +114,13 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @property
+    def cors_allow_origin_list(self) -> list[str]:
+        if not self.cors_allow_origins:
+            return ["*"]
+        parts = [part.strip() for part in self.cors_allow_origins.split(",")]
+        return [part for part in parts if part] or ["*"]
 
 
 settings = Settings()

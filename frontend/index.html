@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Novel Studio</title>
+    <link rel="stylesheet" href="/app/assets/app.css" />
+  </head>
+  <body>
+    <div id="studioShell" class="shell">
+      <aside class="sidebar glass">
+        <div class="brand">
+          <div class="brand-mark">✦</div>
+          <div>
+            <h1>AI Novel Studio</h1>
+            <p>书架 · 目录 · 连载控制台</p>
+          </div>
+        </div>
+
+        <section class="sidebar-card panel-muted">
+          <div class="sidebar-title-row">
+            <h2>书架</h2>
+            <button id="refreshShelfBtn" class="ghost-btn" type="button">刷新</button>
+          </div>
+          <label class="field compact-field">
+            <span>搜索小说</span>
+            <input id="shelfSearchInput" type="text" placeholder="书名 / 主角 / 题材" />
+          </label>
+          <div id="shelfStats" class="subtle-text"></div>
+          <div id="bookshelfList" class="bookshelf-list"></div>
+        </section>
+
+        <section class="sidebar-card panel-muted sidebar-bottom">
+          <div class="status-card-row">
+            <span>后端</span>
+            <strong id="apiStatusText">检测中</strong>
+          </div>
+          <div class="status-card-row">
+            <span>模型接口</span>
+            <strong id="llmStatusText">未检测</strong>
+          </div>
+          <div class="sidebar-actions">
+            <button id="pingApiBtn" class="ghost-btn" type="button">检查接口</button>
+            <button id="pingLlmBtn" class="ghost-btn" type="button">检查模型</button>
+          </div>
+        </section>
+      </aside>
+
+      <main class="main">
+        <header class="topbar glass">
+          <div>
+            <p class="eyebrow">AI 连载写作工作台</p>
+            <h2 id="topbarTitle">请选择一本书，或先新建项目</h2>
+            <p id="topbarSubtitle" class="subtle-text">你可以在这里管理书架、自动续规划、按章生成、从末尾回删章节，并以沉浸式阅读器查看正文。</p>
+          </div>
+          <div class="topbar-actions">
+            <button id="openCreatePanelBtn" class="primary-btn" type="button">新建小说</button>
+            <a class="ghost-btn" href="/docs" target="_blank" rel="noreferrer">API Docs</a>
+          </div>
+        </header>
+
+        <div id="flashContainer" class="flash-stack"></div>
+
+        <section id="createPanel" class="panel glass hidden">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">新建项目</p>
+              <h3>初始化小说</h3>
+            </div>
+            <button id="closeCreatePanelBtn" class="ghost-btn" type="button">收起</button>
+          </div>
+          <form id="createNovelForm" class="grid-form">
+            <label class="field">
+              <span>题材</span>
+              <input name="genre" type="text" placeholder="如：金手指修仙 / 诡异仙侠 / 凡人流" required />
+            </label>
+            <label class="field">
+              <span>主角名</span>
+              <input name="protagonist_name" type="text" placeholder="主角姓名" required />
+            </label>
+            <label class="field field-span-2">
+              <span>故事前提</span>
+              <textarea name="premise" rows="5" placeholder="一句话核心冲突 + 身份处境 + 初始目标 + 风险" required></textarea>
+            </label>
+            <label class="field">
+              <span>文风基调</span>
+              <select name="tone">
+                <option value="">自动</option>
+                <option>冷峻克制</option>
+                <option>热血爽感</option>
+                <option>诡异压抑</option>
+                <option>细腻沉稳</option>
+                <option>轻快俏皮</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>节奏</span>
+              <select name="pace">
+                <option value="">自动</option>
+                <option>慢热铺陈</option>
+                <option>稳步推进</option>
+                <option>高密度爽点</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>视角</span>
+              <select name="pov">
+                <option value="">自动</option>
+                <option>第三人称近距离</option>
+                <option>第一人称</option>
+                <option>多视角</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>战斗描写</span>
+              <select name="combat_style">
+                <option value="">自动</option>
+                <option>写实克制</option>
+                <option>爆发强烈</option>
+                <option>偏智斗与博弈</option>
+              </select>
+            </label>
+            <label class="field field-span-2">
+              <span>额外风格备注</span>
+              <textarea name="style_notes" rows="3" placeholder="如：避免模板化旁白；多用动作与物件带情绪；尽量减少口号式总结"></textarea>
+            </label>
+            <label class="field field-span-2">
+              <span>高级风格 JSON（可选）</span>
+              <textarea name="style_json" rows="4" placeholder='如：{"target_audience":"男频","chapter_feel":"画面感强"}'></textarea>
+            </label>
+            <div class="form-actions field-span-2">
+              <button id="createNovelSubmitBtn" class="primary-btn" type="submit">创建并生成初始规划</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="overview-grid">
+          <article class="metric-card glass">
+            <span class="metric-label">当前小说</span>
+            <strong id="metricNovelTitle">未选择</strong>
+            <small id="metricNovelMeta">—</small>
+          </article>
+          <article class="metric-card glass">
+            <span class="metric-label">当前进度</span>
+            <strong id="metricChapterNo">第 0 章</strong>
+            <small id="metricStatus">状态：—</small>
+          </article>
+          <article class="metric-card glass">
+            <span class="metric-label">规划窗口</span>
+            <strong id="metricPlanningWindow">—</strong>
+            <small id="metricPlanningState">等待载入</small>
+          </article>
+          <article class="metric-card glass">
+            <span class="metric-label">最近更新</span>
+            <strong id="metricUpdatedAt">—</strong>
+            <small id="metricCreatedAt">—</small>
+          </article>
+        </section>
+
+        <section class="panel glass">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">操作区</p>
+              <h3>生成、自动续规划、回滚与导出</h3>
+            </div>
+            <div class="action-row wrap-row">
+              <button id="prepareWindowBtn" class="ghost-btn" type="button">强制补规划</button>
+              <button id="generateNextBtn" class="primary-btn" type="button">生成下一章</button>
+            </div>
+          </div>
+          <div class="actions-grid">
+            <label class="field compact-field">
+              <span>连续生成章节数</span>
+              <input id="batchCountInput" type="number" min="1" max="20" value="3" />
+            </label>
+            <div class="field compact-field">
+              <span>批量生成</span>
+              <button id="generateBatchBtn" class="ghost-btn" type="button">实时生成并显示进度</button>
+            </div>
+            <div class="field compact-field">
+              <span>导出</span>
+              <div class="action-row wrap-row">
+                <button class="ghost-btn export-btn" data-format="txt" type="button">TXT</button>
+                <button class="ghost-btn export-btn" data-format="md" type="button">Markdown</button>
+                <button class="ghost-btn export-btn" data-format="docx" type="button">DOCX</button>
+                <button class="ghost-btn export-btn" data-format="pdf" type="button">PDF</button>
+              </div>
+            </div>
+          </div>
+          <div class="section-divider"></div>
+          <div class="danger-row">
+            <div class="danger-copy">
+              <strong>删除与回滚</strong>
+              <span class="subtle-text">生成章节时会自动维护规划窗口与主控台。这里支持删除整本书，也支持从最后一章开始连续回删。目录里可直接点“从这里删到末尾”。</span>
+            </div>
+            <div class="action-row wrap-row">
+              <button id="deleteLastChapterBtn" class="ghost-btn danger-btn" type="button">删除最后一章</button>
+              <button id="deleteNovelBtn" class="ghost-btn danger-btn" type="button">删除整本书</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="workspace-grid">
+          <section class="workspace-main-column">
+            <section class="panel glass catalog-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">章节目录</p>
+                  <h3>规范目录视图</h3>
+                </div>
+                <div class="action-row wrap-row">
+                  <span id="chapterCountText" class="panel-meta">0 章</span>
+                  <button id="toggleManageModeBtn" class="ghost-btn" type="button">管理删除</button>
+                </div>
+              </div>
+              <div class="catalog-toolbar">
+                <label class="field compact-field catalog-search-field">
+                  <span>搜索目录</span>
+                  <input id="chapterSearchInput" type="text" placeholder="章节号 / 标题关键词" />
+                </label>
+                <div id="chapterManageHint" class="subtle-text"></div>
+              </div>
+              <div id="chapterList" class="catalog-list"></div>
+            </section>
+          </section>
+
+          <aside class="workspace-side-column">
+            <section class="panel glass preview-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">章节预览</p>
+                  <h3 id="readerChapterTitle">请先选择章节</h3>
+                </div>
+                <div class="action-row wrap-row">
+                  <button id="refreshChapterBtn" class="ghost-btn" type="button">刷新章节</button>
+                  <button id="openReaderBtn" class="primary-btn" type="button">沉浸阅读</button>
+                </div>
+              </div>
+              <div id="readerMeta" class="reader-meta subtle-text"></div>
+              <div id="readerContent" class="preview-content">这里会显示章节摘要预览，点“沉浸阅读”会在新界面里像电子书一样展开正文。</div>
+            </section>
+
+            <section class="panel glass">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">规划状态</p>
+                  <h3>Control Console</h3>
+                </div>
+              </div>
+              <div id="planningSummary" class="info-stack"></div>
+              <div class="section-divider"></div>
+              <div id="consoleHighlights" class="info-stack"></div>
+            </section>
+
+            <section class="panel glass">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">人工干预</p>
+                  <h3>读者 / 作者指令</h3>
+                </div>
+              </div>
+              <form id="interventionForm" class="grid-form intervention-form">
+                <label class="field compact-field">
+                  <span>生效章节号</span>
+                  <input name="chapter_no" type="number" min="1" value="1" required />
+                </label>
+                <label class="field compact-field">
+                  <span>持续章数</span>
+                  <input name="effective_chapter_span" type="number" min="1" max="100" value="5" required />
+                </label>
+                <label class="field field-span-2">
+                  <span>原始指令</span>
+                  <textarea name="raw_instruction" rows="4" placeholder="如：最近三章压抑一些，不要立刻爆发，先埋主角对师门的不信任" required></textarea>
+                </label>
+                <div class="form-actions field-span-2">
+                  <button id="addInterventionBtn" class="ghost-btn" type="submit">添加指令</button>
+                </div>
+              </form>
+              <div id="interventionList" class="timeline-list"></div>
+            </section>
+
+            <section class="panel glass">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">运行日志</p>
+                  <h3>批量生成进度</h3>
+                </div>
+              </div>
+              <div id="activityLog" class="activity-log"></div>
+            </section>
+          </aside>
+        </section>
+      </main>
+    </div>
+
+    <div id="readerShell" class="reader-shell hidden">
+      <header class="reader-topbar">
+        <div class="reader-topbar-left">
+          <button id="readerBackBtn" class="ghost-btn" type="button">返回工作台</button>
+          <div>
+            <p class="eyebrow">沉浸阅读模式</p>
+            <h2 id="readerNovelTitle">未选择小说</h2>
+            <p id="readerShellMeta" class="subtle-text">选择章节后可在这里像电子书一样阅读正文。</p>
+          </div>
+        </div>
+        <div class="action-row wrap-row">
+          <button id="readerTocToggleBtn" class="ghost-btn" type="button">目录</button>
+          <button id="readerPrevBtn" class="ghost-btn" type="button">上一章</button>
+          <button id="readerNextBtn" class="ghost-btn" type="button">下一章</button>
+        </div>
+      </header>
+      <div class="reader-layout">
+        <aside id="readerToc" class="reader-toc glass">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">目录</p>
+              <h3>章节导航</h3>
+            </div>
+          </div>
+          <div id="readerTocList" class="reader-toc-list"></div>
+        </aside>
+        <main class="reader-page-wrap">
+          <article class="reader-page glass">
+            <div class="reader-page-header">
+              <p id="readerPageEyebrow" class="eyebrow">正文</p>
+              <h1 id="readerPageTitle">请选择章节</h1>
+              <div id="readerPageMeta" class="reader-meta subtle-text"></div>
+            </div>
+            <div id="readerPageContent" class="reader-page-content">这里会显示章节正文。</div>
+          </article>
+        </main>
+      </div>
+    </div>
+
+    <div id="confirmModal" class="modal hidden" role="dialog" aria-modal="true">
+      <div class="modal-backdrop"></div>
+      <div class="modal-card glass">
+        <p id="confirmEyebrow" class="eyebrow">请确认</p>
+        <h3 id="confirmTitle">确认操作</h3>
+        <div id="confirmMessage" class="modal-message"></div>
+        <div class="modal-actions">
+          <button id="confirmCancelBtn" class="ghost-btn" type="button">取消</button>
+          <button id="confirmOkBtn" class="primary-btn danger-btn" type="button">确认</button>
+        </div>
+      </div>
+    </div>
+
+    <template id="bookshelfItemTemplate">
+      <button class="bookshelf-item" type="button">
+        <div class="bookshelf-item-header">
+          <strong class="bookshelf-item-title"></strong>
+          <span class="bookshelf-item-badge"></span>
+        </div>
+        <div class="bookshelf-item-meta"></div>
+        <div class="bookshelf-item-foot"></div>
+      </button>
+    </template>
+
+    <template id="chapterCardTemplate">
+      <article class="chapter-card">
+        <div class="chapter-card-top">
+          <div class="chapter-card-no"></div>
+          <div class="chapter-card-headings">
+            <strong class="chapter-card-title"></strong>
+            <div class="chapter-card-meta"></div>
+          </div>
+        </div>
+        <div class="chapter-card-preview"></div>
+        <div class="chapter-card-actions">
+          <button class="ghost-btn chapter-preview-btn" type="button">预览</button>
+          <button class="ghost-btn chapter-open-btn" type="button">沉浸阅读</button>
+          <button class="ghost-btn danger-btn chapter-delete-tail-btn hidden" type="button"></button>
+        </div>
+      </article>
+    </template>
+
+    <script type="module" src="/app/assets/app.js"></script>
+  </body>
+</html>

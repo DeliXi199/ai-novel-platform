@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import datetime
 from difflib import SequenceMatcher
 from typing import Any
 
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -80,25 +80,9 @@ def collect_active_interventions(db: Session, novel_id: int, next_chapter_no: in
 
 
 
-def _lock_novel_for_generation(db: Session, novel_id: int) -> Novel:
-    try:
-        locked = (
-            db.query(Novel)
-            .filter(Novel.id == novel_id)
-            .with_for_update(nowait=True)
-            .first()
-        )
-    except OperationalError as exc:
-        raise GenerationError(
-            code=ErrorCodes.CHAPTER_ALREADY_GENERATING,
-            message="当前这本书已经有一个章节生成任务在进行中，请稍后再试。",
-            stage="chapter_generation_lock",
-            retryable=True,
-            http_status=409,
-            details={"novel_id": novel_id},
-        ) from exc
-
-    if not locked:
+def _load_novel_or_404(db: Session, novel_id: int) -> Novel:
+    novel = db.query(Novel).filter(Novel.id == novel_id).first()
+    if not novel:
         raise GenerationError(
             code="NOVEL_NOT_FOUND",
             message="小说不存在。",
@@ -107,8 +91,105 @@ def _lock_novel_for_generation(db: Session, novel_id: int) -> Novel:
             http_status=404,
             details={"novel_id": novel_id},
         )
-    return locked
+    return novel
 
+
+
+def _acquire_generation_slot(db: Session, novel_id: int) -> str:
+    novel = _load_novel_or_404(db, novel_id)
+    if novel.status == "generating":
+        raise GenerationError(
+            code=ErrorCodes.CHAPTER_ALREADY_GENERATING,
+            message="当前这本书已经有一个生成任务在进行中，请稍后再试。",
+            stage="chapter_generation_lock",
+            retryable=True,
+            http_status=409,
+            details={"novel_id": novel_id},
+        )
+
+    previous_status = novel.status or ("planning_ready" if novel.current_chapter_no <= 0 else "active")
+    updated = (
+        db.query(Novel)
+        .filter(Novel.id == novel_id, Novel.status != "generating")
+        .update({Novel.status: "generating"}, synchronize_session=False)
+    )
+    db.commit()
+    if updated != 1:
+        raise GenerationError(
+            code=ErrorCodes.CHAPTER_ALREADY_GENERATING,
+            message="当前这本书已经有一个生成任务在进行中，请稍后再试。",
+            stage="chapter_generation_lock",
+            retryable=True,
+            http_status=409,
+            details={"novel_id": novel_id},
+        )
+    return previous_status
+
+
+
+def _release_generation_slot(db: Session, novel_id: int, restore_status: str) -> None:
+    db.query(Novel).filter(Novel.id == novel_id).update({Novel.status: restore_status}, synchronize_session=False)
+    db.commit()
+
+
+def _chapter_wall_clock_limit_seconds() -> int:
+    return max(int(getattr(settings, "chapter_generation_wall_clock_limit_seconds", 0) or 0), 0)
+
+
+def _ensure_generation_runtime_budget(*, started_at: float, stage: str, chapter_no: int, attempt_no: int | None = None) -> None:
+    limit = _chapter_wall_clock_limit_seconds()
+    if limit <= 0:
+        return
+    elapsed = time.monotonic() - started_at
+    if elapsed <= limit:
+        return
+    details = {
+        "chapter_no": chapter_no,
+        "elapsed_seconds": int(round(elapsed)),
+        "wall_clock_limit_seconds": limit,
+    }
+    if attempt_no is not None:
+        details["attempt_no"] = attempt_no
+    raise GenerationError(
+        code=ErrorCodes.CHAPTER_PIPELINE_TIMEOUT,
+        message=f"第 {chapter_no} 章生成耗时过长，已主动中止，请直接重试这一章。",
+        stage=stage,
+        retryable=True,
+        http_status=504,
+        details=details,
+    )
+
+
+def _persist_generation_failure_snapshot(
+    db: Session,
+    *,
+    novel_id: int,
+    restore_status: str,
+    next_chapter_no: int,
+    stage: str,
+    message: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    novel = db.query(Novel).filter(Novel.id == novel_id).first()
+    if not novel:
+        return
+    story_bible = ensure_story_architecture(novel.story_bible or {}, novel)
+    story_bible = _set_live_runtime(
+        story_bible,
+        next_chapter_no=next_chapter_no,
+        stage="failed",
+        note=message,
+        extra={
+            **_planning_runtime_meta(story_bible),
+            "failed_stage": stage,
+            "last_error_message": _truncate_text(message, 180),
+            "last_error_details": _compact_value(details or {}, text_limit=80),
+        },
+    )
+    novel.story_bible = story_bible
+    novel.status = restore_status
+    db.add(novel)
+    db.commit()
 
 
 def _truncate_text(value: Any, limit: int) -> str:
@@ -476,50 +557,58 @@ def _save_pipeline_execution_packet(
 
 
 def prepare_next_planning_window(db: Session, novel: Novel, *, force: bool = False) -> dict[str, Any]:
-    locked_novel = _lock_novel_for_generation(db, novel.id)
-    story_bible = ensure_story_architecture(locked_novel.story_bible or {}, locked_novel)
-    next_no = locked_novel.current_chapter_no + 1
-    recent_summaries = _serialize_recent_summaries(db, locked_novel.id)
+    previous_status = _acquire_generation_slot(db, novel.id)
+    try:
+        locked_novel = _load_novel_or_404(db, novel.id)
+        _ensure_generation_runtime_budget(started_at=chapter_started_at, stage="chapter_planning_prepare", chapter_no=next_no)
+        story_bible = ensure_story_architecture(locked_novel.story_bible or {}, locked_novel)
+        next_no = locked_novel.current_chapter_no + 1
+        recent_summaries = _serialize_recent_summaries(db, locked_novel.id)
 
-    _ensure_outline_state(story_bible)
-    _promote_pending_arc_if_needed(story_bible, next_no)
-    locked_novel.story_bible = refresh_planning_views(story_bible, locked_novel.current_chapter_no)
-
-    queue = ((locked_novel.story_bible or {}).get("control_console") or {}).get("chapter_card_queue") or []
-    ready_for_next = bool(queue and int(queue[0].get("chapter_no", 0) or 0) == next_no)
-    if force or not ready_for_next or len(queue) < settings.planning_window_size:
-        _generate_and_store_pending_arc(
-            db,
-            locked_novel,
-            recent_summaries,
-            replace_existing=force,
-        )
-        story_bible = locked_novel.story_bible or {}
+        _ensure_outline_state(story_bible)
         _promote_pending_arc_if_needed(story_bible, next_no)
         locked_novel.story_bible = refresh_planning_views(story_bible, locked_novel.current_chapter_no)
 
-    queue = ((locked_novel.story_bible or {}).get("control_console") or {}).get("chapter_card_queue") or []
-    if not queue or int(queue[0].get("chapter_no", 0) or 0) != next_no:
-        raise GenerationError(
-            code=ErrorCodes.PLANNING_STAGE_NOT_READY,
-            message=f"第 {next_no} 章的近纲/章节卡尚未就绪，不能进入正文生成。",
-            stage="prepare_next_window",
-            retryable=True,
-            http_status=409,
-            details={"chapter_no": next_no, "ready_cards": [int(item.get('chapter_no', 0) or 0) for item in queue[:7]]},
-        )
+        queue = ((locked_novel.story_bible or {}).get("control_console") or {}).get("chapter_card_queue") or []
+        ready_for_next = bool(queue and int(queue[0].get("chapter_no", 0) or 0) == next_no)
+        if force or not ready_for_next or len(queue) < settings.planning_window_size:
+            _generate_and_store_pending_arc(
+                db,
+                locked_novel,
+                recent_summaries,
+                replace_existing=force,
+            )
+            story_bible = locked_novel.story_bible or {}
+            _promote_pending_arc_if_needed(story_bible, next_no)
+            locked_novel.story_bible = refresh_planning_views(story_bible, locked_novel.current_chapter_no)
 
-    db.add(locked_novel)
-    db.commit()
-    db.refresh(locked_novel)
-    return {
-        "novel_id": locked_novel.id,
-        "current_chapter_no": locked_novel.current_chapter_no,
-        "next_chapter_no": next_no,
-        "workflow_state": (locked_novel.story_bible or {}).get("workflow_state", {}),
-        "planning_status": ((locked_novel.story_bible or {}).get("control_console") or {}).get("planning_status", {}),
-        "chapter_card_queue": ((locked_novel.story_bible or {}).get("control_console") or {}).get("chapter_card_queue", []),
-    }
+        queue = ((locked_novel.story_bible or {}).get("control_console") or {}).get("chapter_card_queue") or []
+        if not queue or int(queue[0].get("chapter_no", 0) or 0) != next_no:
+            raise GenerationError(
+                code=ErrorCodes.PLANNING_STAGE_NOT_READY,
+                message=f"第 {next_no} 章的近纲/章节卡尚未就绪，不能进入正文生成。",
+                stage="prepare_next_window",
+                retryable=True,
+                http_status=409,
+                details={"chapter_no": next_no, "ready_cards": [int(item.get('chapter_no', 0) or 0) for item in queue[:7]]},
+            )
+
+        locked_novel.status = previous_status
+        db.add(locked_novel)
+        db.commit()
+        db.refresh(locked_novel)
+        return {
+            "novel_id": locked_novel.id,
+            "current_chapter_no": locked_novel.current_chapter_no,
+            "next_chapter_no": next_no,
+            "workflow_state": (locked_novel.story_bible or {}).get("workflow_state", {}),
+            "planning_status": ((locked_novel.story_bible or {}).get("control_console") or {}).get("planning_status", {}),
+            "chapter_card_queue": ((locked_novel.story_bible or {}).get("control_console") or {}).get("chapter_card_queue", []),
+        }
+    except Exception:
+        db.rollback()
+        _release_generation_slot(db, novel.id, previous_status)
+        raise
 
 
 def _story_bible_payload_to_novel_create(novel: Novel) -> NovelCreate:
@@ -687,6 +776,7 @@ def _persist_chapter_and_summary(
         closed_hooks=closed_hooks,
     )
     db.add(summary)
+    db.flush()
     novel.current_chapter_no = chapter_no
     db.add(novel)
     return chapter
@@ -778,7 +868,7 @@ def _build_attempt_plans(plan: dict[str, Any]) -> list[dict[str, Any]]:
         "进一步拉开与最近章节的句式距离，换开场动作、换感官、换结尾方式，减少‘不是错觉/心跳快了/若有若无/温凉/微弱’这类高频表达，并至少写出一两句更有棱角的具体句子。",
         "把配角写得更像人：给重复出现的人物一个职业习惯、说话方式或顾虑，不要只让他负责抛信息。若有反派或帮众，要补一处让人记住的危险细节。",
         "这次章末可以平稳过渡或余味收束，不必硬留悬念，但必须有结果落地或人物选择。",
-        "对话和动作链要更分人，避免所有角色都用同一种冷硬叙述腔；林玄在离别、损失、抉择处，情绪再沉半层，但通过动作和停顿去表现。",
+        "对话和动作链要更分人，避免所有角色都用同一种冷硬叙述腔；主角在离别、损失、抉择处，情绪再沉半层，但通过动作和停顿去表现。",
     ]
 
     for i, extra in enumerate(variants, start=1):
@@ -820,6 +910,8 @@ def _attempt_generate_validated_chapter(
     recent_summaries: list[dict[str, Any]],
     serialized_active: list[dict[str, Any]],
     recent_full_texts: list[str],
+    chapter_no: int,
+    started_at: float,
 ) -> tuple[str, str, dict[str, Any], dict[str, Any], dict[str, Any]]:
     attempts = _build_attempt_plans(plan)
     last_error: Exception | None = None
@@ -828,6 +920,9 @@ def _attempt_generate_validated_chapter(
     idx = 0
     while idx < len(attempts):
         attempt_plan = attempts[idx]
+        attempt_no = idx + 1
+        _ensure_generation_runtime_budget(started_at=started_at, stage="chapter_generation", chapter_no=chapter_no, attempt_no=attempt_no)
+        logger.info("chapter_draft attempt novel_chapter=%s attempt=%s/%s title=%s", chapter_no, attempt_no, len(attempts), attempt_plan.get("title"))
         targets = _chapter_length_targets(attempt_plan)
         draft = generate_chapter_from_plan(
             novel_context=novel_context,
@@ -860,6 +955,7 @@ def _attempt_generate_validated_chapter(
             if exc.code in {ErrorCodes.CHAPTER_TOO_SHORT, ErrorCodes.CHAPTER_ENDING_INCOMPLETE}:
                 can_repair = (exc.code == ErrorCodes.CHAPTER_ENDING_INCOMPLETE and tail_fix_retries_left > 0) or (exc.code == ErrorCodes.CHAPTER_TOO_SHORT and too_short_retries_left > 0)
                 if can_repair:
+                    _ensure_generation_runtime_budget(started_at=started_at, stage="chapter_extension", chapter_no=chapter_no, attempt_no=attempt_no)
                     repaired = _repair_short_or_incomplete_chapter(
                         title=title,
                         content=content,
@@ -920,6 +1016,125 @@ def _attempt_generate_validated_chapter(
     if last_error:
         raise last_error
     raise RuntimeError("chapter generation unexpectedly exited without result")
+
+
+def _utc_now_iso() -> str:
+    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+
+def _planning_runtime_meta(story_bible: dict[str, Any]) -> dict[str, Any]:
+    console = (story_bible or {}).get("control_console") or {}
+    planning_status = console.get("planning_status") or {}
+    queue = console.get("chapter_card_queue") or []
+    pending_arc = planning_status.get("pending_arc") or {}
+    active_arc = planning_status.get("active_arc") or {}
+    return {
+        "planned_until": int((((story_bible or {}).get("outline_state") or {}).get("planned_until", 0) or 0)),
+        "ready_cards": [int(item.get("chapter_no", 0) or 0) for item in queue[:7]],
+        "queue_size": len(queue),
+        "active_arc_no": int((active_arc.get("arc_no", 0) or 0)),
+        "pending_arc_no": int((pending_arc.get("arc_no", 0) or 0)) if pending_arc else None,
+    }
+
+
+def _set_live_runtime(
+    story_bible: dict[str, Any],
+    *,
+    next_chapter_no: int,
+    stage: str,
+    note: str = "",
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    workflow_state = story_bible.setdefault("workflow_state", {})
+    pipeline = workflow_state.setdefault("current_pipeline", {})
+    runtime = workflow_state.setdefault("live_runtime", {})
+    runtime.update(
+        {
+            "stage": stage,
+            "note": note,
+            "updated_at": _utc_now_iso(),
+            "target_chapter_no": next_chapter_no,
+        }
+    )
+    if extra:
+        runtime.update(extra)
+    pipeline["target_chapter_no"] = next_chapter_no
+    pipeline["last_live_stage"] = stage
+    pipeline["last_live_note"] = note
+    workflow_state["current_pipeline"] = pipeline
+    workflow_state["live_runtime"] = runtime
+    story_bible["workflow_state"] = workflow_state
+    return story_bible
+
+
+def _commit_runtime_snapshot(
+    db: Session,
+    novel: Novel,
+    *,
+    next_chapter_no: int,
+    stage: str,
+    note: str,
+    extra: dict[str, Any] | None = None,
+) -> Novel:
+    story_bible = ensure_story_architecture(novel.story_bible or {}, novel)
+    story_bible = _set_live_runtime(
+        story_bible,
+        next_chapter_no=next_chapter_no,
+        stage=stage,
+        note=note,
+        extra=extra,
+    )
+    novel.story_bible = story_bible
+    db.add(novel)
+    db.commit()
+    db.refresh(novel)
+    return novel
+
+
+def _auto_prepare_future_planning(
+    db: Session,
+    novel: Novel,
+    *,
+    current_chapter_no: int,
+    recent_summaries: list[dict[str, Any]],
+) -> dict[str, Any]:
+    story_bible = ensure_story_architecture(novel.story_bible or {}, novel)
+    _ensure_outline_state(story_bible)
+    _promote_pending_arc_if_needed(story_bible, current_chapter_no + 1)
+    story_bible = refresh_planning_views(story_bible, current_chapter_no)
+    novel.story_bible = story_bible
+
+    console = story_bible.get("control_console") or {}
+    queue = console.get("chapter_card_queue") or []
+    active_arc = story_bible.get("active_arc")
+    pending_arc = story_bible.get("pending_arc")
+    remaining = _arc_remaining(active_arc, current_chapter_no)
+    need_prefetch = not pending_arc and (
+        remaining <= settings.arc_prefetch_threshold
+        or len(queue) < settings.planning_window_size
+    )
+
+    auto_prefetched = False
+    if need_prefetch:
+        _generate_and_store_pending_arc(
+            db,
+            novel,
+            recent_summaries,
+            replace_existing=False,
+        )
+        story_bible = novel.story_bible or {}
+        _promote_pending_arc_if_needed(story_bible, current_chapter_no + 1)
+        story_bible = refresh_planning_views(story_bible, current_chapter_no)
+        novel.story_bible = story_bible
+        auto_prefetched = True
+
+    db.add(novel)
+    return {
+        **_planning_runtime_meta(novel.story_bible or {}),
+        "auto_prefetched": auto_prefetched,
+        "arc_remaining": remaining,
+    }
+
 
 
 def generate_next_chapters_batch(
@@ -1009,16 +1224,20 @@ def generate_next_chapters_batch(
 
 
 def generate_next_chapter(db: Session, novel: Novel) -> Chapter:
-    locked_novel = _lock_novel_for_generation(db, novel.id)
+    previous_status = _acquire_generation_slot(db, novel.id)
+    locked_novel = _load_novel_or_404(db, novel.id)
     trace_id = begin_llm_trace(f"novel-{locked_novel.id}-chapter-{locked_novel.current_chapter_no + 1}")
+    chapter_started_at = time.monotonic()
     try:
         next_no = locked_novel.current_chapter_no + 1
+        logger.info("chapter_generation start novel_id=%s chapter_no=%s trace=%s", locked_novel.id, next_no, trace_id)
         existing = (
             db.query(Chapter)
             .filter(Chapter.novel_id == locked_novel.id, Chapter.chapter_no == next_no)
             .first()
         )
         if existing:
+            _release_generation_slot(db, novel.id, previous_status)
             return existing
 
         recent_chapters = _load_recent_chapters(db, locked_novel.id, limit=3)
@@ -1034,6 +1253,23 @@ def generate_next_chapter(db: Session, novel: Novel) -> Chapter:
         locked_novel.story_bible = story_bible
         db.add(locked_novel)
 
+        _ensure_generation_runtime_budget(started_at=chapter_started_at, stage="chapter_planning_prefetch", chapter_no=next_no)
+        planning_meta = _auto_prepare_future_planning(
+            db,
+            locked_novel,
+            current_chapter_no=locked_novel.current_chapter_no,
+            recent_summaries=recent_summaries,
+        )
+        locked_novel = _commit_runtime_snapshot(
+            db,
+            locked_novel,
+            next_chapter_no=next_no,
+            stage="planning_ready",
+            note=("已自动续写后续规划窗口，无需手动补规划。" if planning_meta.get("auto_prefetched") else "当前章节规划已就绪，后续规划会在生成过程中自动维护。"),
+            extra=planning_meta,
+        )
+
+        _ensure_generation_runtime_budget(started_at=chapter_started_at, stage="chapter_plan_prepare", chapter_no=next_no)
         plan = _ensure_plan_for_chapter(db, locked_novel, next_no, recent_summaries)
         story_bible = ensure_story_architecture(locked_novel.story_bible or {}, locked_novel)
         story_bible = refresh_planning_views(story_bible, locked_novel.current_chapter_no)
@@ -1050,6 +1286,19 @@ def generate_next_chapter(db: Session, novel: Novel) -> Chapter:
             plan=plan,
             last_chapter_tail=serialized_last.get("tail_excerpt", ""),
         )
+        locked_novel = _commit_runtime_snapshot(
+            db,
+            locked_novel,
+            next_chapter_no=next_no,
+            stage="execution_packet_ready",
+            note=f"第 {next_no} 章执行卡已写入主控台，前端会自动刷新。",
+            extra={
+                "chapter_title": plan.get("title") or f"第{next_no}章",
+                "chapter_goal": _truncate_text(plan.get("goal"), 80),
+                **_planning_runtime_meta(locked_novel.story_bible or {}),
+            },
+        )
+
         novel_context = _serialize_novel_context(locked_novel, next_no, recent_summaries)
         novel_context.setdefault("story_memory", {})["execution_brief"] = _compact_value(execution_brief, text_limit=78)
         novel_context, recent_summaries, serialized_last, serialized_active, context_stats = _fit_chapter_payload_budget(
@@ -1059,6 +1308,18 @@ def generate_next_chapter(db: Session, novel: Novel) -> Chapter:
             serialized_active=serialized_active,
         )
 
+        locked_novel = _commit_runtime_snapshot(
+            db,
+            locked_novel,
+            next_chapter_no=next_no,
+            stage="drafting",
+            note=f"第 {next_no} 章正文生成中，控制台与目录会自动刷新。",
+            extra={
+                **_planning_runtime_meta(locked_novel.story_bible or {}),
+                "context_mode": novel_context.get("context_mode", settings.chapter_context_mode),
+            },
+        )
+
         title, content, draft_payload, used_plan, length_targets = _attempt_generate_validated_chapter(
             novel_context=novel_context,
             plan=plan,
@@ -1066,8 +1327,25 @@ def generate_next_chapter(db: Session, novel: Novel) -> Chapter:
             recent_summaries=recent_summaries,
             serialized_active=serialized_active,
             recent_full_texts=recent_full_texts,
+            chapter_no=next_no,
+            started_at=chapter_started_at,
         )
 
+        locked_novel = _commit_runtime_snapshot(
+            db,
+            locked_novel,
+            next_chapter_no=next_no,
+            stage="summary_review",
+            note=f"第 {next_no} 章初稿通过校验，正在更新摘要与主控台。",
+            extra={
+                **_planning_runtime_meta(locked_novel.story_bible or {}),
+                "validated": True,
+                "target_visible_chars_min": int(length_targets["target_visible_chars_min"]),
+                "target_visible_chars_max": int(length_targets["target_visible_chars_max"]),
+            },
+        )
+
+        _ensure_generation_runtime_budget(started_at=chapter_started_at, stage="chapter_summary_generation", chapter_no=next_no)
         summary = summarize_chapter(title, content)
         locked_novel.story_bible = update_story_architecture_after_chapter(
             story_bible=locked_novel.story_bible or {},
@@ -1108,7 +1386,7 @@ def generate_next_chapter(db: Session, novel: Novel) -> Chapter:
             **({"draft_payload": draft_payload} if settings.return_draft_payload_in_meta else {}),
             "llm_call_trace": get_llm_trace(),
             "serial_generation_guard": {
-                "novel_row_lock": True,
+                "generation_slot_status": "generating",
                 "llm_call_min_interval_ms": settings.llm_call_min_interval_ms,
                 "chapter_draft_max_attempts": settings.chapter_draft_max_attempts,
                 "arc_prefetch_threshold": settings.arc_prefetch_threshold,
@@ -1133,9 +1411,57 @@ def generate_next_chapter(db: Session, novel: Novel) -> Chapter:
             item.applied = True
             db.add(item)
 
+        recent_summaries_after = _serialize_recent_summaries(db, locked_novel.id)
+        planning_meta_after = _auto_prepare_future_planning(
+            db,
+            locked_novel,
+            current_chapter_no=next_no,
+            recent_summaries=recent_summaries_after,
+        )
+
+        locked_novel.story_bible = _set_live_runtime(
+            ensure_story_architecture(locked_novel.story_bible or {}, locked_novel),
+            next_chapter_no=next_no + 1,
+            stage="completed",
+            note=f"第 {next_no} 章已生成完成，主控台、目录和后续规划已同步更新。",
+            extra={
+                **planning_meta_after,
+                "last_generated_chapter_no": next_no,
+                "last_generated_title": title,
+            },
+        )
+
+        locked_novel.status = previous_status
         db.add(locked_novel)
         db.commit()
         db.refresh(chapter)
+        logger.info("chapter_generation success novel_id=%s chapter_no=%s duration_ms=%s", locked_novel.id, next_no, int((time.monotonic() - chapter_started_at) * 1000))
         return chapter
+    except GenerationError as exc:
+        logger.warning("chapter_generation failed novel_id=%s chapter_no=%s stage=%s code=%s details=%s", novel.id, locals().get("next_no", novel.current_chapter_no + 1), exc.stage, exc.code, exc.details)
+        db.rollback()
+        _persist_generation_failure_snapshot(
+            db,
+            novel_id=novel.id,
+            restore_status=previous_status,
+            next_chapter_no=locals().get("next_no", novel.current_chapter_no + 1),
+            stage=exc.stage,
+            message=exc.message,
+            details=exc.details or {},
+        )
+        raise
+    except Exception as exc:
+        logger.exception("chapter_generation crashed novel_id=%s chapter_no=%s", novel.id, locals().get("next_no", novel.current_chapter_no + 1))
+        db.rollback()
+        _persist_generation_failure_snapshot(
+            db,
+            novel_id=novel.id,
+            restore_status=previous_status,
+            next_chapter_no=locals().get("next_no", novel.current_chapter_no + 1),
+            stage="chapter_generation",
+            message="章节生成流程出现未识别异常，已中止本次生成。",
+            details={"error_type": type(exc).__name__},
+        )
+        raise
     finally:
         clear_llm_trace()

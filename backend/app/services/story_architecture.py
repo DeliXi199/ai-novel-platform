@@ -10,6 +10,9 @@ from app.models.novel import Novel
 from app.schemas.novel import NovelCreate
 
 
+STORY_BIBLE_SCHEMA_VERSION = 2
+STORY_BIBLE_ARCHITECTURE = "manual_architecture_v3_optimized"
+
 DEFAULT_CONTINUITY_RULES = [
     "主角每章都要有行动、判断、试探、隐藏或反击，不能整章只被剧情推着走。",
     "每章都要有新变化：得到信息、失去退路、关系变化、暴露风险或世界认知升级。",
@@ -25,6 +28,17 @@ def _text(value: Any, fallback: str = "") -> str:
 
 def _safe_list(value: Any) -> list:
     return value if isinstance(value, list) else []
+
+
+def _ensure_story_bible_meta(story_bible: dict[str, Any]) -> dict[str, Any]:
+    meta = story_bible.setdefault("story_bible_meta", {})
+    meta["schema_version"] = STORY_BIBLE_SCHEMA_VERSION
+    meta.setdefault("architecture", STORY_BIBLE_ARCHITECTURE)
+    meta.setdefault("migration_notes", [
+        "story_bible 增加 schema_version，用于后续兼容升级。",
+        "control_console 与 workflow_state 继续由 ensure_story_architecture 自动补齐。",
+    ])
+    return story_bible
 
 
 def _sell_line(payload: NovelCreate) -> str:
@@ -293,19 +307,25 @@ def refresh_planning_views(story_bible: dict[str, Any], current_chapter_no: int 
         queue.extend(_chapter_cards_from_arc(pending_arc)[:remaining])
 
     console["chapter_card_queue"] = queue[:7]
+    outline_state = story_bible.get("outline_state") or {}
     console["planning_status"] = {
         "documents_only_bootstrap": True,
+        "auto_planning_enabled": True,
+        "planned_until": int(outline_state.get("planned_until", 0) or 0),
+        "next_arc_no": int(outline_state.get("next_arc_no", 0) or 0),
         "active_arc": {
             "arc_no": int(active_arc.get("arc_no", 0) or 0),
             "start_chapter": int(active_arc.get("start_chapter", 0) or 0),
             "end_chapter": int(active_arc.get("end_chapter", 0) or 0),
             "focus": _text(active_arc.get("focus"), ""),
+            "bridge_note": _text(active_arc.get("bridge_note"), ""),
         },
         "pending_arc": {
             "arc_no": int(pending_arc.get("arc_no", 0) or 0),
             "start_chapter": int(pending_arc.get("start_chapter", 0) or 0),
             "end_chapter": int(pending_arc.get("end_chapter", 0) or 0),
             "focus": _text(pending_arc.get("focus"), ""),
+            "bridge_note": _text(pending_arc.get("bridge_note"), ""),
         } if pending_arc else None,
         "ready_chapter_cards": [int(item.get("chapter_no", 0) or 0) for item in queue[:7]],
     }
@@ -377,7 +397,7 @@ def compose_story_bible(
     global_outline: dict[str, Any],
     first_arc: dict[str, Any],
 ) -> dict[str, Any]:
-    story_bible = deepcopy(base_story_bible)
+    story_bible = _ensure_story_bible_meta(deepcopy(base_story_bible))
     story_bible["project_card"] = build_project_card(payload, title, global_outline)
     story_bible["world_bible"] = _default_world_bible(payload)
     story_bible["cultivation_system"] = _default_cultivation_system(payload)
@@ -437,7 +457,7 @@ def update_volume_card_statuses(story_bible: dict[str, Any], current_chapter_no:
 
 
 def ensure_story_architecture(story_bible: dict[str, Any], novel: Novel) -> dict[str, Any]:
-    story_bible = deepcopy(story_bible or {})
+    story_bible = _ensure_story_bible_meta(deepcopy(story_bible or {}))
     payload = NovelCreate(
         genre=novel.genre,
         premise=novel.premise,

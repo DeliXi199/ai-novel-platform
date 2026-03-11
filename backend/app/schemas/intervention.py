@@ -10,6 +10,12 @@ class InterventionCreate(BaseModel):
     effective_chapter_span: int = Field(default=5, ge=1, le=100)
 
 
+class InterventionListResponse(BaseModel):
+    novel_id: int
+    total: int
+    items: list["InterventionResponse"] = Field(default_factory=list)
+
+
 class InterventionResponse(BaseModel):
     id: int
     novel_id: int
@@ -21,3 +27,6 @@ class InterventionResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+InterventionListResponse.model_rebuild()
