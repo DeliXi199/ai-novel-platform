@@ -9,8 +9,8 @@ import {
   normalizeChapterPayload,
   buildBookshelfItemNode,
   getCurrentChapterIndex,
-} from "/app/assets/app/core.js?v=20260313b";
-import { buildChapterCardNode } from "/app/assets/app/ui_helpers.js?v=20260313b";
+} from "/app/assets/app/core.js?v=20260313d";
+import { buildChapterCardNode } from "/app/assets/app/ui_helpers.js?v=20260313d";
 
 export function setTopbar() {
   if (!refs.topbarTitle) return;
@@ -282,6 +282,7 @@ export function renderReaderMode({ onSelectChapter }) {
     refs.readerPageContent.textContent = "这里会显示章节正文。";
     refs.readerPrevBtn.disabled = true;
     refs.readerNextBtn.disabled = true;
+    renderReaderAudio();
     return;
   }
 
@@ -294,6 +295,7 @@ export function renderReaderMode({ onSelectChapter }) {
     refs.readerPageContent.innerHTML = "<p>当前章节数据为空，已启用阅读页容错。</p>";
     refs.readerPrevBtn.disabled = true;
     refs.readerNextBtn.disabled = true;
+    renderReaderAudio();
     return;
   }
   refs.readerPageEyebrow.textContent = `第 ${chapter.chapter_no} 章`;
@@ -302,6 +304,7 @@ export function renderReaderMode({ onSelectChapter }) {
   refs.readerPageContent.innerHTML = formatParagraphs(chapter.content);
   refs.readerPrevBtn.disabled = index <= 0;
   refs.readerNextBtn.disabled = index < 0 || index >= state.chapters.length - 1;
+  renderReaderAudio();
 }
 
 export function syncReaderUrl() {
@@ -311,3 +314,101 @@ export function syncReaderUrl() {
   url.searchParams.set("chapterNo", String(state.selectedChapterNo));
   window.history.replaceState({}, "", url.toString());
 }
+
+
+export function renderReaderAudio() {
+  if (!refs.readerAudioPanel || !isReaderMode) return;
+  const status = state.tts.status;
+  const audio = refs.readerAudioPlayer;
+  const track = refs.readerAudioSubtitleTrack;
+  const voiceSelect = refs.readerVoiceSelect;
+  const playbackSelect = refs.readerPlaybackVoiceSelect;
+  const voiceOptions = Array.isArray(status?.voice_options) && status.voice_options.length
+    ? status.voice_options
+    : [
+        { value: "zh-CN-YunxiNeural", label: "云希（男声，沉稳）" },
+        { value: "zh-CN-XiaoxiaoNeural", label: "晓晓（女声，通用）" },
+      ];
+  const generatedVariants = Array.isArray(status?.generated_variants) ? status.generated_variants : [];
+  const selectedVoice = state.tts.selectedVoice || status?.voice || voiceOptions[0]?.value || "";
+
+  if (voiceSelect) {
+    voiceSelect.innerHTML = voiceOptions
+      .map((item) => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`)
+      .join("");
+    voiceSelect.value = voiceOptions.some((item) => item.value === selectedVoice) ? selectedVoice : voiceOptions[0]?.value || "";
+  }
+
+  if (playbackSelect) {
+    if (generatedVariants.length) {
+      playbackSelect.innerHTML = generatedVariants
+        .map((item) => `<option value="${escapeHtml(item.voice)}">${escapeHtml(item.voice_label)}</option>`)
+        .join("");
+      const desiredPlaybackVoice = [state.tts.playbackVoice, selectedVoice, generatedVariants[0]?.voice].find((value) => generatedVariants.some((item) => item.voice === value));
+      state.tts.playbackVoice = desiredPlaybackVoice || generatedVariants[0]?.voice || null;
+      playbackSelect.value = state.tts.playbackVoice || generatedVariants[0]?.voice || "";
+      playbackSelect.disabled = false;
+    } else {
+      playbackSelect.innerHTML = '<option value="">暂无已生成音频</option>';
+      playbackSelect.value = "";
+      playbackSelect.disabled = true;
+      state.tts.playbackVoice = null;
+    }
+  }
+
+  const activeVariant = generatedVariants.find((item) => item.voice === state.tts.playbackVoice) || null;
+  const selectedVoiceReady = !!(status?.ready && status?.voice === (voiceSelect?.value || selectedVoice));
+
+  if (!state.selectedChapter) {
+    refs.readerAudioStatus.textContent = "选择章节后可生成朗读音频。";
+    refs.readerAudioStatus.className = "reader-audio-status subtle-text";
+    refs.readerGenerateTtsBtn.disabled = true;
+    refs.readerRegenerateTtsBtn.disabled = true;
+    refs.readerPlayTtsBtn.disabled = true;
+    refs.readerPauseTtsBtn.disabled = true;
+    refs.readerDownloadTtsBtn.disabled = true;
+    refs.readerDownloadSubtitleBtn.disabled = true;
+    if (audio) {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+    }
+    if (track) track.removeAttribute("src");
+    return;
+  }
+
+  const statusTone = state.tts.statusTone || (selectedVoiceReady ? "ready" : status?.enabled === false ? "error" : "info");
+  refs.readerAudioStatus.textContent = state.tts.statusText || status?.reason || "选择音色后可生成朗读音频。";
+  refs.readerAudioStatus.className = `reader-audio-status subtle-text ${statusTone}`;
+
+  const audioUrl = activeVariant?.audio_url || "";
+  if (audio) {
+    if (audioUrl) {
+      const absoluteUrl = new URL(audioUrl, window.location.origin).toString();
+      if (audio.src !== absoluteUrl) {
+        audio.pause();
+        audio.src = audioUrl;
+        if (track) {
+          if (activeVariant?.subtitle_url) track.src = activeVariant.subtitle_url;
+          else track.removeAttribute("src");
+        }
+        audio.load();
+      }
+    } else if (audio.getAttribute("src")) {
+      audio.pause();
+      audio.removeAttribute("src");
+      if (track) track.removeAttribute("src");
+      audio.load();
+    }
+  }
+
+  const disabledByCapability = status?.enabled === false;
+  refs.readerGenerateTtsBtn.disabled = state.tts.busy || disabledByCapability || !state.selectedChapter;
+  refs.readerGenerateTtsBtn.textContent = state.tts.busy ? "生成中..." : (selectedVoiceReady ? "已生成" : "生成朗读音频");
+  refs.readerRegenerateTtsBtn.disabled = state.tts.busy || disabledByCapability || !state.selectedChapter;
+  refs.readerPlayTtsBtn.disabled = state.tts.busy || !activeVariant;
+  refs.readerPauseTtsBtn.disabled = !activeVariant;
+  refs.readerDownloadTtsBtn.disabled = !activeVariant;
+  refs.readerDownloadSubtitleBtn.disabled = !activeVariant?.subtitle_url;
+}
+

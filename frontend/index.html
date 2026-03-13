@@ -326,6 +326,36 @@
               <h1 id="readerPageTitle">请选择章节</h1>
               <div id="readerPageMeta" class="reader-meta subtle-text"></div>
             </div>
+            <section id="readerAudioPanel" class="reader-audio-panel">
+              <div class="reader-audio-top">
+                <div>
+                  <p class="eyebrow">章节朗读</p>
+                  <h3>Edge TTS 有声阅读</h3>
+                </div>
+                <div class="reader-audio-select-row">
+                  <label class="field compact-field reader-audio-voice-field">
+                    <span>生成音色</span>
+                    <select id="readerVoiceSelect"></select>
+                  </label>
+                  <label class="field compact-field reader-audio-voice-field">
+                    <span>播放版本</span>
+                    <select id="readerPlaybackVoiceSelect"></select>
+                  </label>
+                </div>
+              </div>
+              <div id="readerAudioStatus" class="reader-audio-status subtle-text">选择章节后可生成朗读音频。</div>
+              <div class="action-row wrap-row reader-audio-actions">
+                <button id="readerGenerateTtsBtn" class="primary-btn" type="button">生成朗读音频</button>
+                <button id="readerRegenerateTtsBtn" class="ghost-btn" type="button">重新生成</button>
+                <button id="readerPlayTtsBtn" class="ghost-btn" type="button">播放</button>
+                <button id="readerPauseTtsBtn" class="ghost-btn" type="button">暂停</button>
+                <button id="readerDownloadTtsBtn" class="ghost-btn" type="button">下载 MP3</button>
+                <button id="readerDownloadSubtitleBtn" class="ghost-btn" type="button">下载字幕</button>
+              </div>
+              <audio id="readerAudioPlayer" class="reader-audio-player" controls preload="none">
+                <track id="readerAudioSubtitleTrack" kind="captions" srclang="zh-CN" label="中文字幕" default />
+              </audio>
+            </section>
             <div id="readerPageContent" class="reader-page-content">这里会显示章节正文。</div>
           </article>
         </main>
@@ -374,6 +404,6 @@
       </article>
     </template>
 
-    <script type="module" src="/app/assets/app.js?v=20260313b"></script>
+    <script type="module" src="/app/assets/app.js?v=20260313d"></script>
   </body>
 </html>

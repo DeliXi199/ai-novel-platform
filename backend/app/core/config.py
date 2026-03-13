@@ -115,6 +115,14 @@ class Settings(BaseSettings):
     json_invalid_regeneration_attempts: int = 1
     json_repair_max_output_tokens: int = 2200
 
+    # TTS
+    tts_enabled: bool = True
+    media_root: str | None = None
+    tts_default_voice: str = "zh-CN-YunxiNeural"
+    tts_default_rate: str = "+0%"
+    tts_default_volume: str = "+0%"
+    tts_default_pitch: str = "+0Hz"
+
     @field_validator(
         "llm_provider",
         "bootstrap_llm_provider",
@@ -155,6 +163,12 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return str(self.app_env or "").lower() == "production"
+
+    @property
+    def media_root_path(self) -> Path:
+        if self.media_root:
+            return Path(self.media_root).expanduser().resolve()
+        return BACKEND_DIR / "data" / "media"
 
     @property
     def expose_diagnostic_runtime(self) -> bool:

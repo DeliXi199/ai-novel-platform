@@ -103,3 +103,51 @@ class SerialModeResponse(BaseModel):
     novel_id: int
     delivery_mode: DeliveryMode
     serial_runtime: dict[str, Any] = Field(default_factory=dict)
+
+
+class ChapterTtsVoiceOption(BaseModel):
+    value: str
+    label: str
+
+
+class ChapterTtsGeneratedVariant(BaseModel):
+    voice: str
+    voice_label: str
+    rate: str
+    volume: str
+    pitch: str
+    audio_url: str
+    subtitle_url: str | None = None
+    file_size_bytes: int | None = None
+    subtitle_file_size_bytes: int | None = None
+    generated_at: datetime | None = None
+
+
+class ChapterTtsStatusResponse(BaseModel):
+    novel_id: int
+    chapter_no: int
+    title: str
+    enabled: bool = True
+    ready: bool = False
+    generating: bool = False
+    stale: bool = False
+    voice: str
+    rate: str
+    volume: str
+    pitch: str
+    audio_url: str | None = None
+    subtitle_url: str | None = None
+    file_size_bytes: int | None = None
+    subtitle_file_size_bytes: int | None = None
+    generated_at: datetime | None = None
+    reason: str | None = None
+    voice_options: list[ChapterTtsVoiceOption] = Field(default_factory=list)
+    generated_variants: list[ChapterTtsGeneratedVariant] = Field(default_factory=list)
+
+
+class ChapterTtsGenerateRequest(BaseModel):
+    voice: str | None = None
+    rate: str | None = None
+    volume: str | None = None
+    pitch: str | None = None
+    force_regenerate: bool = False

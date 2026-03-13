@@ -16,8 +16,18 @@ from app.schemas.chapter import (
     ChapterPublishBatchRequest,
     ChapterPublishBatchResponse,
     ChapterResponse,
+    ChapterTtsGenerateRequest,
+    ChapterTtsStatusResponse,
 )
 from app.services.chapter_generation import generate_next_chapter, generate_next_chapters_batch
+from app.services.edge_tts_service import (
+    EdgeTtsBadRequestError,
+    EdgeTtsBusyError,
+    EdgeTtsError,
+    EdgeTtsUnavailableError,
+    generate_chapter_tts,
+    get_chapter_tts_status,
+)
 from app.services.export_service import export_novel_bytes
 from app.services.generation_exceptions import GenerationError
 from app.services.hard_fact_guard import validate_and_register_chapter
@@ -36,6 +46,18 @@ from .novel_common import (
 )
 
 router = APIRouter(prefix="/novels", tags=["novels"])
+
+
+def _require_chapter(db: Session, novel_id: int, chapter_no: int) -> Chapter:
+    chapter = (
+        db.query(Chapter)
+        .filter(Chapter.novel_id == novel_id, Chapter.chapter_no == chapter_no)
+        .first()
+    )
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+    return chapter
+
 
 
 @router.get("/{novel_id}/chapters", response_model=ChapterListResponse)
@@ -208,14 +230,54 @@ def delete_tail_chapters(novel_id: int, payload: ChapterDeleteTailRequest, db: S
 
 @router.get("/{novel_id}/chapters/{chapter_no}", response_model=ChapterResponse)
 def get_chapter(novel_id: int, chapter_no: int, db: Session = Depends(get_db)):
-    chapter = (
-        db.query(Chapter)
-        .filter(Chapter.novel_id == novel_id, Chapter.chapter_no == chapter_no)
-        .first()
-    )
-    if not chapter:
-        raise HTTPException(status_code=404, detail="Chapter not found")
-    return chapter
+    return _require_chapter(db, novel_id, chapter_no)
+
+
+
+
+@router.get("/{novel_id}/chapters/{chapter_no}/tts", response_model=ChapterTtsStatusResponse)
+def get_chapter_tts(
+    novel_id: int,
+    chapter_no: int,
+    voice: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    chapter = _require_chapter(db, novel_id, chapter_no)
+    return get_chapter_tts_status(chapter, {"voice": voice} if voice else None)
+
+
+@router.post("/{novel_id}/chapters/{chapter_no}/tts/generate", response_model=ChapterTtsStatusResponse)
+def generate_chapter_tts_audio(
+    novel_id: int,
+    chapter_no: int,
+    payload: ChapterTtsGenerateRequest,
+    db: Session = Depends(get_db),
+):
+    chapter = _require_chapter(db, novel_id, chapter_no)
+    try:
+        status = generate_chapter_tts(
+            chapter,
+            {
+                "voice": payload.voice,
+                "rate": payload.rate,
+                "volume": payload.volume,
+                "pitch": payload.pitch,
+            },
+            force_regenerate=payload.force_regenerate,
+        )
+    except EdgeTtsUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except EdgeTtsBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except EdgeTtsBadRequestError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except EdgeTtsError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    db.add(chapter)
+    db.commit()
+    db.refresh(chapter)
+    return status
 
 
 @router.get("/{novel_id}/export")

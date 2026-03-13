@@ -26,6 +26,14 @@ export const state = {
     preparing: false,
     deleting: false,
   },
+  tts: {
+    status: null,
+    busy: false,
+    selectedVoice: "zh-CN-YunxiNeural",
+    playbackVoice: null,
+    statusTone: "info",
+    statusText: "选择章节后可生成朗读音频。",
+  },
 };
 
 export const refs = {
@@ -95,6 +103,18 @@ export const refs = {
   readerTocToggleBtn: document.getElementById("readerTocToggleBtn"),
   readerToc: document.getElementById("readerToc"),
   readerTocList: document.getElementById("readerTocList"),
+  readerAudioPanel: document.getElementById("readerAudioPanel"),
+  readerAudioStatus: document.getElementById("readerAudioStatus"),
+  readerVoiceSelect: document.getElementById("readerVoiceSelect"),
+  readerPlaybackVoiceSelect: document.getElementById("readerPlaybackVoiceSelect"),
+  readerGenerateTtsBtn: document.getElementById("readerGenerateTtsBtn"),
+  readerRegenerateTtsBtn: document.getElementById("readerRegenerateTtsBtn"),
+  readerPlayTtsBtn: document.getElementById("readerPlayTtsBtn"),
+  readerPauseTtsBtn: document.getElementById("readerPauseTtsBtn"),
+  readerDownloadTtsBtn: document.getElementById("readerDownloadTtsBtn"),
+  readerDownloadSubtitleBtn: document.getElementById("readerDownloadSubtitleBtn"),
+  readerAudioPlayer: document.getElementById("readerAudioPlayer"),
+  readerAudioSubtitleTrack: document.getElementById("readerAudioSubtitleTrack"),
 };
 
 export function escapeHtml(value) {

@@ -15,6 +15,7 @@ from app.db.init_db import init_db
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    settings.media_root_path.mkdir(parents=True, exist_ok=True)
     yield
 
 
@@ -35,6 +36,9 @@ _FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 _ASSETS_DIR = _FRONTEND_DIR / "assets"
 if _ASSETS_DIR.exists():
     app.mount("/app/assets", StaticFiles(directory=_ASSETS_DIR), name="frontend-assets")
+
+_media_dir = settings.media_root_path
+app.mount("/app/media", StaticFiles(directory=_media_dir, check_dir=False), name="frontend-media")
 
 
 @app.get("/")

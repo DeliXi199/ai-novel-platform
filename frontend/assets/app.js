@@ -11,7 +11,7 @@ import {
   renderActivity,
   hasLiveBusyTask,
   mergeNovelIntoShelf,
-} from "/app/assets/app/core.js?v=20260313b";
+} from "/app/assets/app/core.js?v=20260313d";
 import {
   updateCreatePanel,
   showConfirm,
@@ -19,7 +19,7 @@ import {
   collectStylePreferences,
   formatQualityFeedback,
   parseSseBlock,
-} from "/app/assets/app/ui_helpers.js?v=20260313b";
+} from "/app/assets/app/ui_helpers.js?v=20260313d";
 import {
   setTopbar,
   renderBookshelf,
@@ -29,8 +29,9 @@ import {
   renderCatalog,
   renderPreview,
   renderReaderMode,
+  renderReaderAudio,
   syncReaderUrl,
-} from "/app/assets/app/renderers.js?v=20260313b";
+} from "/app/assets/app/renderers.js?v=20260313d";
 
 function applyLiveRuntimePayload(payload) {
   if (!payload?.novel || !state.selectedNovelId || payload.novel.id !== state.selectedNovelId) return;
@@ -85,6 +86,116 @@ async function silentRefreshSelectedNovel({ chapterNo = null } = {}) {
     console.warn("silent refresh failed", error);
   } finally {
     state.liveRefreshInFlight = false;
+  }
+}
+
+
+
+function setTtsStatus(text, tone = "info") {
+  state.tts.statusText = text;
+  state.tts.statusTone = tone;
+  renderReaderAudio();
+}
+
+function setTtsBusy(value, text = "") {
+  state.tts.busy = value;
+  if (text) setTtsStatus(text, value ? "generating" : state.tts.statusTone || "info");
+  else renderReaderAudio();
+}
+
+function getGeneratedVariants() {
+  return Array.isArray(state.tts.status?.generated_variants) ? state.tts.status.generated_variants : [];
+}
+
+function getVoiceLabel(voice) {
+  const options = Array.isArray(state.tts.status?.voice_options) ? state.tts.status.voice_options : [];
+  const matched = options.find((item) => item.value === voice);
+  return matched?.label || voice || "未知音色";
+}
+
+function getSelectedVoice() {
+  return refs.readerVoiceSelect?.value || state.tts.selectedVoice || state.tts.status?.voice || "zh-CN-YunxiNeural";
+}
+
+function getActivePlaybackVariant() {
+  const variants = getGeneratedVariants();
+  return variants.find((item) => item.voice === state.tts.playbackVoice) || null;
+}
+
+function syncPlaybackVoice() {
+  const variants = getGeneratedVariants();
+  const preferred = [state.tts.playbackVoice, state.tts.selectedVoice, variants[0]?.voice].find((value) => variants.some((item) => item.voice === value));
+  state.tts.playbackVoice = preferred || null;
+}
+
+async function refreshChapterTtsState({ suppressErrors = false, voice = null } = {}) {
+  if (!state.selectedNovelId || !state.selectedChapterNo) {
+    state.tts.status = null;
+    state.tts.selectedVoice = "zh-CN-YunxiNeural";
+    state.tts.playbackVoice = null;
+    setTtsStatus("选择章节后可生成朗读音频。", "info");
+    return;
+  }
+  try {
+    const targetVoice = voice || state.tts.selectedVoice || getSelectedVoice();
+    const query = targetVoice ? `?voice=${encodeURIComponent(targetVoice)}` : "";
+    const status = await apiFetch(`/novels/${state.selectedNovelId}/chapters/${state.selectedChapterNo}/tts${query}`, { timeoutMs: 12000 });
+    state.tts.status = status;
+    state.tts.selectedVoice = targetVoice || status.voice || "zh-CN-YunxiNeural";
+    syncPlaybackVoice();
+    if (status.ready) {
+      setTtsStatus(`${getVoiceLabel(status.voice)} 的 MP3 已生成，可直接播放。`, "ready");
+    } else if (status.enabled === false) {
+      setTtsStatus(status.reason || "朗读功能当前不可用。", "error");
+    } else {
+      setTtsStatus(status.reason || "还没有生成本章音频。", "info");
+    }
+  } catch (error) {
+    state.tts.status = null;
+    if (!suppressErrors) showFlash(`读取朗读状态失败：${error.message}`, "error");
+    setTtsStatus("朗读状态读取失败，请稍后重试。", "error");
+  }
+}
+
+async function generateChapterTts({ forceRegenerate = false, autoplay = false } = {}) {
+  if (!state.selectedNovelId || !state.selectedChapterNo) return;
+  const targetVoice = getSelectedVoice();
+  if (!forceRegenerate && state.tts.status?.ready && state.tts.status.voice === targetVoice) {
+    state.tts.playbackVoice = targetVoice;
+    setTtsStatus(`${getVoiceLabel(targetVoice)} 的 MP3 已生成，无需重复生成。`, "ready");
+    renderReaderAudio();
+    return;
+  }
+  try {
+    setTtsBusy(true, `正在为第 ${state.selectedChapterNo} 章生成 ${getVoiceLabel(targetVoice)} 的 MP3 和字幕，请稍候...`);
+    pushActivity("朗读生成", `第 ${state.selectedChapterNo} 章开始生成 ${getVoiceLabel(targetVoice)} 的 MP3`, "info");
+    const status = await apiFetch(`/novels/${state.selectedNovelId}/chapters/${state.selectedChapterNo}/tts/generate`, {
+      method: "POST",
+      body: JSON.stringify({
+        voice: targetVoice,
+        force_regenerate: forceRegenerate,
+      }),
+    });
+    state.tts.status = status;
+    state.tts.selectedVoice = status.voice || targetVoice;
+    state.tts.playbackVoice = status.voice || targetVoice;
+    setTtsStatus(`${getVoiceLabel(state.tts.playbackVoice)} 的 MP3 与字幕已生成。`, "ready");
+    renderReaderAudio();
+    showFlash(`第 ${state.selectedChapterNo} 章 ${getVoiceLabel(state.tts.playbackVoice)} 版本已生成`, "success");
+    pushActivity("朗读完成", `第 ${state.selectedChapterNo} 章 ${getVoiceLabel(state.tts.playbackVoice)} 版本已就绪`, "success");
+    if (autoplay && refs.readerAudioPlayer) {
+      try {
+        await refs.readerAudioPlayer.play();
+      } catch (error) {
+        showFlash("音频已生成，但浏览器拦截了自动播放，请手动点播放。", "info");
+      }
+    }
+  } catch (error) {
+    setTtsStatus(`朗读生成失败：${error.message}`, "error");
+    showFlash(`朗读生成失败：${error.message}`, "error");
+    pushActivity("朗读失败", error.message, "error");
+  } finally {
+    setTtsBusy(false);
   }
 }
 
@@ -156,6 +267,9 @@ async function loadNovelBundle(novelId, { desiredChapterNo = null, updateReaderU
   const targetChapterNo = desiredChapterNo && state.chapters.some((item) => item.chapter_no === desiredChapterNo) ? desiredChapterNo : fallbackChapterNo;
   state.selectedChapterNo = targetChapterNo;
   state.selectedChapter = targetChapterNo ? normalizeChapterPayload(await apiFetch(`/novels/${novelId}/chapters/${targetChapterNo}`, { timeoutMs: 12000 })) : null;
+  state.tts.status = null;
+  state.tts.selectedVoice = "zh-CN-YunxiNeural";
+  state.tts.playbackVoice = null;
   state.lastBundleRefreshAt = Date.now();
 
   renderBookshelf({ onSelectNovel: selectNovel });
@@ -166,6 +280,7 @@ async function loadNovelBundle(novelId, { desiredChapterNo = null, updateReaderU
   renderCatalog({ onSelectChapter: selectChapter, onOpenReader: openReader, onDeleteTailFrom: handleDeleteTailFrom });
   renderPreview();
   renderReaderMode({ onSelectChapter: selectChapter });
+  await refreshChapterTtsState({ suppressErrors: true });
 
   const chapterNoField = refs.interventionForm?.elements?.namedItem("chapter_no");
   if (chapterNoField) chapterNoField.value = Math.max((state.selectedNovel?.current_chapter_no || 0) + 1, 1);
@@ -212,6 +327,9 @@ async function selectChapter(chapterNo, { updateUrl = false } = {}) {
   if (!state.selectedNovelId) return;
   state.selectedChapterNo = chapterNo;
   state.selectedChapter = null;
+  state.tts.status = null;
+  state.tts.selectedVoice = "zh-CN-YunxiNeural";
+  state.tts.playbackVoice = null;
   renderCatalog({ onSelectChapter: selectChapter, onOpenReader: openReader, onDeleteTailFrom: handleDeleteTailFrom });
   renderPreview();
   renderReaderMode({ onSelectChapter: selectChapter });
@@ -219,6 +337,7 @@ async function selectChapter(chapterNo, { updateUrl = false } = {}) {
     state.selectedChapter = normalizeChapterPayload(await apiFetch(`/novels/${state.selectedNovelId}/chapters/${chapterNo}`));
     renderPreview();
     renderReaderMode({ onSelectChapter: selectChapter });
+    await refreshChapterTtsState({ suppressErrors: true });
     if (updateUrl) syncReaderUrl();
   } catch (error) {
     state.selectedChapter = null;
@@ -591,6 +710,52 @@ function attachReaderEvents() {
   refs.readerTocToggleBtn?.addEventListener("click", () => {
     refs.readerToc.classList.toggle("hidden");
   });
+  refs.readerVoiceSelect?.addEventListener("change", async () => {
+    state.tts.selectedVoice = refs.readerVoiceSelect.value;
+    const existingVariant = getGeneratedVariants().find((item) => item.voice === state.tts.selectedVoice);
+    if (existingVariant) state.tts.playbackVoice = existingVariant.voice;
+    await refreshChapterTtsState({ suppressErrors: true, voice: state.tts.selectedVoice });
+  });
+  refs.readerPlaybackVoiceSelect?.addEventListener("change", () => {
+    state.tts.playbackVoice = refs.readerPlaybackVoiceSelect.value || null;
+    const active = getActivePlaybackVariant();
+    if (active) setTtsStatus(`当前播放版本已切换为 ${active.voice_label}。`, "ready");
+    else renderReaderAudio();
+  });
+  refs.readerGenerateTtsBtn?.addEventListener("click", () => generateChapterTts({ autoplay: true }));
+  refs.readerRegenerateTtsBtn?.addEventListener("click", () => generateChapterTts({ forceRegenerate: true, autoplay: true }));
+  refs.readerPlayTtsBtn?.addEventListener("click", async () => {
+    if (!refs.readerAudioPlayer) return;
+    try {
+      await refs.readerAudioPlayer.play();
+    } catch (error) {
+      showFlash("浏览器没有允许直接播放，请点播放器上的播放按钮再试。", "info");
+    }
+  });
+  refs.readerPauseTtsBtn?.addEventListener("click", () => refs.readerAudioPlayer?.pause());
+  refs.readerDownloadTtsBtn?.addEventListener("click", () => {
+    const active = getActivePlaybackVariant();
+    if (!active?.audio_url) return;
+    const link = document.createElement("a");
+    link.href = active.audio_url;
+    link.download = `chapter-${state.selectedChapterNo || "audio"}-${active.voice}.mp3`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  });
+  refs.readerDownloadSubtitleBtn?.addEventListener("click", () => {
+    const active = getActivePlaybackVariant();
+    if (!active?.subtitle_url) return;
+    const link = document.createElement("a");
+    link.href = active.subtitle_url;
+    link.download = `chapter-${state.selectedChapterNo || "audio"}-${active.voice}.vtt`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  });
+  refs.readerAudioPlayer?.addEventListener("play", renderReaderAudio);
+  refs.readerAudioPlayer?.addEventListener("pause", renderReaderAudio);
+  refs.readerAudioPlayer?.addEventListener("ended", renderReaderAudio);
 }
 
 function attachCommonEvents() {
