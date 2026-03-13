@@ -4,6 +4,7 @@ from sqlalchemy import DateTime, Float, ForeignKey, Integer, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.models.time_utils import utcnow_naive
 
 
 class Character(Base):
@@ -16,7 +17,7 @@ class Character(Base):
     core_profile: Mapped[dict] = mapped_column(JSON, default=dict)
     dynamic_state: Mapped[dict] = mapped_column(JSON, default=dict)
     reader_weight: Mapped[float] = mapped_column(Float, default=1.0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
 
     novel = relationship("Novel", back_populates="characters")

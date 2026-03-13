@@ -4,6 +4,7 @@ from sqlalchemy import DateTime, ForeignKey, Integer, JSON, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.models.time_utils import utcnow_naive
 
 
 class ChapterSummary(Base):
@@ -16,6 +17,6 @@ class ChapterSummary(Base):
     new_clues: Mapped[list] = mapped_column(JSON, default=list)
     open_hooks: Mapped[list] = mapped_column(JSON, default=list)
     closed_hooks: Mapped[list] = mapped_column(JSON, default=list)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
     chapter = relationship("Chapter", back_populates="summary")

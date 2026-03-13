@@ -1,10 +1,20 @@
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
+from app.core.config import settings
 from app.services.generation_exceptions import GenerationError
 from app.services.llm_runtime import get_llm_runtime_config, ping_generation_provider
 
 router = APIRouter()
+
+
+def _safe_runtime_payload(payload: dict | None) -> dict:
+    base = dict(payload or {})
+    if settings.expose_diagnostic_runtime:
+        return base
+    base.pop("api_key_masked", None)
+    base.pop("base_url", None)
+    return base
 
 
 @router.get("/health")
@@ -13,12 +23,20 @@ def health_check() -> dict:
 
 
 @router.get("/health/llm")
-def llm_health(ping: bool = Query(False, description="是否实际请求一次模型接口做连通性测试")):
-    base = get_llm_runtime_config()
+def llm_health(
+    ping: bool = Query(False, description="是否实际请求一次模型接口做连通性测试"),
+    stage: str = Query("default", description="default 或 bootstrap；bootstrap 会按初始化阶段配置做测试"),
+):
+    effective_stage = "global_outline_generation" if stage == "bootstrap" else None
+    base = _safe_runtime_payload(get_llm_runtime_config(effective_stage))
     if not ping:
         return {"status": "ok", "llm": base, "ping_performed": False}
     try:
-        return {"status": "ok", "llm": ping_generation_provider(), "ping_performed": True}
+        return {
+            "status": "ok",
+            "llm": _safe_runtime_payload(ping_generation_provider(effective_stage or "llm_ping")),
+            "ping_performed": True,
+        }
     except GenerationError as exc:
         payload = {
             "status": "error",

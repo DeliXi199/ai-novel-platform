@@ -4,6 +4,7 @@ from sqlalchemy import DateTime, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.models.time_utils import utcnow_naive
 
 
 class Novel(Base):
@@ -18,8 +19,8 @@ class Novel(Base):
     story_bible: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(50), default="active")
     current_chapter_no: Mapped[int] = mapped_column(Integer, default=1)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
 
     characters = relationship("Character", back_populates="novel", cascade="all, delete-orphan")
     chapters = relationship("Chapter", back_populates="novel", cascade="all, delete-orphan")

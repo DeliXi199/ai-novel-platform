@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
+
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+BACKEND_DIR = Path(__file__).resolve().parents[2]
+DEFAULT_ENV_FILE = BACKEND_DIR / ".env"
 
 
 class Settings(BaseSettings):
@@ -18,7 +26,11 @@ class Settings(BaseSettings):
     postgres_db: str = "novel_db"
     database_url: str = "postgresql+psycopg2://novel_user:novel_password@127.0.0.1:5432/novel_db"
 
-    llm_provider: str = "openai"
+    llm_provider: str = "deepseek"
+    bootstrap_llm_provider: str | None = None
+    bootstrap_model: str | None = None
+    bootstrap_timeout_seconds: int | None = None
+    bootstrap_prefer_non_reasoning: bool = True
 
     # OpenAI
     openai_api_key: str | None = None
@@ -59,12 +71,28 @@ class Settings(BaseSettings):
     chapter_too_short_retry_attempts: int = 1
     chapter_too_short_retry_delay_ms: int = 1200
     chapter_tail_fix_attempts: int = 1
+    chapter_extension_min_llm_timeout_seconds: int = 20
+    chapter_extension_soft_min_timeout_seconds: int = 12
     chapter_tail_fix_delay_ms: int = 600
-    chapter_generation_wall_clock_limit_seconds: int = 300
+    chapter_weak_ending_retry_attempts: int = 1
+    chapter_weak_ending_retry_delay_ms: int = 900
+    chapter_generation_wall_clock_limit_seconds: int = 420
+    chapter_total_llm_attempt_cap: int = 2
+    chapter_runtime_min_llm_timeout_seconds: int = 25
+    chapter_runtime_min_remaining_for_retry_seconds: int = 45
+    chapter_runtime_summary_reserve_seconds: int = 12
+    chapter_retry_compact_prompt_after_attempt: int = 2
+    chapter_summary_force_heuristic_below_seconds: int = 30
     chapter_summary_max_output_tokens: int = 320
     chapter_summary_mode: str = "auto"
+    hard_fact_llm_review_enabled: bool = True
+    hard_fact_llm_timeout_seconds: int = 25
+    hard_fact_llm_max_output_tokens: int = 700
+    hard_fact_llm_max_conflicts_per_review: int = 4
+    hard_fact_llm_context_chars: int = 2200
     llm_call_min_interval_ms: int = 1200
     llm_trace_limit: int = 16
+    llm_api_max_retries: int = 0
     return_draft_payload_in_meta: bool = False
 
     # Dynamic length targets
@@ -78,8 +106,8 @@ class Settings(BaseSettings):
     # Layered-outline flow
     bootstrap_initial_chapters: int = 0
     global_outline_acts: int = 4
-    arc_outline_size: int = 7
-    arc_prefetch_threshold: int = 2
+    arc_outline_size: int = 5
+    arc_prefetch_threshold: int = 0
     planning_window_size: int = 7
     planning_strict_mode: bool = True
     arc_outline_chunk_size: int = 2
@@ -89,6 +117,8 @@ class Settings(BaseSettings):
 
     @field_validator(
         "llm_provider",
+        "bootstrap_llm_provider",
+        "bootstrap_model",
         "openai_api_key",
         "openai_base_url",
         "openai_model",
@@ -105,12 +135,12 @@ class Settings(BaseSettings):
         if value is None:
             return None
         if isinstance(value, str):
-            cleaned = value.strip().strip("\"").strip("'").strip()
+            cleaned = value.strip().strip('"').strip("'").strip()
             return cleaned or None
         return value
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(DEFAULT_ENV_FILE),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -122,5 +152,26 @@ class Settings(BaseSettings):
         parts = [part.strip() for part in self.cors_allow_origins.split(",")]
         return [part for part in parts if part] or ["*"]
 
+    @property
+    def is_production(self) -> bool:
+        return str(self.app_env or "").lower() == "production"
 
-settings = Settings()
+    @property
+    def expose_diagnostic_runtime(self) -> bool:
+        return bool(self.app_debug) and not self.is_production
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings()
+
+
+class _SettingsProxy:
+    def __getattr__(self, item: str) -> Any:
+        return getattr(get_settings(), item)
+
+    def __repr__(self) -> str:
+        return repr(get_settings())
+
+
+settings = _SettingsProxy()

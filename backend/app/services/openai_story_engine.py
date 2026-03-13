@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.services.generation_exceptions import ErrorCodes, GenerationError
+from app.services.agency_modes import AGENCY_MODES
 from app.services.llm_runtime import (
     begin_llm_trace,
     call_json_response,
@@ -40,12 +41,109 @@ from app.services.prompt_templates import (
 logger = logging.getLogger(__name__)
 
 
+def _infer_event_type(goal: str, conflict: str, ending_hook: str) -> str:
+    text = f"{goal} {conflict} {ending_hook}"
+    mapping = [
+        ("危机爆发", ["危机", "围杀", "追杀", "爆发", "失控", "暴露", "追来", "围堵", "截杀"]),
+        ("冲突类", ["对峙", "交手", "斗", "冲突", "反击", "硬碰", "厮杀", "伏击"]),
+        ("反制类", ["反制", "误导", "设局", "借刀", "反咬", "栽赃", "误判"]),
+        ("潜入类", ["潜入", "夜探", "摸进", "潜行", "偷入", "暗查"]),
+        ("交易类", ["交易", "换", "买", "卖", "谈价", "交换"]),
+        ("资源获取类", ["资源", "灵石", "材料", "药", "功法", "法器", "拿到", "取得"]),
+        ("关系推进类", ["关系", "结交", "拉拢", "合作", "试探对方", "盟友", "师徒", "同门"]),
+        ("身份伪装类", ["伪装", "藏身份", "遮掩", "冒名", "装作", "假扮"]),
+        ("外部任务类", ["任务", "差事", "命令", "考核", "试炼", "委托"]),
+        ("逃避类", ["撤", "逃", "避开", "脱身", "绕开", "退走"]),
+        ("发现类", ["发现", "异样", "看见", "线索", "摸到", "察觉", "听见", "找到"]),
+    ]
+    for label, tokens in mapping:
+        if any(token in text for token in tokens):
+            return label
+    return "试探类"
+
+
+def _infer_progress_kind(goal: str, conflict: str, ending_hook: str) -> str:
+    text = f"{goal} {conflict} {ending_hook}"
+    mapping = [
+        ("资源推进", ["资源", "灵石", "材料", "药", "法器", "功法", "拿到", "取得"]),
+        ("实力推进", ["突破", "修为", "境界", "术法", "能力", "掌握"]),
+        ("关系推进", ["关系", "合作", "结交", "信任", "同盟", "师徒", "同门"]),
+        ("地点推进", ["进城", "进山", "去", "转入", "新场景", "新地点", "地图"]),
+        ("风险升级", ["盯上", "暴露", "危机", "追查", "失控", "敌意", "围堵"]),
+    ]
+    for label, tokens in mapping:
+        if any(token in text for token in tokens):
+            return label
+    return "信息推进"
+
+
+def _infer_hook_kind(ending_hook: str, hook_style: str | None = None) -> str:
+    text = f"{ending_hook} {hook_style or ''}"
+    mapping = [
+        ("新威胁", ["危险", "逼近", "追来", "盯上", "杀机", "围堵"]),
+        ("新发现", ["发现", "异样", "真相", "线索", "反应"]),
+        ("新任务", ["任务", "委托", "命令", "考核"]),
+        ("身份暴露风险", ["暴露", "识破", "认出", "露馅"]),
+        ("意外收获隐患", ["收获", "代价", "副作用", "隐患"]),
+        ("关键人物动作", ["来客", "出手", "现身", "动作", "选择"]),
+    ]
+    for label, tokens in mapping:
+        if any(token in text for token in tokens):
+            return label
+    return "更大谜团"
+
+
+def _infer_proactive_move(goal: str, conflict: str, event_type: str) -> str:
+    text = f"{goal} {conflict}"
+    mapping = [
+        ("主动试探他人", ["试探", "套话", "探口风"]),
+        ("主动获取资源", ["拿到", "取得", "换取", "买下", "偷到"]),
+        ("主动布置伪装", ["伪装", "遮掩", "藏", "装作", "假扮"]),
+        ("主动引导误判", ["误导", "设局", "误判", "引开", "借刀"]),
+        ("主动利用规则", ["规矩", "任务", "试炼", "借规则"]),
+        ("主动绕开危险", ["绕开", "避开", "脱身", "退走"]),
+    ]
+    for label, tokens in mapping:
+        if any(token in text for token in tokens):
+            return label
+    fallback = {
+        "冲突类": "主动反制或抢先出手",
+        "危机爆发": "主动脱身并保住关键筹码",
+        "资源获取类": "主动争取资源并建立主动权",
+        "关系推进类": "主动试探关系与交换立场",
+    }
+    return fallback.get(event_type, "主动做出判断并推动局势前进")
+
+
+def _enforce_event_type_variety(chapters: list[ChapterPlan]) -> None:
+    for idx, chapter in enumerate(chapters):
+        if idx < 2:
+            continue
+        a = chapters[idx - 2].event_type
+        b = chapters[idx - 1].event_type
+        c = chapter.event_type
+        if a and a == b == c:
+            alternatives = ["资源获取类", "关系推进类", "反制类", "外部任务类", "危机爆发", "发现类"]
+            for alt in alternatives:
+                if alt != c:
+                    chapter.event_type = alt
+                    break
+            note = str(chapter.writing_note or "").strip()
+            extra = f"本章禁止继续写成连续第三章的‘{c}’桥段，必须把重心改成‘{chapter.event_type}’，让局势真正换挡。"
+            chapter.writing_note = f"{note} {extra}".strip()
+
+
 class ChapterPlan(BaseModel):
     chapter_no: int
     title: str
     goal: str
     ending_hook: str
     chapter_type: str | None = None
+    event_type: str | None = None
+    progress_kind: str | None = None
+    proactive_move: str | None = None
+    payoff_or_pressure: str | None = None
+    hook_kind: str | None = None
     target_visible_chars_min: int | None = None
     target_visible_chars_max: int | None = None
     hook_style: str | None = None
@@ -58,6 +156,14 @@ class ChapterPlan(BaseModel):
     supporting_character_focus: str | None = None
     supporting_character_note: str | None = None
     writing_note: str | None = None
+    agency_mode: str | None = None
+    agency_mode_label: str | None = None
+    agency_style_summary: str | None = None
+    agency_opening_instruction: str | None = None
+    agency_mid_instruction: str | None = None
+    agency_discovery_instruction: str | None = None
+    agency_closing_instruction: str | None = None
+    agency_avoid: list[str] | None = None
 
 
 class StoryAct(BaseModel):
@@ -343,14 +449,36 @@ def generate_arc_outline(
             ch.discovery = "给出一个具体而可感的发现，推动本章信息增量。"
         if not ch.closing_image:
             ch.closing_image = "结尾收在一个可见可感的画面上，而不是抽象总结。"
+        ch.event_type = str(ch.event_type or _infer_event_type(ch.goal, ch.conflict or "", ch.ending_hook)).strip()[:12]
+        ch.progress_kind = str(ch.progress_kind or _infer_progress_kind(ch.goal, ch.conflict or "", ch.ending_hook)).strip()[:12]
+        ch.proactive_move = str(ch.proactive_move or _infer_proactive_move(ch.goal, ch.conflict or "", ch.event_type)).strip()[:24]
+        ch.payoff_or_pressure = str(ch.payoff_or_pressure or f"本章至少完成一次{ch.progress_kind}，并给出明确回报或压力升级。").strip()[:42]
+        ch.hook_kind = str(ch.hook_kind or _infer_hook_kind(ch.ending_hook, ch.hook_style)).strip()[:16]
         if ch.supporting_character_focus:
             ch.supporting_character_focus = str(ch.supporting_character_focus).strip()[:20]
         if ch.supporting_character_note:
             ch.supporting_character_note = str(ch.supporting_character_note).strip()[:80]
         if not ch.writing_note:
-            ch.writing_note = "正文阶段避免模板句，保持单场景推进与自然收束。"
+            ch.writing_note = "正文阶段避免模板句，保持单场景推进、主角主动性和自然收束。"
+        if ch.agency_mode and ch.agency_mode in AGENCY_MODES:
+            spec = AGENCY_MODES[ch.agency_mode]
+            if not ch.agency_mode_label:
+                ch.agency_mode_label = str(spec.get("label") or ch.agency_mode)
+            if not ch.agency_style_summary:
+                ch.agency_style_summary = str(spec.get("summary") or "")
+            if not ch.agency_opening_instruction:
+                ch.agency_opening_instruction = str(spec.get("opening") or "")
+            if not ch.agency_mid_instruction:
+                ch.agency_mid_instruction = str(spec.get("mid") or "")
+            if not ch.agency_discovery_instruction:
+                ch.agency_discovery_instruction = str(spec.get("discovery") or "")
+            if not ch.agency_closing_instruction:
+                ch.agency_closing_instruction = str(spec.get("closing") or "")
+            if not ch.agency_avoid:
+                ch.agency_avoid = list(spec.get("avoid") or [])
         normalized.append(ch)
         expected_no += 1
+    _enforce_event_type_variety(normalized)
     outline.chapters = normalized
     outline.arc_no = arc_no
     outline.start_chapter = start_chapter
@@ -367,6 +495,7 @@ def generate_chapter_from_plan(
     target_words: int,
     target_visible_chars_min: int,
     target_visible_chars_max: int,
+    request_timeout_seconds: int | None = None,
 ) -> ChapterDraftPayload:
     text = call_text_response(
         stage="chapter_generation",
@@ -382,6 +511,7 @@ def generate_chapter_from_plan(
             target_visible_chars_max=target_visible_chars_max,
         ),
         max_output_tokens=current_chapter_max_output_tokens(),
+        timeout_seconds=request_timeout_seconds,
     )
     content = _clean_plain_chapter_text(text, expected_title=chapter_plan.get("title"))
     data = {
@@ -398,6 +528,7 @@ def extend_chapter_text(
     reason: str,
     target_visible_chars_min: int,
     target_visible_chars_max: int,
+    request_timeout_seconds: int | None = None,
 ) -> str:
     text = call_text_response(
         stage="chapter_extension",
@@ -409,14 +540,15 @@ def extend_chapter_text(
             target_visible_chars_min=target_visible_chars_min,
             target_visible_chars_max=target_visible_chars_max,
         ),
-        max_output_tokens=min(max(current_chapter_max_output_tokens() // 2, 400), 900),
+        max_output_tokens=min(max(current_chapter_max_output_tokens() // 3, 320), 700),
+        timeout_seconds=request_timeout_seconds,
     )
     return _clean_plain_chapter_text(text, expected_title=None)
 
 
-def summarize_chapter(title: str, content: str) -> ChapterSummaryPayload:
+def summarize_chapter(title: str, content: str, request_timeout_seconds: int | None = None) -> ChapterSummaryPayload:
     mode = (getattr(settings, "chapter_summary_mode", "auto") or "auto").lower().strip()
-    if mode == "heuristic" or (mode == "auto" and provider_name() in {"groq", "deepseek"}):
+    if mode == "heuristic" or (mode == "auto" and provider_name() in {"groq", "deepseek"}) or (mode == "auto" and request_timeout_seconds is not None and request_timeout_seconds < int(getattr(settings, "chapter_summary_force_heuristic_below_seconds", 30) or 30)):
         return _heuristic_chapter_summary(title, content)
 
     try:
@@ -425,6 +557,7 @@ def summarize_chapter(title: str, content: str) -> ChapterSummaryPayload:
             system_prompt=summary_system_prompt(),
             user_prompt=summary_user_prompt(chapter_title=title, chapter_content=content),
             max_output_tokens=settings.chapter_summary_max_output_tokens,
+            timeout_seconds=request_timeout_seconds,
         )
         return _parse_labeled_summary(text)
     except GenerationError:

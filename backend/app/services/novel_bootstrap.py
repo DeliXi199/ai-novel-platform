@@ -87,12 +87,17 @@ def build_base_story_bible(payload: NovelCreate) -> dict:
             "chapter_min_visible_chars": settings.chapter_min_visible_chars,
             "chapter_max_similarity": settings.chapter_similarity_threshold,
             "forbid_silent_fallback": True,
+            "enforce_event_type_variety": True,
+            "enforce_protagonist_agency": False,
+            "enforce_effective_progress": True,
+            "enforce_hook_strength": True,
         },
         "pacing_rules": _opening_pacing_rules(payload),
         "characterization_rules": [
             "配角不能只做剧情按钮，要带一点自己的私心、职业习惯、说话方式或防备心理。",
             "重复出现的配角至少要有一个可辨认的小动作、小习惯或固定顾虑。",
             "像掌柜、摊主、帮众这类边角人物，也要先像人，再推动剧情。",
+            "同一种身份的配角也要区分：有人绕着说、有人压着说、有人表面温和实则套话。",
         ],
         "language_rules": [
             "整体保持冷峻克制，但不要整章都安全平顺，至少留一两句更具体、更有棱角的表达。",
@@ -111,6 +116,13 @@ def build_base_story_bible(payload: NovelCreate) -> dict:
             "章末不必每次都硬留悬念。",
             "有的章末可以收在人物选择、结果落地或平稳过渡上。",
             "只有真正需要时，才用异象、反转或危险逼近做强钩子。",
+            "但无论是否强悬念，章节结尾都必须回答：下一章为什么还值得继续看。",
+        ],
+        "chapter_planner_rules": [
+            "不能连续三章使用同一种主事件类型。",
+            "每章必须明确写出推进结果：信息、关系、资源、实力、风险、地点至少改变其一。",
+            "每2到3章至少安排一次主角主动布局、试探、设局、争资源或制造信息差。",
+            "不能把重复盘问、重复怀疑、重复隐藏秘密当成推进本身。",
         ],
     }
 

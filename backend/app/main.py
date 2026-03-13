@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -8,8 +9,16 @@ from fastapi.staticfiles import StaticFiles
 from app.api.routes.health import router as health_router
 from app.api.routes.novels import router as novels_router
 from app.core.config import settings
+from app.db.init_db import init_db
 
-app = FastAPI(title=settings.app_name, debug=settings.app_debug)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title=settings.app_name, debug=settings.app_debug, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

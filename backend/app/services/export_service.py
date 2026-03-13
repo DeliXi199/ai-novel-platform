@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from io import BytesIO
 
 from fastapi import HTTPException
@@ -42,7 +42,7 @@ def _build_metadata_lines(novel: Novel) -> list[str]:
         lines.append(f"限制：{forbidden_text}")
 
     lines.append(f"当前章节数：{novel.current_chapter_no}")
-    lines.append(f"导出时间：{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    lines.append(f"导出时间：{datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')} UTC")
     return lines
 
 

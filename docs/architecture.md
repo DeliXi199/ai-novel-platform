@@ -1,46 +1,67 @@
-# Architecture (Layered Outline Edition)
+# Architecture (Serial Production Edition)
 
 ## Goal
 
-将小说生成从“直接写一章”改成分层规划：
+这个项目不是“一次性生成整本小说”，而是一个面向网络连载的逐章生产系统：
 
-1. Story Bible
-2. Global Outline
-3. Arc Outline
-4. Chapter Draft
-5. Chapter Summary
+1. 初始化 Story Bible 与全书总纲
+2. 生成当前 Arc 的章节拍表
+3. 逐章生成正文
+4. 做章节质检与硬事实校验
+5. 同步长期状态、控制台与连载运行层
+6. 支持库存发布、删尾回退与继续续写
 
-## Build Flow
+## Current backend structure
+
+### API layer
+
+- `backend/app/api/routes/novels.py`：聚合入口，只负责挂载子路由
+- `backend/app/api/routes/novel_management.py`：建书、查书、删书、bootstrap 重试
+- `backend/app/api/routes/novel_runtime.py`：规划窗口、控制台、serial state、facts、serial mode
+- `backend/app/api/routes/novel_chapters.py`：章节列表、发布、删尾、导出、单章/批量生成
+- `backend/app/api/routes/novel_interventions.py`：人工干预
+- `backend/app/api/routes/novel_common.py`：共享辅助函数
+
+### Service layer
+
+- `story_architecture.py`：Story Bible / outline / console / long-term state 的主编排层
+- `story_state.py`：Story Bible 域状态访问层，统一补齐 workflow/control_console/planning_layers/story_state/serial_runtime
+- `chapter_generation.py`：逐章生成主流水线
+- `chapter_quality.py`：质量检查与反馈
+- `hard_fact_guard.py`：硬事实守卫与冲突报告
+- `novel_lifecycle.py`：bootstrap 与快照同步
+
+## Frontend structure
+
+- `frontend/assets/app.js`：工作台主编排层，连接数据加载、交互动作与页面模块
+- `frontend/assets/app/core.js`：全局状态、DOM 引用、基础工具、API 请求、活动日志
+- `frontend/assets/app/ui_helpers.js`：确认框、章节卡片、SSE block 解析、创建表单辅助
+- `frontend/assets/app/renderers.js`：书架、主控台、目录、预览、阅读页渲染
+
+## Build flow
 
 ### On novel creation
 
 - Build story bible
 - Generate global outline
-- Generate first arc outline (default 5 chapters)
-- Pre-generate first 3 chapters
+- Generate first active arc outline
+- Persist initialization packet and control console snapshot
+- Do **not** pre-generate opening chapters by default
 
 ### On next chapter request
 
-- Read current active arc
-- Use stored chapter plan directly
-- Generate chapter draft
-- Summarize chapter
-- If active arc remaining chapters <= threshold, prefetch next arc outline
-- Promote pending arc when current arc is exhausted
+- Load latest story state and active interventions
+- Ensure planning window exists
+- Read current chapter plan from queue
+- Generate draft
+- Run quality checks and hard-fact validation
+- Persist chapter, summary, runtime snapshot, serial layers
+- Prefetch next planning window when needed
 
-## Why this is faster
+## Why this structure is better
 
-The system no longer pre-generates 10 full chapters on novel creation.
-It only pre-generates:
-
-- 1 global outline
-- 1 first arc outline
-- 3 chapter drafts
-
-This reduces latency while preserving long-range coherence.
-
-## Anti-repetition strategy
-
-- Arc outline gives each chapter distinct scene / goal / conflict
-- Draft step includes anti-repetition instruction
-- Simple similarity check retries once if chapter is too similar to previous chapter
+- 路由按职责拆开后，接口层不再由一个超大文件承载全部逻辑
+- 前端进一步拆出 renderers 后，`app.js` 更像编排层，状态/API/渲染边界更清晰
+- Story Bible 现在多了一层 `story_state` 域快照，为后续拆表、状态迁移和观测埋点准备了稳定接口
+- 默认初始化不再预生成正文，更符合连载项目的真实使用方式
+- 保留单体部署优点，但内部结构更适合继续扩展

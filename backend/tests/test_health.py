@@ -22,7 +22,7 @@ def test_llm_health_without_ping() -> None:
 
 
 def test_llm_health_ping_returns_http_error(monkeypatch) -> None:
-    def _boom():
+    def _boom(*_args, **_kwargs):
         raise GenerationError(
             code="API_TIMEOUT",
             message="ping failed",

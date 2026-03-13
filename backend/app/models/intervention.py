@@ -4,6 +4,7 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.models.time_utils import utcnow_naive
 
 
 class Intervention(Base):
@@ -16,6 +17,6 @@ class Intervention(Base):
     parsed_constraints: Mapped[dict] = mapped_column(JSON, default=dict)
     effective_chapter_span: Mapped[int] = mapped_column(Integer, default=5)
     applied: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
     novel = relationship("Novel", back_populates="interventions")
