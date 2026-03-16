@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     app_debug: bool = True
     api_v1_prefix: str = "/api/v1"
     cors_allow_origins: str = "http://127.0.0.1:5173,http://localhost:5173"
+    auto_init_db_on_startup: bool = True
 
     postgres_server: str = "127.0.0.1"
     postgres_port: int = 5432
@@ -30,14 +31,13 @@ class Settings(BaseSettings):
     bootstrap_llm_provider: str | None = None
     bootstrap_model: str | None = None
     bootstrap_timeout_seconds: int | None = None
-    bootstrap_prefer_non_reasoning: bool = True
 
     # OpenAI
     openai_api_key: str | None = None
     openai_base_url: str | None = None
     openai_model: str = "gpt-5.4"
     openai_reasoning_effort: str = "medium"
-    openai_timeout_seconds: int = 120
+    openai_timeout_seconds: int = 180
     openai_max_output_tokens: int = 4000
     openai_chapter_max_output_tokens: int = 1500
 
@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     deepseek_api_key: str | None = None
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-chat"
-    deepseek_timeout_seconds: int = 120
+    deepseek_timeout_seconds: int = 180
     deepseek_max_output_tokens: int = 4000
     deepseek_chapter_max_output_tokens: int = 2200
 
@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     groq_api_key: str | None = None
     groq_base_url: str = "https://api.groq.com/openai/v1"
     groq_model: str = "openai/gpt-oss-20b"
-    groq_timeout_seconds: int = 120
+    groq_timeout_seconds: int = 180
     groq_max_output_tokens: int = 4000
     groq_chapter_max_output_tokens: int = 1800
 
@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     chapter_min_visible_chars: int = 1200
     chapter_similarity_threshold: float = 0.76
     chapter_context_mode: str = "light"
-    chapter_recent_summary_limit: int = 2
+    chapter_recent_summary_limit: int = 3
     chapter_last_excerpt_chars: int = 500
     chapter_live_hook_limit: int = 6
     chapter_recent_summary_chars: int = 120
@@ -70,21 +70,53 @@ class Settings(BaseSettings):
     chapter_draft_max_attempts: int = 2
     chapter_too_short_retry_attempts: int = 1
     chapter_too_short_retry_delay_ms: int = 1200
-    chapter_tail_fix_attempts: int = 1
-    chapter_extension_min_llm_timeout_seconds: int = 20
-    chapter_extension_soft_min_timeout_seconds: int = 12
+    chapter_tail_fix_attempts: int = 2
+    chapter_closing_enabled: bool = True
+    chapter_dynamic_continuation_enabled: bool = True
+    chapter_body_generation_ratio: float = 0.82
+    chapter_body_max_output_tokens_ratio: float = 0.78
+    chapter_body_timeout_ratio: float = 0.76
+    chapter_body_min_timeout_seconds: int = 84
+    chapter_continuation_min_timeout_seconds: int = 36
+    chapter_continuation_preferred_timeout_seconds: int = 48
+    chapter_continuation_timeout_share: float = 0.62
+    chapter_continuation_closing_reserve_seconds: int = 28
+    chapter_body_max_segments: int = 2
+    chapter_body_continuation_target_min_visible_chars: int = 360
+    chapter_body_continuation_target_max_visible_chars: int = 900
+    chapter_body_continuation_max_output_tokens: int = 720
+    chapter_body_continuation_min_growth_chars: int = 180
+    chapter_body_force_closing_margin_chars: int = 220
+    chapter_body_total_visible_chars_cap: int = 5200
+    chapter_closing_target_min_visible_chars: int = 180
+    chapter_closing_target_max_visible_chars: int = 360
+    chapter_closing_timeout_seconds: int = 28
+    chapter_closing_max_output_tokens: int = 520
+    chapter_extension_min_llm_timeout_seconds: int = 24
+    chapter_extension_soft_min_timeout_seconds: int = 14
     chapter_tail_fix_delay_ms: int = 600
     chapter_weak_ending_retry_attempts: int = 1
+    chapter_too_messy_retry_attempts: int = 1
+    chapter_too_messy_retry_delay_ms: int = 900
+    chapter_messy_ai_review_enabled: bool = True
+    chapter_messy_ai_timeout_seconds: int = 18
+    chapter_messy_ai_max_output_tokens: int = 700
     chapter_weak_ending_retry_delay_ms: int = 900
-    chapter_generation_wall_clock_limit_seconds: int = 420
-    chapter_total_llm_attempt_cap: int = 2
-    chapter_runtime_min_llm_timeout_seconds: int = 25
+    chapter_generation_wall_clock_limit_seconds: int = 600
+    chapter_total_llm_attempt_cap: int = 3
+    chapter_runtime_min_llm_timeout_seconds: int = 32
     chapter_runtime_min_remaining_for_retry_seconds: int = 45
     chapter_runtime_summary_reserve_seconds: int = 12
     chapter_retry_compact_prompt_after_attempt: int = 2
     chapter_summary_force_heuristic_below_seconds: int = 30
     chapter_summary_max_output_tokens: int = 320
     chapter_summary_mode: str = "auto"
+    chapter_title_refinement_enabled: bool = True
+    chapter_title_recent_window: int = 20
+    chapter_title_similarity_threshold: float = 0.72
+    chapter_title_refinement_candidate_count: int = 5
+    chapter_title_timeout_seconds: int = 18
+    chapter_title_max_output_tokens: int = 900
     hard_fact_llm_review_enabled: bool = True
     hard_fact_llm_timeout_seconds: int = 25
     hard_fact_llm_max_output_tokens: int = 700
@@ -92,8 +124,36 @@ class Settings(BaseSettings):
     hard_fact_llm_context_chars: int = 2200
     llm_call_min_interval_ms: int = 1200
     llm_trace_limit: int = 16
-    llm_api_max_retries: int = 0
+    llm_api_max_retries: int = 1
     return_draft_payload_in_meta: bool = False
+
+    importance_eval_ai_enabled: bool = True
+    importance_eval_timeout_seconds: int = 20
+    importance_eval_max_output_tokens: int = 360
+    importance_eval_summary_card_limit: int = 16
+    importance_eval_summary_budget_chars: int = 3000
+    importance_eval_force_keep_limit: int = 4
+    importance_eval_detail_review_limit: int = 3
+    importance_eval_detail_timeout_seconds: int = 26
+    importance_eval_detail_max_output_tokens: int = 480
+    importance_eval_planning_ai_interval_chapters: int = 2
+    importance_eval_post_chapter_ai_interval_chapters: int = 3
+    importance_eval_shortlist_retry_attempts: int = 2
+    importance_eval_shortlist_retry_backoff_ms: int = 500
+    importance_eval_detail_retry_attempts: int = 2
+    importance_eval_detail_retry_backoff_ms: int = 500
+    importance_eval_summary_refresh_interval_chapters: int = 3
+    importance_eval_exploration_slots: int = 1
+    importance_eval_activation_slots: int = 1
+    importance_eval_mainline_soft_cap: int = 4
+    importance_eval_continuous_presence_penalty: float = 8.0
+
+    local_constraint_reasoning_ai_enabled: bool = True
+    local_constraint_reasoning_timeout_seconds: int = 30
+    local_constraint_reasoning_max_output_tokens: int = 720
+    local_constraint_reasoning_retry_attempts: int = 2
+    local_constraint_reasoning_retry_backoff_ms: int = 600
+    local_constraint_reasoning_retry_timeout_increment_seconds: int = 10
 
     # Dynamic length targets
     chapter_probe_target_min_visible_chars: int = 1000
@@ -122,6 +182,9 @@ class Settings(BaseSettings):
     tts_default_rate: str = "+0%"
     tts_default_volume: str = "+0%"
     tts_default_pitch: str = "+0Hz"
+
+    async_task_max_workers: int = 2
+    async_task_recover_orphaned_on_startup: bool = True
 
     @field_validator(
         "llm_provider",

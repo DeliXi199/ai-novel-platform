@@ -22,6 +22,7 @@
 - `story_bible`：故事圣经（JSON）
 - `current_chapter_no`：当前已生成章节号
 - `status`：当前小说运行状态
+- 运行热路径索引：`updated_at`、`status + updated_at`
 
 ## 2. characters
 角色动态信息。
@@ -44,6 +45,8 @@
 - `is_published`
 - `locked_from_edit`
 - `published_at`
+- `updated_at`：章节最近一次被修改的时间，用于运行态快照缓存失效判断
+- 运行热路径索引：`novel_id + created_at`、`novel_id + serial_stage + chapter_no`、`novel_id + updated_at`
 
 ## 4. chapter_summaries
 章节结构化摘要。
@@ -63,6 +66,7 @@
 - `parsed_constraints`
 - `effective_chapter_span`
 - `applied`
+- 运行热路径索引：`novel_id + created_at`
 
 ---
 
@@ -73,6 +77,7 @@
 - `backend/alembic.ini`
 - `backend/alembic/env.py`
 - `backend/alembic/versions/20260313_0001_initial_schema.py`
+- `backend/alembic/versions/20260314_0002_runtime_snapshot_indexes.py`
 
 用途：
 

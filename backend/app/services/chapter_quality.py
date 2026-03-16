@@ -5,6 +5,7 @@ from collections import Counter
 from typing import Any, Iterable
 
 from app.services.generation_exceptions import ErrorCodes, GenerationError
+from app.services.prompt_support import compact_json
 
 
 FORBIDDEN_REGEX_RULES: list[tuple[str, str]] = [
@@ -47,20 +48,22 @@ PASSIVE_DRIFT_PATTERNS = (
     r"压下(?:这个|那点)?念头",
 )
 TRANSITION_ENDING_STYLES = {"平稳过渡", "余味收束", "normal_transition", "transition", "quiet_close"}
-STYLE_OVERUSE_RULES: list[tuple[str, int]] = [
-    (r"不是错觉", 2),
-    (r"心跳(?:快了几分|快了一拍|漏了一拍|微微一紧)", 2),
-    (r"看了片刻", 2),
-    (r"若有若无", 2),
-    (r"微弱的暖意", 2),
-    (r"温凉(?:的触感)?", 3),
-    (r"微弱", 4),
-    (r"几息", 3),
-    (r"没有再说什么", 2),
-    (r"盯着[^。！？!?]{0,12}看了片刻", 2),
-    (r"他心中一凛", 2),
-    (r"事情没有那么简单", 2),
-]
+SOFT_STYLE_CLUE_PATTERNS: tuple[str, ...] = (
+    r"不是错觉",
+    r"心跳(?:快了几分|快了一拍|漏了一拍|微微一紧)",
+    r"看了片刻",
+    r"若有若无",
+    r"微弱的暖意",
+    r"温凉(?:的触感)?",
+    r"微弱",
+    r"几息",
+    r"没有再说什么",
+    r"盯着[^。！？!?]{0,12}看了片刻",
+    r"他心中一凛",
+    r"事情没有那么简单",
+)
+MESSY_SENTENCE_REPEAT_RATIO = 0.24
+MESSY_HARD_REPEAT_RATIO = 0.34
 WEAK_ENDING_PATTERNS = [
     r"回去休息了[。！？!?]?$",
     r"暂时压下念头[。！？!?]?$",
@@ -203,66 +206,157 @@ def _ending_issue(text: str) -> str | None:
     return None
 
 
-def repair_incomplete_ending(text: str, ending_issue: str | None = None) -> str | None:
-    stripped = (text or "").rstrip()
-    if not stripped:
-        return None
-
-    issue = ending_issue or _ending_issue(stripped)
-    if not issue:
-        return stripped
-
-    def _last_terminal_index(value: str) -> int:
-        return max((value.rfind(ch) for ch in TERMINAL_PUNCTUATION), default=-1)
-
-    def _trim_to_last_complete_sentence(value: str, *, max_fragment_chars: int = 80) -> str | None:
-        last_terminal = _last_terminal_index(value)
-        if last_terminal < 0:
-            return None
-        trailing = value[last_terminal + 1 :].strip()
-        if not trailing:
-            return value[: last_terminal + 1].rstrip()
-        if len(trailing) <= max_fragment_chars:
-            return value[: last_terminal + 1].rstrip()
-        return None
-
-    if issue == "unclosed_quote":
-        repaired = stripped
-        quote_pairs = (("“", "”"), ("『", "』"), ("《", "》"), ("（", "）"), ("(", ")"), ("【", "】"), ("[", "]"))
-        for left, right in quote_pairs:
-            diff = repaired.count(left) - repaired.count(right)
-            if diff > 0:
-                repaired += right * diff
-        if repaired and repaired[-1] not in TERMINAL_PUNCTUATION:
-            repaired += "。"
-        return repaired if repaired != stripped else None
-
-    trimmed = _trim_to_last_complete_sentence(stripped, max_fragment_chars=96 if issue == "missing_terminal_punctuation" else 140)
-    if trimmed and trimmed != stripped:
-        return trimmed
-
-    if stripped[-1] in "，,、：:；;—-":
-        return stripped[:-1].rstrip() + "。"
-
-    if issue == "missing_terminal_punctuation":
-        return stripped + "。"
-
-    if issue in {"truncated_phrase", "hanging_clause"}:
-        trimmed = _trim_to_last_complete_sentence(stripped, max_fragment_chars=240)
-        if trimmed:
-            return trimmed
-        return stripped + "。"
-
-    return None
-
-
-def _style_overuse(text: str) -> dict[str, int]:
+def _style_clue_hits(text: str) -> dict[str, int]:
     hits: dict[str, int] = {}
-    for pattern, threshold in STYLE_OVERUSE_RULES:
+    for pattern in SOFT_STYLE_CLUE_PATTERNS:
         count = len(re.findall(pattern, text))
-        if count >= threshold:
+        if count > 0:
             hits[pattern] = count
     return hits
+
+
+def _sentence_units(text: str) -> list[str]:
+    return [item.strip() for item in SENTENCE_SPLIT_RE.split(text or "") if item.strip()]
+
+
+def _sentence_opening_metrics(text: str) -> dict[str, Any]:
+    counts: Counter[str] = Counter()
+    for sentence in _sentence_units(text):
+        normalized = _normalize_line(sentence)
+        if len(normalized) < 12:
+            continue
+        opening = normalized[:8]
+        if len(opening) < 6:
+            continue
+        counts[opening] += 1
+    repeated = {key: value for key, value in counts.items() if value >= 3}
+    return {
+        "repeated_opening_groups": len(repeated),
+        "repeated_opening_hits": sum(repeated.values()),
+        "repeated_openings": dict(list(sorted(repeated.items(), key=lambda item: (-item[1], item[0]))[:4])),
+    }
+
+
+def _sentence_ending_metrics(text: str) -> dict[str, Any]:
+    counts: Counter[str] = Counter()
+    for sentence in _sentence_units(text):
+        normalized = _normalize_line(sentence)
+        if len(normalized) < 12:
+            continue
+        ending = normalized[-8:]
+        if len(ending) < 6:
+            continue
+        counts[ending] += 1
+    repeated = {key: value for key, value in counts.items() if value >= 3}
+    return {
+        "repeated_ending_groups": len(repeated),
+        "repeated_ending_hits": sum(repeated.values()),
+        "repeated_endings": dict(list(sorted(repeated.items(), key=lambda item: (-item[1], item[0]))[:4])),
+    }
+
+
+def _messy_structure_metrics(text: str) -> dict[str, Any]:
+    repeated_sentence_ratio = round(_sentence_repeat_ratio(text), 4)
+    opening_metrics = _sentence_opening_metrics(text)
+    ending_metrics = _sentence_ending_metrics(text)
+    style_clues = _style_clue_hits(text)
+    style_clue_total = sum(style_clues.values())
+    style_clue_kinds = len(style_clues)
+    messy_score = 0
+    if repeated_sentence_ratio >= MESSY_SENTENCE_REPEAT_RATIO:
+        messy_score += 2
+    if int(opening_metrics.get("repeated_opening_groups") or 0) >= 1 and int(opening_metrics.get("repeated_opening_hits") or 0) >= 3:
+        messy_score += 1
+    if int(ending_metrics.get("repeated_ending_groups") or 0) >= 1 and int(ending_metrics.get("repeated_ending_hits") or 0) >= 3:
+        messy_score += 1
+    needs_ai_review = messy_score >= 2
+    hard_fail = repeated_sentence_ratio >= MESSY_HARD_REPEAT_RATIO or (
+        int(opening_metrics.get("repeated_opening_groups") or 0) >= 2
+        and int(opening_metrics.get("repeated_opening_hits") or 0) >= 6
+    )
+    return {
+        "repeated_sentence_ratio": repeated_sentence_ratio,
+        **opening_metrics,
+        **ending_metrics,
+        "style_clue_hits": style_clues,
+        "style_clue_total": style_clue_total,
+        "style_clue_kinds": style_clue_kinds,
+        "messy_score": messy_score,
+        "needs_ai_review": needs_ai_review,
+        "hard_fail": hard_fail,
+    }
+
+
+def _messy_review_excerpt(text: str, *, max_chars: int = 2200) -> str:
+    stripped = (text or "").strip()
+    if len(stripped) <= max_chars:
+        return stripped
+    head = stripped[: max_chars // 2]
+    tail = stripped[-max_chars // 2 :]
+    return f"{head}\n\n……（中间略）……\n\n{tail}"
+
+
+def _messy_ai_review(title: str, text: str, metrics: dict[str, Any]) -> dict[str, Any] | None:
+    from app.core.config import settings
+
+    if not bool(getattr(settings, "chapter_messy_ai_review_enabled", True)):
+        return None
+    try:
+        from app.services.llm_runtime import call_json_response
+    except Exception:
+        return None
+
+    system_prompt = (
+        "你是一名中文网文质检编辑，专门判断正文是否因为句式/结构重复而显得机械。"
+        "注意：不要因为某个单词出现几次就误判；重点看写法和结构是否单调、重复、像模板回环。"
+        "只输出 JSON。"
+    )
+    user_prompt = f"""
+请判断下面这段正文是否真的存在“写法和结构层面的重复过密”。
+
+判定标准：
+1. 重点看句式、句子开合方式、段内动作链是否反复撞车。
+2. 不能因为“微弱/温凉/若有若无”之类单个词重复就直接判失败。
+3. 只有当读感明显机械、句型回环严重、同一种写法反复堆叠时，才给 verdict=messy。
+4. 如果只是偶尔有安全词，但整体动作、信息和节奏仍自然，应给 verdict=ok。
+
+请输出 JSON，格式：
+{{
+  "verdict": "messy" 或 "ok",
+  "confidence": 0 到 1 的小数,
+  "problem_types": ["句式重复", "开头写法单一", "结尾写法单一", "概括腔偏重", "安全表达过密"],
+  "evidence": ["最多 3 条，简短说明问题出在哪里"],
+  "repair_brief": "一句简洁可执行的修正建议",
+  "must_change": ["最多 3 条必须改的点"],
+  "avoid": ["最多 3 条这次别再来的写法"]
+}}
+
+【标题】
+{title}
+
+【本地结构信号】
+{compact_json(metrics, max_depth=3, max_items=10, text_limit=100)}
+
+【正文】
+{_messy_review_excerpt(text)}
+""".strip()
+    try:
+        data = call_json_response(
+            stage="chapter_style_review",
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_output_tokens=int(getattr(settings, "chapter_messy_ai_max_output_tokens", 700) or 700),
+            timeout_seconds=int(getattr(settings, "chapter_messy_ai_timeout_seconds", 18) or 18),
+        )
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    verdict = str(data.get("verdict") or "").strip().lower()
+    if verdict not in {"messy", "ok"}:
+        return None
+    data["verdict"] = verdict
+    return data
 
 
 def _progress_signals(text: str) -> dict[str, int]:
@@ -459,6 +553,9 @@ def build_quality_feedback(exc: GenerationError) -> dict[str, Any]:
         "progress_ending_hits", "progress_generic_hits", "progress_plan_cues", "progress_evidence",
         "proactive_hits", "agency_fit_hits", "agency_strength", "passive_drift_hits", "passive_limit",
         "similarity", "ending_issue", "event_type", "progress_kind", "agency_mode", "agency_mode_label",
+        "repeated_sentence_ratio", "repeated_opening_groups", "repeated_opening_hits", "repeated_openings",
+        "repeated_ending_groups", "repeated_ending_hits", "repeated_endings", "style_clue_hits",
+        "style_clue_total", "style_clue_kinds", "messy_score",
     )
     for key in metrics_keys:
         if key in details and details.get(key) is not None:
@@ -475,9 +572,32 @@ def build_quality_feedback(exc: GenerationError) -> dict[str, Any]:
         add_check("段落重复")
         add_suggestion("重写重复段落，换动作链与句式，不要机械回环。")
     elif exc.code == ErrorCodes.CHAPTER_TOO_MESSY:
-        if details.get("style_hits"):
-            add_check("套话/固定句式过密")
-            add_suggestion("减少安全词和高频口头禅，换成更具体的动作、触感和判断。")
+        ai_review = details.get("ai_style_review") if isinstance(details.get("ai_style_review"), dict) else {}
+        messy_metrics = details.get("messy_metrics") if isinstance(details.get("messy_metrics"), dict) else {}
+        if ai_review:
+            for label in ai_review.get("problem_types") or []:
+                add_check(str(label).strip() or "写法重复")
+            if not feedback["failed_checks"]:
+                add_check("写法和结构重复过密")
+            repair_brief = str(ai_review.get("repair_brief") or "").strip()
+            if repair_brief:
+                add_suggestion(repair_brief)
+            for item in ai_review.get("must_change") or []:
+                add_suggestion(str(item).strip())
+            for item in ai_review.get("avoid") or []:
+                tip = str(item).strip()
+                if tip:
+                    add_suggestion(f"避免再写成：{tip}")
+        elif messy_metrics:
+            add_check("写法和结构重复过密")
+            if float(messy_metrics.get("repeated_sentence_ratio") or 0) >= MESSY_SENTENCE_REPEAT_RATIO:
+                add_suggestion("减少近似重复句，改掉同一判断句反复出现的写法。")
+            if int(messy_metrics.get("repeated_opening_groups") or 0) > 0:
+                add_suggestion("把句子开头拆开，不要连续几句都用同一种起手动作或判断。")
+            if int(messy_metrics.get("repeated_ending_groups") or 0) > 0:
+                add_suggestion("收句方式换档，别让几个句子都落在同一种尾音和结论上。")
+            if not feedback["suggestions"]:
+                add_suggestion("减少模板回环，换动作链、换判断方式、换句子开合。")
         else:
             add_check("文本噪音过多")
             add_suggestion("清掉 JSON、元提示、重复句或结构化残留，只保留正文。")
@@ -597,25 +717,40 @@ def validate_chapter_content(
             details={"title": title, "duplicates": duplicated_paragraphs[:3]},
         )
 
-    style_hits = _style_overuse(text)
-    if style_hits:
+    messy_metrics = _messy_structure_metrics(text)
+    if bool(messy_metrics.get("needs_ai_review")):
+        ai_style_review = _messy_ai_review(title, text, messy_metrics)
+        if ai_style_review and str(ai_style_review.get("verdict") or "") == "messy":
+            raise GenerationError(
+                code=ErrorCodes.CHAPTER_TOO_MESSY,
+                message="正文在写法和结构层面重复偏多，读感发机械，AI 痕迹仍然偏重。",
+                stage="chapter_quality",
+                retryable=True,
+                http_status=422,
+                details={"title": title, **messy_metrics, "messy_metrics": messy_metrics, "ai_style_review": ai_style_review},
+            )
+        if ai_style_review and str(ai_style_review.get("verdict") or "") == "ok":
+            messy_metrics["ai_review_verdict"] = "ok"
+        elif bool(messy_metrics.get("hard_fail")) or (
+            int(messy_metrics.get("repeated_opening_hits") or 0) >= 5
+            and int(messy_metrics.get("repeated_ending_hits") or 0) >= 5
+        ):
+            raise GenerationError(
+                code=ErrorCodes.CHAPTER_TOO_MESSY,
+                message="正文在句式和结构上重复过密，整体读感接近模板拼接，不适合直接入库。",
+                stage="chapter_quality",
+                retryable=True,
+                http_status=422,
+                details={"title": title, **messy_metrics, "messy_metrics": messy_metrics},
+            )
+    elif bool(messy_metrics.get("hard_fail")):
         raise GenerationError(
             code=ErrorCodes.CHAPTER_TOO_MESSY,
-            message="正文里高频口头禅或固定句式重复过多，AI 痕迹仍然偏重。",
+            message="正文在句式和结构上重复过密，整体读感接近模板拼接，不适合直接入库。",
             stage="chapter_quality",
             retryable=True,
             http_status=422,
-            details={"title": title, "style_hits": style_hits},
-        )
-
-    if _sentence_repeat_ratio(text) > 0.22:
-        raise GenerationError(
-            code=ErrorCodes.CHAPTER_TOO_MESSY,
-            message="正文内部重复句过多，整体读感接近模板拼接，不适合直接入库。",
-            stage="chapter_quality",
-            retryable=True,
-            http_status=422,
-            details={"title": title},
+            details={"title": title, **messy_metrics, "messy_metrics": messy_metrics},
         )
 
     repeated_event_type = _plan_event_repeated(chapter_plan, recent_plan_meta)

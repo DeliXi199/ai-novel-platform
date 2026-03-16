@@ -33,6 +33,11 @@ def _minimum_llm_timeout_seconds_for_stage(stage: str) -> tuple[int, int | None]
         hard_minimum = max(int(getattr(settings, "chapter_extension_min_llm_timeout_seconds", 20) or 20), 8)
         soft_minimum = max(int(getattr(settings, "chapter_extension_soft_min_timeout_seconds", 12) or 12), 8)
         return hard_minimum, min(soft_minimum, hard_minimum)
+    if stage == "chapter_title_refinement":
+        preferred = max(int(getattr(settings, "chapter_title_timeout_seconds", 18) or 18), 8)
+        hard_minimum = max(min(preferred, 18), 8)
+        soft_minimum = max(min(preferred, 12), 8)
+        return hard_minimum, soft_minimum
     return base_minimum, None
 
 

@@ -26,7 +26,7 @@ def upgrade() -> None:
         sa.Column("style_preferences", sa.JSON(), nullable=False, server_default=sa.text("'{}'::json")),
         sa.Column("story_bible", sa.JSON(), nullable=False, server_default=sa.text("'{}'::json")),
         sa.Column("status", sa.String(length=50), nullable=False, server_default="active"),
-        sa.Column("current_chapter_no", sa.Integer(), nullable=False, server_default="1"),
+        sa.Column("current_chapter_no", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.Column("updated_at", sa.DateTime(), nullable=False),
     )

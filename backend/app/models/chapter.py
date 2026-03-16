@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, Text, UniqueConstraint, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -9,7 +9,12 @@ from app.models.time_utils import utcnow_naive
 
 class Chapter(Base):
     __tablename__ = "chapters"
-    __table_args__ = (UniqueConstraint("novel_id", "chapter_no", name="uq_chapter_novel_chapter_no"),)
+    __table_args__ = (
+        UniqueConstraint("novel_id", "chapter_no", name="uq_chapter_novel_chapter_no"),
+        Index("ix_chapters_novel_created_at", "novel_id", "created_at"),
+        Index("ix_chapters_novel_serial_stage_chapter_no", "novel_id", "serial_stage", "chapter_no"),
+        Index("ix_chapters_novel_updated_at", "novel_id", "updated_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     novel_id: Mapped[int] = mapped_column(ForeignKey("novels.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -22,6 +27,7 @@ class Chapter(Base):
     locked_from_edit: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
 
     novel = relationship("Novel", back_populates="chapters")
     summary = relationship("ChapterSummary", back_populates="chapter", uselist=False, cascade="all, delete-orphan")

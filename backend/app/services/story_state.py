@@ -7,7 +7,7 @@ from app.services.story_runtime_support import (
     DEFAULT_SERIAL_DELIVERY_MODE,
     _empty_long_term_state,
     _ensure_serial_runtime,
-    _ensure_story_bible_meta,
+    ensure_story_bible_v2_structure,
 )
 
 
@@ -35,8 +35,7 @@ def ensure_story_state_domains(
     workflow_factory: WorkflowFactory | None = None,
     active_arc: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    payload = story_bible if isinstance(story_bible, dict) else {}
-    _ensure_story_bible_meta(payload)
+    payload = ensure_story_bible_v2_structure(story_bible if isinstance(story_bible, dict) else {})
     payload.setdefault("control_console", {})
     payload.setdefault("planning_layers", {})
     payload.setdefault("story_state", {})

@@ -4,7 +4,9 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.models.novel import Novel
-from app.schemas.novel import NovelCreate, NovelDeleteResponse, NovelListResponse, NovelResponse
+from app.schemas.novel import NovelCreate, NovelDeleteResponse, NovelListResponse, NovelRenameRequest, NovelResponse
+from app.schemas.task import AsyncTaskResponse
+from app.services.async_tasks import serialize_task, submit_novel_bootstrap_task
 from app.services.generation_exceptions import GenerationError
 from app.services.novel_lifecycle import (
     BOOTSTRAP_STATUS_FAILED,
@@ -66,6 +68,12 @@ def create_novel(payload: NovelCreate, db: Session = Depends(get_db)):
         raise_http_from_generation_error(exc)
 
 
+@router.post("/tasks/bootstrap", response_model=AsyncTaskResponse, status_code=status.HTTP_202_ACCEPTED)
+def create_novel_task(payload: NovelCreate, db: Session = Depends(get_db)):
+    task, reused_existing = submit_novel_bootstrap_task(db, payload=payload)
+    return serialize_task(task, reused_existing=reused_existing)
+
+
 @router.post("/{novel_id}/bootstrap/retry", response_model=NovelResponse)
 def retry_novel_bootstrap(novel_id: int, db: Session = Depends(get_db)):
     novel = require_novel(db, novel_id)
@@ -83,6 +91,23 @@ def retry_novel_bootstrap(novel_id: int, db: Session = Depends(get_db)):
 @router.get("/{novel_id}", response_model=NovelResponse)
 def get_novel(novel_id: int, db: Session = Depends(get_db)):
     return require_novel(db, novel_id)
+
+
+@router.patch("/{novel_id}/title", response_model=NovelResponse)
+def rename_novel(novel_id: int, payload: NovelRenameRequest, db: Session = Depends(get_db)):
+    novel = require_novel(db, novel_id)
+    title = (payload.title or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="小说名称不能为空")
+    novel.title = title
+    story_bible = novel.story_bible if isinstance(novel.story_bible, dict) else {}
+    if isinstance(story_bible, dict):
+        story_bible = {**story_bible, "title": title}
+        novel.story_bible = story_bible
+    db.add(novel)
+    db.commit()
+    db.refresh(novel)
+    return novel
 
 
 @router.delete("/{novel_id}", response_model=NovelDeleteResponse)

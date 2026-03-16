@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import pytest
+
 from app.api.routes import novel_chapters
 
-from .test_ui_and_novels import client, novel_id
+from .test_ui_and_novels import client, seed_data
+
+
+@pytest.fixture()
+def novel_id() -> int:
+    return seed_data()
 
 
 def test_get_chapter_tts_status_returns_payload(novel_id: int, monkeypatch) -> None:

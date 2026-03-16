@@ -9,9 +9,12 @@ from sqlalchemy.pool import StaticPool
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
+from app.models.async_task import AsyncTask
+from app.models.async_task_event import AsyncTaskEvent
 from app.models.chapter import Chapter
 from app.models.intervention import Intervention
 from app.models.novel import Novel
+from app.services.runtime_snapshot_cache import clear_runtime_snapshot_cache
 
 
 engine = create_engine(
@@ -39,6 +42,8 @@ client = TestClient(app)
 
 def seed_data() -> int:
     db = TestingSessionLocal()
+    db.query(AsyncTaskEvent).delete()
+    db.query(AsyncTask).delete()
     db.query(Intervention).delete()
     db.query(Chapter).delete()
     db.query(Novel).delete()
@@ -107,7 +112,9 @@ def seed_data() -> int:
 
 @pytest.fixture(autouse=True)
 def reset_db():
+    clear_runtime_snapshot_cache()
     seed_data()
+    clear_runtime_snapshot_cache()
 
 
 @pytest.fixture()
@@ -128,6 +135,13 @@ def test_reader_route_serves_index() -> None:
     response = client.get("/app/reader?novelId=1&chapterNo=1")
     assert response.status_code == 200
     assert "沉浸阅读模式" in response.text
+
+
+def test_create_route_serves_index() -> None:
+    response = client.get("/app/create")
+    assert response.status_code == 200
+    assert "初始化小说" in response.text
+    assert 'id="createView"' in response.text
 
 
 def test_index_contains_catalog_templates() -> None:
@@ -347,6 +361,40 @@ def test_create_novel_persists_failed_bootstrap_record(monkeypatch) -> None:
             provider="deepseek",
         )
 
+    monkeypatch.setattr(
+        "app.services.novel_lifecycle.generate_story_engine_strategy_bundle",
+        lambda *_args, **_kwargs: (
+            {
+                "story_subgenres": ["修仙"],
+                "primary_story_engine": "处境压力驱动 + 主角主动试探",
+                "opening_drive": "先把处境钉牢。",
+                "early_hook_focus": "现实压力 + 第一轮收益",
+                "protagonist_action_logic": "先判断再出手",
+                "pacing_profile": "稳中有推进",
+                "world_reveal_strategy": "先局部后整体",
+                "power_growth_strategy": "成长绑定代价",
+                "early_must_haves": ["现实压力"],
+                "avoid_tropes": ["固定药铺残页组合"],
+                "differentiation_focus": ["尽快立住这本书的推进方式"],
+                "must_establish_relationships": ["关键关系"],
+                "tone_keywords": ["冷峻", "具体"],
+            },
+            {
+                "story_promise": "前30章要有明确推进",
+                "strategic_premise": "围绕旧案和立足升级",
+                "main_conflict_axis": "立足与风险拉扯",
+                "first_30_mainline_summary": "前30章围绕立足、关系和破局推进",
+                "chapter_1_to_10": {"range": "1-10", "stage_mission": "抓住读者", "reader_hook": "第一轮收益", "frequent_elements": ["现实压力"], "limited_elements": ["重复盘问"], "relationship_tasks": ["建立关键关系"], "phase_result": "拿到立足资本"},
+                "chapter_11_to_20": {"range": "11-20", "stage_mission": "扩大地图", "reader_hook": "更高位风险", "frequent_elements": ["关系变化"], "limited_elements": ["原地试探"], "relationship_tasks": ["关键关系变化"], "phase_result": "得到新行动空间"},
+                "chapter_21_to_30": {"range": "21-30", "stage_mission": "阶段高潮", "reader_hook": "更大局势打开", "frequent_elements": ["主动布局"], "limited_elements": ["只靠气氛拖章"], "relationship_tasks": ["关系不可逆变化"], "phase_result": "进入新层级"},
+                "frequent_event_types": ["关系推进类", "资源获取类"],
+                "limited_event_types": ["连续被怀疑后被动应付"],
+                "must_establish_relationships": ["核心绑定角色"],
+                "escalation_path": ["处境压力", "局部破局"],
+                "anti_homogenization_rules": ["不要围着单一物件打转"],
+            },
+        ),
+    )
     monkeypatch.setattr("app.services.novel_lifecycle.generate_global_story_outline", _boom)
 
     response = client.post(
@@ -381,6 +429,40 @@ def test_retry_bootstrap_endpoint_recovers_failed_novel(monkeypatch) -> None:
             provider="deepseek",
         )
 
+    monkeypatch.setattr(
+        "app.services.novel_lifecycle.generate_story_engine_strategy_bundle",
+        lambda *_args, **_kwargs: (
+            {
+                "story_subgenres": ["修仙"],
+                "primary_story_engine": "处境压力驱动 + 主角主动试探",
+                "opening_drive": "先把处境钉牢。",
+                "early_hook_focus": "现实压力 + 第一轮收益",
+                "protagonist_action_logic": "先判断再出手",
+                "pacing_profile": "稳中有推进",
+                "world_reveal_strategy": "先局部后整体",
+                "power_growth_strategy": "成长绑定代价",
+                "early_must_haves": ["现实压力"],
+                "avoid_tropes": ["固定药铺残页组合"],
+                "differentiation_focus": ["尽快立住这本书的推进方式"],
+                "must_establish_relationships": ["关键关系"],
+                "tone_keywords": ["冷峻", "具体"],
+            },
+            {
+                "story_promise": "前30章要有明确推进",
+                "strategic_premise": "围绕旧案和立足升级",
+                "main_conflict_axis": "立足与风险拉扯",
+                "first_30_mainline_summary": "前30章围绕立足、关系和破局推进",
+                "chapter_1_to_10": {"range": "1-10", "stage_mission": "抓住读者", "reader_hook": "第一轮收益", "frequent_elements": ["现实压力"], "limited_elements": ["重复盘问"], "relationship_tasks": ["建立关键关系"], "phase_result": "拿到立足资本"},
+                "chapter_11_to_20": {"range": "11-20", "stage_mission": "扩大地图", "reader_hook": "更高位风险", "frequent_elements": ["关系变化"], "limited_elements": ["原地试探"], "relationship_tasks": ["关键关系变化"], "phase_result": "得到新行动空间"},
+                "chapter_21_to_30": {"range": "21-30", "stage_mission": "阶段高潮", "reader_hook": "更大局势打开", "frequent_elements": ["主动布局"], "limited_elements": ["只靠气氛拖章"], "relationship_tasks": ["关系不可逆变化"], "phase_result": "进入新层级"},
+                "frequent_event_types": ["关系推进类", "资源获取类"],
+                "limited_event_types": ["连续被怀疑后被动应付"],
+                "must_establish_relationships": ["核心绑定角色"],
+                "escalation_path": ["处境压力", "局部破局"],
+                "anti_homogenization_rules": ["不要围着单一物件打转"],
+            },
+        ),
+    )
     monkeypatch.setattr("app.services.novel_lifecycle.generate_global_story_outline", _fail_once)
     create = client.post(
         "/api/v1/novels",
@@ -475,3 +557,86 @@ def test_failed_generation_feedback_is_exposed_for_retry_prompt() -> None:
         assert runtime.get("retry_feedback", {}).get("problem") == "上一版草稿主角偏被动"
     finally:
         db.close()
+
+
+def test_workspace_endpoint_returns_aggregated_payload(novel_id: int) -> None:
+    response = client.get(f"/api/v1/novels/{novel_id}/workspace")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["novel"]["id"] == novel_id
+    assert payload["chapters"]["total"] == 3
+    assert payload["console_data"]["novel_id"] == novel_id
+    assert payload["planning_data"]["novel_id"] == novel_id
+    assert payload["interventions"]["total"] == 1
+    assert payload["selected_chapter_no"] == 3
+    assert payload["selected_chapter"]["chapter_no"] == 3
+
+
+
+def test_workspace_endpoint_honors_desired_chapter(novel_id: int) -> None:
+    response = client.get(f"/api/v1/novels/{novel_id}/workspace?desired_chapter_no=2")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["selected_chapter_no"] == 2
+    assert payload["selected_chapter"]["title"] == "河滩碎骨"
+
+
+def test_control_console_uses_runtime_snapshot_cache(novel_id: int, monkeypatch) -> None:
+    from app.api.routes import novel_common
+
+    calls = {"count": 0}
+    original = novel_common.sync_story_bible_snapshot
+
+    def _counted(*args, **kwargs):
+        calls["count"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(novel_common, "sync_story_bible_snapshot", _counted)
+
+    first = client.get(f"/api/v1/novels/{novel_id}/control-console")
+    second = client.get(f"/api/v1/novels/{novel_id}/control-console")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert calls["count"] == 1
+
+
+def test_runtime_snapshot_cache_invalidates_after_chapter_update(novel_id: int, monkeypatch) -> None:
+    from app.api.routes import novel_common
+
+    calls = {"count": 0}
+    original = novel_common.sync_story_bible_snapshot
+
+    def _counted(*args, **kwargs):
+        calls["count"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(novel_common, "sync_story_bible_snapshot", _counted)
+
+    first = client.get(f"/api/v1/novels/{novel_id}/control-console")
+    assert first.status_code == 200
+    assert calls["count"] == 1
+
+    db = TestingSessionLocal()
+    try:
+        chapter = db.query(Chapter).filter(Chapter.novel_id == novel_id, Chapter.chapter_no == 3).first()
+        assert chapter is not None
+        chapter.content = chapter.content + " 新的尾声异动。"
+        db.add(chapter)
+        db.commit()
+    finally:
+        db.close()
+
+    second = client.get(f"/api/v1/novels/{novel_id}/control-console")
+    assert second.status_code == 200
+    assert calls["count"] == 2
+
+
+def test_rename_novel_endpoint_updates_title(novel_id: int) -> None:
+    response = client.patch(f"/api/v1/novels/{novel_id}/title", json={"title": "改名后的测试小说"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["title"] == "改名后的测试小说"
+
+    shelf = client.get("/api/v1/novels").json()
+    assert shelf["items"][0]["title"] == "改名后的测试小说"

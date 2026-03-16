@@ -43,6 +43,136 @@ def _text(value: Any, fallback: str = "") -> str:
 def _safe_list(value: Any) -> list:
     return value if isinstance(value, list) else []
 
+def _character_template_index(story_bible: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    template_library = (story_bible or {}).get("template_library") or {}
+    index: dict[str, dict[str, Any]] = {}
+    for item in (template_library.get("character_templates") or []):
+        if not isinstance(item, dict):
+            continue
+        template_id = _text(item.get("template_id"))
+        if template_id:
+            index[template_id] = deepcopy(item)
+    return index
+
+
+
+def pick_character_template(
+    story_bible: dict[str, Any] | None,
+    *,
+    name: str = "",
+    note: str = "",
+    role_hint: str = "",
+    relation_hint: str = "",
+    fallback_id: str = "starter_hard_shell_soft_core",
+) -> dict[str, Any]:
+    index = _character_template_index(story_bible)
+    if not index:
+        seed_template = _supporting_voice_template(name or role_hint or "角色", note)
+        return {
+            "template_id": fallback_id,
+            "name": _text(seed_template.get("role_archetype"), "默认模板"),
+            "speech_style": _text(seed_template.get("speech_style")),
+            "behavior_mode": _text(seed_template.get("work_style")),
+            "pressure_response": _text(seed_template.get("pressure_response")),
+            "small_tell": _text(seed_template.get("small_tell")),
+            "taboo": _text(seed_template.get("taboo")),
+            "core_value": "先活下来，再判断值不值得投入。",
+            "decision_logic": _text(seed_template.get("work_style")),
+            "personality": [],
+            "keywords": [],
+            "recommended_for": [],
+        }
+
+    desired_id = _text(fallback_id)
+    if desired_id and desired_id in index:
+        fallback = deepcopy(index[desired_id])
+    else:
+        fallback = deepcopy(next(iter(index.values())))
+
+    blob = " ".join(part for part in [name, note, role_hint, relation_hint] if str(part or "").strip()).lower()
+    best_score = -10**9
+    best_template = fallback
+    for template in index.values():
+        score = 0
+        for keyword in (_safe_list(template.get("keywords")) or []):
+            word = _text(keyword).lower()
+            if word and word in blob:
+                score += 4
+        for recommendation in (_safe_list(template.get("recommended_for")) or []):
+            ref = _text(recommendation).lower()
+            if ref and ref in blob:
+                score += 3
+        if role_hint and any(token in role_hint for token in ["主角", "protagonist"]) and template.get("template_id") == "starter_cautious_observer":
+            score += 6
+        if relation_hint and "敌" in relation_hint and any(token in _text(template.get("template_id")) for token in ["rival", "double_face", "executor"]):
+            score += 2
+        if note and any(token in note for token in ["冷", "规矩", "执法"]) and template.get("template_id") == "cold_rule_bound_executor":
+            score += 3
+        if note and any(token in note for token in ["笑", "套话", "掌柜"]) and template.get("template_id") == "starter_smiling_information_broker":
+            score += 3
+        if note and any(token in note for token in ["医", "疗", "丹"]) and template.get("template_id") == "merciful_healer_with_edges":
+            score += 3
+        if score > best_score:
+            best_score = score
+            best_template = deepcopy(template)
+        elif score == best_score and best_score > 0:
+            current_seed = sum(ord(ch) for ch in f"{name}{template.get('template_id')}")
+            best_seed = sum(ord(ch) for ch in f"{name}{best_template.get('template_id')}")
+            if current_seed % 7 < best_seed % 7:
+                best_template = deepcopy(template)
+
+    if best_score <= 0:
+        templates = list(index.values())
+        seed = sum(ord(ch) for ch in f"{name}{note}{role_hint}{relation_hint}")
+        best_template = deepcopy(templates[seed % len(templates)])
+    return best_template
+
+
+
+def apply_character_template_defaults(card: dict[str, Any] | None, template: dict[str, Any] | None) -> dict[str, Any]:
+    payload = deepcopy(card) if isinstance(card, dict) else {}
+    chosen = template or {}
+    if not isinstance(chosen, dict):
+        return payload
+    payload.setdefault("behavior_template_id", _text(chosen.get("template_id")))
+    payload.setdefault("role_archetype", _text(chosen.get("name")))
+    payload.setdefault("speech_style", _text(chosen.get("speech_style")))
+    payload.setdefault("work_style", _text(chosen.get("behavior_mode")))
+    payload.setdefault("behavior_mode", _text(chosen.get("behavior_mode")))
+    payload.setdefault("core_value", _text(chosen.get("core_value")))
+    payload.setdefault("decision_logic", _text(chosen.get("decision_logic")))
+    payload.setdefault("pressure_response", _text(chosen.get("pressure_response")))
+    payload.setdefault("small_tell", _text(chosen.get("small_tell")))
+    payload.setdefault("taboo", _text(chosen.get("taboo")))
+    if _safe_list(chosen.get("personality")):
+        payload.setdefault("personality_tags", _safe_list(chosen.get("personality"))[:4])
+    return payload
+
+
+
+def character_template_prompt_brief(story_bible: dict[str, Any] | None, *, template_id: str = "", fallback: dict[str, Any] | None = None) -> dict[str, Any]:
+    template = None
+    if template_id:
+        template = _character_template_index(story_bible).get(template_id)
+    if not template and isinstance(fallback, dict):
+        template = fallback
+    if not isinstance(template, dict):
+        return {}
+    brief = {
+        "template_id": _text(template.get("template_id")),
+        "name": _text(template.get("name")),
+        "personality": _safe_list(template.get("personality"))[:4],
+        "speech_style": _text(template.get("speech_style")),
+        "behavior_mode": _text(template.get("behavior_mode")),
+        "core_value": _text(template.get("core_value")),
+        "decision_logic": _text(template.get("decision_logic")),
+        "pressure_response": _text(template.get("pressure_response")),
+        "small_tell": _text(template.get("small_tell")),
+        "taboo": _text(template.get("taboo")),
+    }
+    return {key: value for key, value in brief.items() if value not in ("", [], {}, None)}
+
+
 
 def _supporting_voice_template(name: str, note: str = "") -> dict[str, Any]:
     seed = sum(ord(ch) for ch in f"{name}{note}")

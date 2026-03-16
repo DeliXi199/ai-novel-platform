@@ -172,3 +172,29 @@ def test_chapter_extension_prompt_only_includes_tail_excerpt_not_full_text() -> 
     assert "【已有正文结尾片段】" in prompt
     assert "前文前文前文前文前文前文前文前文前文前文" not in prompt
     assert "尾段尾段尾段" in prompt
+
+
+
+def test_chapter_draft_prompt_reads_retry_feedback_from_plan() -> None:
+    from app.services.prompt_templates import chapter_draft_user_prompt
+
+    prompt = chapter_draft_user_prompt(
+        novel_context={"story_memory": {"workflow_runtime": {}}},
+        chapter_plan={
+            "title": "汲取微光",
+            "hook_style": "信息反转",
+            "proactive_move": "主动试探石缝下方的暗格",
+            "retry_feedback": {
+                "problem": "上一版草稿写法和结构重复偏多",
+                "must_change": ["不要连着几句都用同一种判断句起手"],
+            },
+        },
+        last_chapter={},
+        recent_summaries=[],
+        active_interventions=[],
+        target_words=1800,
+        target_visible_chars_min=1200,
+        target_visible_chars_max=2200,
+    )
+    assert "上一版草稿写法和结构重复偏多" in prompt
+    assert "不要连着几句都用同一种判断句起手" in prompt

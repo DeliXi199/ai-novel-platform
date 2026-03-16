@@ -31,6 +31,7 @@
 - `GET /api/v1/novels`：书架列表
 - `GET /api/v1/novels/{id}/chapters`：章节目录
 - `GET /api/v1/novels/{id}/interventions`：人工干预列表
+- `GET /api/v1/novels/{id}/workspace`：工作台聚合数据（减少前端碎请求）
 
 同时保留已有能力：
 
@@ -90,9 +91,9 @@ pip install -r requirements.txt
 
 ### 4. 初始化数据库
 
-当前版本在应用启动时会自动调用 `init_db()`，因此开发期直接启动即可。
+当前版本默认会在应用启动时自动调用 `init_db()`，因此开发期直接启动即可。
 
-如果你要走正式迁移链路，仍建议执行：
+如果你要严格走迁移链路，可以把 `AUTO_INIT_DB_ON_STARTUP=false`，然后执行：
 
 ```bash
 alembic upgrade head
@@ -126,7 +127,7 @@ CORS_ALLOW_ORIGINS=http://127.0.0.1:5173,http://localhost:5173
 pytest -q backend/tests
 ```
 
-当前仓库包含 65 个测试用例；建议每次修改后执行一次完整回归。
+当前仓库已经包含 100+ 个后端测试用例；建议每次修改后执行一次完整回归。
 
 如果你使用 GitHub，这一版已经自带 `.github/workflows/backend-ci.yml`，提交后会自动跑后端测试。
 

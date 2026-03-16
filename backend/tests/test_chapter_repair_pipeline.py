@@ -41,7 +41,7 @@ def _base_targets() -> dict:
     }
 
 
-def test_classify_chapter_repair_routes_incomplete_ending_to_append_extension() -> None:
+def test_classify_chapter_repair_routes_incomplete_ending_to_append_inline_tail_first() -> None:
     exc = GenerationError(
         code=ErrorCodes.CHAPTER_ENDING_INCOMPLETE,
         message="结尾不完整",
@@ -53,8 +53,36 @@ def test_classify_chapter_repair_routes_incomplete_ending_to_append_extension() 
 
     assert action is not None
     assert action.repair_type == "ending_incomplete"
-    assert action.strategy_id == "llm_append_tail"
-    assert action.execution_mode == "append_extension"
+    assert action.strategy_id == "ai_append_inline_tail"
+    assert action.execution_mode == "append_inline_tail"
+
+
+def test_classify_chapter_repair_escalates_to_rewrite_last_paragraph_after_failed_tail_fix() -> None:
+    exc = GenerationError(
+        code=ErrorCodes.CHAPTER_ENDING_INCOMPLETE,
+        message="结尾不完整",
+        stage="chapter_quality",
+        details={"ending_issue": "missing_terminal_punctuation"},
+    )
+
+    action = classify_chapter_repair(
+        exc,
+        attempt_plan=_base_plan(),
+        targets=_base_targets(),
+        repair_trace=[
+            {
+                "attempt_no": 1,
+                "repair_type": "ending_incomplete",
+                "strategy_id": "ai_append_inline_tail",
+                "status": "rejected",
+            }
+        ],
+        attempt_no=1,
+    )
+
+    assert action is not None
+    assert action.strategy_id == "ai_rewrite_last_paragraph"
+    assert action.execution_mode == "replace_last_paragraph"
 
 
 def test_classify_chapter_repair_routes_weak_ending_to_stronger_regeneration() -> None:
@@ -123,8 +151,8 @@ def test_attempt_generate_validated_chapter_applies_tail_repair(monkeypatch: pyt
 
     assert title == "任务指派"
     assert content.endswith("汇合。\"")
-    assert payload["ending_repair_mode"] == "llm_append_tail"
-    assert attempt_meta["repair_trace"][0]["strategy_id"] == "llm_append_tail"
+    assert payload["ending_repair_mode"] == "ai_append_inline_tail"
+    assert attempt_meta["repair_trace"][0]["strategy_id"] == "ai_append_inline_tail"
     assert attempt_meta["repair_trace"][0]["status"] == "applied"
     assert used_plan["title"] == "任务指派"
     assert targets["target_visible_chars_min"] >= 1000

@@ -19,7 +19,16 @@ from app.schemas.chapter import (
     ChapterTtsGenerateRequest,
     ChapterTtsStatusResponse,
 )
+from app.schemas.task import AsyncTaskResponse
 from app.services.chapter_generation import generate_next_chapter, generate_next_chapters_batch
+from app.services.async_tasks import (
+    TASK_TYPE_CHAPTER_TTS,
+    find_active_task,
+    serialize_task,
+    submit_chapter_tts_task,
+    submit_next_chapter_task,
+    submit_next_chapters_batch_task,
+)
 from app.services.edge_tts_service import (
     EdgeTtsBadRequestError,
     EdgeTtsBusyError,
@@ -27,6 +36,7 @@ from app.services.edge_tts_service import (
     EdgeTtsUnavailableError,
     generate_chapter_tts,
     get_chapter_tts_status,
+    normalize_tts_options,
 )
 from app.services.export_service import export_novel_bytes
 from app.services.generation_exceptions import GenerationError
@@ -243,7 +253,20 @@ def get_chapter_tts(
     db: Session = Depends(get_db),
 ):
     chapter = _require_chapter(db, novel_id, chapter_no)
-    return get_chapter_tts_status(chapter, {"voice": voice} if voice else None)
+    payload = {"voice": voice} if voice else None
+    status = get_chapter_tts_status(chapter, payload)
+    options = normalize_tts_options(payload)
+    active_task = find_active_task(
+        db,
+        novel_id=novel_id,
+        task_type=TASK_TYPE_CHAPTER_TTS,
+        owner_key=f"novel:{novel_id}:chapter:{chapter_no}:tts:{options['voice']}",
+        chapter_no=chapter_no,
+    )
+    if active_task is not None:
+        status["generating"] = True
+        status["reason"] = active_task.progress_message or status.get("reason")
+    return status
 
 
 @router.post("/{novel_id}/chapters/{chapter_no}/tts/generate", response_model=ChapterTtsStatusResponse)
@@ -278,6 +301,48 @@ def generate_chapter_tts_audio(
     db.commit()
     db.refresh(chapter)
     return status
+
+
+@router.post("/{novel_id}/tasks/next-chapter", response_model=AsyncTaskResponse, status_code=202)
+def enqueue_next_chapter(novel_id: int, db: Session = Depends(get_db)):
+    novel = require_novel(db, novel_id)
+    ensure_bootstrap_not_running(novel, action="生成章节")
+    task, reused_existing = submit_next_chapter_task(db, novel)
+    return serialize_task(task, reused_existing=reused_existing)
+
+
+@router.post("/{novel_id}/tasks/next-chapters", response_model=AsyncTaskResponse, status_code=202)
+def enqueue_next_chapters_batch(
+    novel_id: int,
+    payload: ChapterBatchGenerateRequest,
+    db: Session = Depends(get_db),
+):
+    novel = require_novel(db, novel_id)
+    ensure_bootstrap_not_running(novel, action="批量生成章节")
+    task, reused_existing = submit_next_chapters_batch_task(db, novel, count=payload.count)
+    return serialize_task(task, reused_existing=reused_existing)
+
+
+@router.post("/{novel_id}/chapters/{chapter_no}/tts/tasks", response_model=AsyncTaskResponse, status_code=202)
+def enqueue_chapter_tts_audio(
+    novel_id: int,
+    chapter_no: int,
+    payload: ChapterTtsGenerateRequest,
+    db: Session = Depends(get_db),
+):
+    chapter = _require_chapter(db, novel_id, chapter_no)
+    task, reused_existing = submit_chapter_tts_task(
+        db,
+        chapter,
+        {
+            "voice": payload.voice,
+            "rate": payload.rate,
+            "volume": payload.volume,
+            "pitch": payload.pitch,
+        },
+        force_regenerate=payload.force_regenerate,
+    )
+    return serialize_task(task, reused_existing=reused_existing)
 
 
 @router.get("/{novel_id}/export")

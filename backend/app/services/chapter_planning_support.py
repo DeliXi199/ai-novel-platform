@@ -13,6 +13,13 @@ from app.services.chapter_context_support import _compact_value, _serialize_rece
 from app.services.chapter_runtime_support import _planning_runtime_meta, _set_live_runtime, _ensure_generation_runtime_budget
 from app.services.generation_exceptions import ErrorCodes, GenerationError
 from app.services.novel_bootstrap import generate_arc_outline_bundle
+from app.services.openai_story_engine import review_stage_characters
+from app.services.story_character_support import _text
+from app.services.stage_review_support import (
+    build_stage_character_review_snapshot,
+    should_run_stage_character_review,
+    store_stage_character_review,
+)
 from app.services.story_architecture import (
     build_execution_brief,
     ensure_story_architecture,
@@ -106,6 +113,9 @@ def _persist_generation_failure_snapshot(
             **_planning_runtime_meta(story_bible),
             "failed_stage": stage,
             "last_error_message": _truncate_text(message, 180),
+            "last_error_code": _text((details or {}).get("code")),
+            "last_error_retryable": bool((details or {}).get("retryable")),
+            "last_error_trace_id": _text((details or {}).get("trace_id")),
             "last_error_details": _compact_value(details or {}, text_limit=80),
             "retry_feedback": retry_feedback,
         },
@@ -164,6 +174,23 @@ def _save_pipeline_execution_packet(
 
 
 
+def _run_stage_character_review_if_needed(
+    *,
+    story_bible: dict[str, Any],
+    current_chapter_no: int,
+    recent_summaries: list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    if not should_run_stage_character_review(story_bible, current_chapter_no=current_chapter_no):
+        return None
+    snapshot = build_stage_character_review_snapshot(
+        story_bible,
+        current_chapter_no=current_chapter_no,
+        recent_summaries=recent_summaries,
+    )
+    review = review_stage_characters(snapshot=snapshot)
+    return store_stage_character_review(story_bible, review.model_dump(mode="python"), current_chapter_no=current_chapter_no)
+
+
 def prepare_next_planning_window(db: Session, novel: Novel, *, force: bool = False) -> dict[str, Any]:
     previous_status = _acquire_generation_slot(db, novel.id)
     chapter_started_at = time.monotonic()
@@ -173,6 +200,12 @@ def prepare_next_planning_window(db: Session, novel: Novel, *, force: bool = Fal
         _ensure_generation_runtime_budget(started_at=chapter_started_at, stage="chapter_planning_prepare", chapter_no=next_no)
         story_bible = ensure_story_architecture(locked_novel.story_bible or {}, locked_novel)
         recent_summaries = _serialize_recent_summaries(db, locked_novel.id)
+        _run_stage_character_review_if_needed(
+            story_bible=story_bible,
+            current_chapter_no=locked_novel.current_chapter_no,
+            recent_summaries=recent_summaries,
+        )
+        locked_novel.story_bible = story_bible
 
         _ensure_outline_state(story_bible)
         _promote_pending_arc_if_needed(story_bible, next_no)
@@ -265,13 +298,21 @@ def _generate_and_store_pending_arc(
     *,
     start_chapter: int | None = None,
     replace_existing: bool = False,
-) -> None:
+) -> dict[str, Any]:
     story_bible = novel.story_bible or {}
     state = _ensure_outline_state(story_bible)
     active_arc = story_bible.get("active_arc")
     pending_arc = story_bible.get("pending_arc")
     if pending_arc and not replace_existing:
-        return
+        return {
+            "arc_no": int(pending_arc.get("arc_no", 0) or 0),
+            "start_chapter": int(pending_arc.get("start_chapter", 0) or 0),
+            "end_chapter": int(pending_arc.get("end_chapter", 0) or 0),
+            "focus": _text(pending_arc.get("focus")),
+            "chapter_nos": [int(item.get("chapter_no", 0) or 0) for item in (pending_arc.get("chapters") or [])],
+            "chapter_titles": [_text(item.get("title")) for item in (pending_arc.get("chapters") or [])[:5] if _text(item.get("title"))],
+            "reused_existing": True,
+        }
 
     if start_chapter is None:
         if not active_arc:
@@ -283,6 +324,11 @@ def _generate_and_store_pending_arc(
     end = start + settings.arc_outline_size - 1
     arc_no = int(state.get("next_arc_no", 1))
 
+    _run_stage_character_review_if_needed(
+        story_bible=story_bible,
+        current_chapter_no=novel.current_chapter_no,
+        recent_summaries=recent_summaries,
+    )
     payload = _story_bible_payload_to_novel_create(novel)
     bundle = generate_arc_outline_bundle(
         payload=payload,
@@ -298,6 +344,16 @@ def _generate_and_store_pending_arc(
     state["next_arc_no"] = arc_no + 1
     novel.story_bible = refresh_planning_views(story_bible, novel.current_chapter_no)
     db.add(novel)
+    return {
+        "arc_no": int(bundle.get("arc_no", 0) or arc_no),
+        "start_chapter": int(bundle.get("start_chapter", 0) or start),
+        "end_chapter": int(bundle.get("end_chapter", 0) or end),
+        "focus": _text(bundle.get("focus")),
+        "bridge_note": _text(bundle.get("bridge_note")),
+        "chapter_nos": [int(item.get("chapter_no", 0) or 0) for item in (bundle.get("chapters") or [])],
+        "chapter_titles": [_text(item.get("title")) for item in (bundle.get("chapters") or [])[:5] if _text(item.get("title"))],
+        "reused_existing": False,
+    }
 
 
 

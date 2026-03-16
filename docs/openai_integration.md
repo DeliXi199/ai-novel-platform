@@ -1,10 +1,10 @@
-# 模型接入说明（OpenAI / Groq / Mock）
+# 模型接入说明（OpenAI / DeepSeek / Groq）
 
-这个项目支持三种模式：
+这个项目当前支持三种 provider：
 
-- `LLM_PROVIDER=mock`：本地占位逻辑，先跑通流程。
 - `LLM_PROVIDER=openai`：调用 OpenAI Python SDK + Responses API。
-- `LLM_PROVIDER=groq`：调用 Groq 的 OpenAI-compatible Responses API（适合先用免费层验证流程）。
+- `LLM_PROVIDER=deepseek`：调用 DeepSeek 的 OpenAI-compatible Responses API。
+- `LLM_PROVIDER=groq`：调用 Groq 的 OpenAI-compatible Responses API。
 
 ## 1. 最省事的做法
 
@@ -12,6 +12,15 @@
 
 ```text
 backend/.env
+```
+
+### 用 DeepSeek
+
+```env
+LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY=你的真实_deepseek_key
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-chat
 ```
 
 ### 用 Groq 免费层
@@ -50,4 +59,4 @@ backend/app/services/openai_story_engine.py
 - Groq
 - 统一 Responses API 请求
 
-虽然文件名还叫 `openai_story_engine.py`，但内部已经支持两个 provider。
+虽然文件名还叫 `openai_story_engine.py`，但内部已经支持多个 OpenAI-compatible provider。

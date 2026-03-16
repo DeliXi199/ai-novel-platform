@@ -9,13 +9,18 @@ import {
   normalizeChapterPayload,
   buildBookshelfItemNode,
   getCurrentChapterIndex,
-} from "/app/assets/app/core.js?v=20260313d";
-import { buildChapterCardNode } from "/app/assets/app/ui_helpers.js?v=20260313d";
+} from "/app/assets/app/core.js?v=20260316c";
+import { buildChapterCardNode } from "/app/assets/app/ui_helpers.js?v=20260316c";
 
 export function setTopbar() {
   if (!refs.topbarTitle) return;
+  if (state.viewMode === "create") {
+    refs.topbarTitle.textContent = "创建小说";
+    refs.topbarSubtitle.textContent = "创建会以任务形式执行。先填写题材与前提，再等待初始化任务完成；完成后会自动进入小说管理页。";
+    return;
+  }
   if (!state.selectedNovel) {
-    refs.topbarTitle.textContent = "请选择一本书，或先新建项目";
+    refs.topbarTitle.textContent = "请选择一本书，或进入创建页";
     refs.topbarSubtitle.textContent = "你可以在这里管理书架、补规划、按章生成、从末尾回删章节，并以沉浸式阅读器查看正文。";
     return;
   }
@@ -80,6 +85,77 @@ export function renderMetrics() {
   refs.metricCreatedAt.textContent = `创建于 ${fmtDate(state.selectedNovel.created_at)}`;
 }
 
+function summarizeCastingLayoutReview(summary, label = "当前 Arc") {
+  if (!summary || typeof summary !== "object") return "";
+  const lines = [];
+  if (label) lines.push(`${label}：${summary.window_verdict || "—"}`);
+  if (summary.review_note) lines.push(summary.review_note);
+  const displayLines = Array.isArray(summary.display_lines) ? summary.display_lines.filter(Boolean).slice(0, 4) : [];
+  if (displayLines.length) lines.push(...displayLines);
+  return lines.filter(Boolean).join("\n");
+}
+
+function describeQueueItem(item) {
+  const lines = [`第 ${item.chapter_no} 章：${item.title || item.goal || "未命名"}`];
+  if (item.stage_casting_action || item.stage_casting_target) {
+    const action = item.stage_casting_action || "人物投放";
+    const target = item.stage_casting_target ? ` · ${item.stage_casting_target}` : "";
+    lines.push(`动作：${action}${target}`);
+  }
+  if (item.stage_casting_note) lines.push(`说明：${item.stage_casting_note}`);
+  return lines.join("\n");
+}
+
+function collectStageCastingRuntimeLines(liveRuntime, executionCard, dailyWorkbench) {
+  const runtime = executionCard.stage_casting_runtime || dailyWorkbench.chapter_stage_casting_runtime || liveRuntime.stage_casting_runtime || {};
+  const lines = [];
+  const displayLines = Array.isArray(runtime.display_lines) ? runtime.display_lines.filter(Boolean).slice(0, 4) : [];
+  if (displayLines.length) lines.push(...displayLines);
+  const runtimeNote = dailyWorkbench.chapter_stage_casting_runtime_note || runtime.runtime_note || liveRuntime.stage_casting_runtime_note || "";
+  if (runtimeNote && !lines.includes(runtimeNote)) lines.unshift(runtimeNote);
+  return lines.filter(Boolean);
+}
+
+function planningRefreshReasonLabel(reason) {
+  const mapping = {
+    queue_low: "待写队列偏短",
+    active_arc_nearly_exhausted: "当前 Arc 快用完",
+    planning_window_already_ready: "现有规划已够用",
+  };
+  return mapping[String(reason || "").trim()] || String(reason || "—");
+}
+
+function summarizePlanningRefresh(liveRuntime) {
+  const refresh = liveRuntime.planning_refresh || {};
+  if (!refresh || typeof refresh !== "object" || !Object.keys(refresh).length) return null;
+  const triggered = Boolean(refresh.triggered);
+  const readyBefore = Array.isArray(refresh.ready_cards_before) ? refresh.ready_cards_before.filter(Boolean) : [];
+  const readyAfter = Array.isArray(refresh.ready_cards_after) ? refresh.ready_cards_after.filter(Boolean) : [];
+  const startChapter = Number(refresh.start_chapter || 0);
+  const endChapter = Number(refresh.end_chapter || 0);
+  const lastCovered = readyAfter.length ? readyAfter[readyAfter.length - 1] : (endChapter || liveRuntime.planned_until || 0);
+  const statusLine = triggered
+    ? `本次已刷新：新增第 ${startChapter || "—"}-${endChapter || "—"} 章，当前覆盖到第 ${lastCovered || "—"} 章。`
+    : `本次未补规划：直接沿用现有近 5 章窗口，当前覆盖到第 ${lastCovered || "—"} 章。`;
+  const lines = [
+    statusLine,
+    `触发原因：${planningRefreshReasonLabel(refresh.reason)}`,
+  ];
+  if (typeof refresh.queue_size_before === "number" || typeof refresh.queue_size_after === "number") {
+    lines.push(`待写队列：${refresh.queue_size_before ?? "—"} → ${refresh.queue_size_after ?? "—"}`);
+  }
+  if (readyBefore.length || readyAfter.length) {
+    lines.push(`就绪章节：${readyBefore.join("、") || "—"} → ${readyAfter.join("、") || "—"}`);
+  }
+  if (refresh.arc_no) lines.push(`对应 Arc：第 ${refresh.arc_no} 段`);
+  return {
+    title: triggered ? "近 5 章规划刷新" : "近 5 章规划就绪",
+    body: lines.join("\n"),
+    lines,
+    triggered,
+  };
+}
+
 export function renderPlanning() {
   if (!refs.planningSummary) return;
   refs.planningSummary.innerHTML = "";
@@ -120,9 +196,24 @@ export function renderPlanning() {
     },
     {
       title: "待写队列",
-      body: queue.length ? queue.map((item) => `第 ${item.chapter_no} 章：${item.title || item.goal || "未命名"}`).join("\n") : "当前没有待写 card。",
+      body: queue.length ? queue.map((item) => describeQueueItem(item)).join("\n\n") : "当前没有待写 card。",
     },
   ];
+
+  const activeLayoutReview = activeArc.casting_layout_review_summary || planningStatus.active_arc_casting_layout_review || {};
+  const pendingLayoutReview = pendingArc.casting_layout_review_summary || planningStatus.pending_arc_casting_layout_review || {};
+  const activeLayoutText = summarizeCastingLayoutReview(activeLayoutReview, "当前 Arc 排法复核");
+  const pendingLayoutText = summarizeCastingLayoutReview(pendingLayoutReview, "待命 Arc 排法复核");
+  const planningRefreshSummary = summarizePlanningRefresh(liveRuntime);
+  if (activeLayoutText) {
+    summaryCards.push({ title: "人物投放排法复核", body: activeLayoutText });
+  }
+  if (pendingLayoutText) {
+    summaryCards.push({ title: "下一段 Arc 排法复核", body: pendingLayoutText });
+  }
+  if (planningRefreshSummary) {
+    summaryCards.push({ title: planningRefreshSummary.title, body: planningRefreshSummary.body });
+  }
 
   summaryCards.forEach((card) => {
     const div = document.createElement("div");
@@ -138,6 +229,10 @@ export function renderPlanning() {
   ];
   if (liveRuntime.chapter_title) runtimeList.push(`执行标题：${liveRuntime.chapter_title}`);
   if (liveRuntime.chapter_goal) runtimeList.push(`本章目标：${liveRuntime.chapter_goal}`);
+  if (liveRuntime.stage_casting_runtime_note) runtimeList.push(`人物投放：${liveRuntime.stage_casting_runtime_note}`);
+  if (planningRefreshSummary?.lines?.[0]) runtimeList.push(`补规划：${planningRefreshSummary.lines[0]}`);
+
+  const stageCastingRuntimeLines = collectStageCastingRuntimeLines(liveRuntime, executionCard, dailyWorkbench);
 
   const blocks = [
     {
@@ -147,6 +242,9 @@ export function renderPlanning() {
         activeArc.bridge_note || consoleData.planning_layers?.active_arc?.bridge_note || "—",
       ],
     },
+    ...(activeLayoutText
+      ? [{ title: "排法复核细节", list: activeLayoutText.split("\n").filter(Boolean) }]
+      : []),
     {
       title: "当前执行卡",
       list: [
@@ -154,8 +252,15 @@ export function renderPlanning() {
         executionCard.opening || dailyWorkbench.three_line_outline?.opening || "—",
         executionCard.middle || dailyWorkbench.three_line_outline?.middle || "—",
         executionCard.ending || dailyWorkbench.three_line_outline?.ending || "—",
+        ...(stageCastingRuntimeLines.length ? stageCastingRuntimeLines.slice(0, 2) : []),
       ],
     },
+    ...(stageCastingRuntimeLines.length
+      ? [{ title: "人物投放执行提示", list: stageCastingRuntimeLines }]
+      : []),
+    ...(planningRefreshSummary?.lines?.length
+      ? [{ title: planningRefreshSummary.title, list: planningRefreshSummary.lines }]
+      : []),
     {
       title: "实时运行状态",
       list: runtimeList,
@@ -313,6 +418,122 @@ export function syncReaderUrl() {
   url.searchParams.set("novelId", String(state.selectedNovelId));
   url.searchParams.set("chapterNo", String(state.selectedChapterNo));
   window.history.replaceState({}, "", url.toString());
+}
+
+
+function taskTypeLabel(taskType) {
+  if (taskType === "generate_next_chapter") return "单章生成";
+  if (taskType === "generate_next_chapters_batch") return "批量生成";
+  if (taskType === "generate_chapter_tts") return "章节朗读";
+  if (taskType === "bootstrap_novel") return "创建小说";
+  return taskType || "未知任务";
+}
+
+function taskStatusLabel(status) {
+  if (status === "queued") return "排队中";
+  if (status === "running") return "执行中";
+  if (status === "succeeded") return "已完成";
+  if (status === "failed") return "失败";
+  if (status === "cancelled") return "已取消";
+  return status || "未知";
+}
+
+function taskEventLevelLabel(level) {
+  if (level === "error") return "错误";
+  if (level === "warning") return "警告";
+  return "记录";
+}
+
+function fmtTaskDuration(task) {
+  const seconds = Number(task.duration_seconds || task.queue_wait_seconds || 0);
+  if (!seconds) return "";
+  if (seconds < 1) return "<1 秒";
+  if (seconds < 60) return `${Math.round(seconds)} 秒`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)} 分钟`;
+  return `${Math.round(seconds / 3600)} 小时`;
+}
+
+export function renderTaskCenter({ onRetryTask, onCancelTask, onInspectTask } = {}) {
+  if (!refs.taskHistoryList) return;
+  refs.taskHistoryList.innerHTML = "";
+  if (!state.selectedNovel) {
+    refs.taskHistoryList.innerHTML = '<div class="panel-muted subtle-text">选择小说后，这里会显示最近任务、失败原因，以及可重试/可取消操作。</div>';
+    return;
+  }
+  const items = Array.isArray(state.recentTasks) ? state.recentTasks : [];
+  if (!items.length) {
+    refs.taskHistoryList.innerHTML = '<div class="panel-muted subtle-text">最近还没有任务记录。生成章节或朗读后，这里会留下痕迹。</div>';
+    return;
+  }
+
+  items.forEach((task) => {
+    const div = document.createElement("div");
+    const tone = task.status === "failed" ? "error" : task.status === "succeeded" ? "success" : "info";
+    div.className = `activity-item ${tone} task-item`;
+    const chapterText = task.chapter_no ? ` · 第 ${task.chapter_no} 章` : "";
+    const retryText = task.retry_of_task_id ? ` · 重试自 #${task.retry_of_task_id}` : "";
+    const details = task.progress_message || task.error_payload?.message || task.result_payload?.title || "暂无详细信息";
+    const footerBits = [
+      `创建于 ${fmtDate(task.created_at)}`,
+      task.finished_at ? `结束于 ${fmtDate(task.finished_at)}` : null,
+      task.duration_seconds ? `执行时长 ${fmtTaskDuration(task)}` : null,
+      task.status === "queued" && task.queue_wait_seconds ? `已等待 ${fmtTaskDuration({ queue_wait_seconds: task.queue_wait_seconds })}` : null,
+      retryText ? retryText.replace(/^ · /, "") : null,
+    ].filter(Boolean);
+    div.innerHTML = `
+      <div class="task-item-top">
+        <strong>${escapeHtml(taskTypeLabel(task.task_type))}${escapeHtml(chapterText)}</strong>
+        <span class="task-status-chip ${escapeHtml(task.status || "")}">${escapeHtml(taskStatusLabel(task.status))}</span>
+      </div>
+      <div>${escapeHtml(details)}</div>
+      <div class="subtle-text">${escapeHtml(footerBits.join(" · "))}</div>
+      <div class="action-row wrap-row task-item-actions"></div>
+    `;
+    const actions = div.querySelector('.task-item-actions');
+    if (task.can_retry && typeof onRetryTask === 'function') {
+      const retryBtn = document.createElement('button');
+      retryBtn.type = 'button';
+      retryBtn.className = 'ghost-btn';
+      retryBtn.textContent = '重试';
+      retryBtn.addEventListener('click', () => onRetryTask(task));
+      actions.appendChild(retryBtn);
+    }
+    if (task.can_cancel && typeof onCancelTask === 'function') {
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'ghost-btn danger-btn';
+      cancelBtn.textContent = task.cancel_requested_at ? '取消中...' : '取消';
+      cancelBtn.disabled = !!task.cancel_requested_at;
+      cancelBtn.addEventListener('click', () => onCancelTask(task));
+      actions.appendChild(cancelBtn);
+    }
+    const inspectBtn = document.createElement('button');
+    inspectBtn.type = 'button';
+    inspectBtn.className = 'ghost-btn';
+    inspectBtn.textContent = state.expandedTaskId === task.id ? '收起日志' : '查看日志';
+    inspectBtn.addEventListener('click', () => onInspectTask?.(task));
+    actions.appendChild(inspectBtn);
+    if (!actions.children.length) actions.remove();
+
+    if (state.expandedTaskId === task.id) {
+      const eventWrap = document.createElement('div');
+      eventWrap.className = 'task-event-list subtle-text';
+      const events = Array.isArray(state.taskEventCache?.[task.id]) ? state.taskEventCache[task.id] : [];
+      if (!events.length) {
+        eventWrap.innerHTML = '<div class="panel-muted">这条任务还没有更多日志，或者日志还在路上。</div>';
+      } else {
+        eventWrap.innerHTML = events
+          .map((event) => {
+            const payloadText = event?.payload && Object.keys(event.payload).length ? ` · ${escapeHtml(JSON.stringify(event.payload))}` : '';
+            return `<div class="task-event-item"><strong>${escapeHtml(taskEventLevelLabel(event.level))}</strong> · ${escapeHtml(fmtDate(event.created_at))} · ${escapeHtml(event.message || '')}${payloadText}</div>`;
+          })
+          .join('');
+      }
+      div.appendChild(eventWrap);
+    }
+
+    refs.taskHistoryList.appendChild(div);
+  });
 }
 
 

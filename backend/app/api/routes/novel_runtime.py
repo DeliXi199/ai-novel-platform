@@ -2,8 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.schemas.task import AsyncTaskCleanupResponse, AsyncTaskEventListResponse, AsyncTaskListResponse, AsyncTaskResponse
 from app.schemas.chapter import SerialModeResponse, SerialModeUpdateRequest
 from app.schemas.control_console import ControlConsoleResponse
+from app.schemas.workspace import WorkspaceResponse
+from app.services.async_tasks import cleanup_terminal_tasks, get_task, list_task_events, list_tasks, request_task_cancel, retry_task, serialize_task
 from app.services.chapter_generation import prepare_next_planning_window
 from app.services.generation_exceptions import GenerationError
 from app.services.story_architecture import ensure_story_architecture, set_delivery_mode, sync_long_term_state
@@ -12,6 +15,7 @@ from app.services.story_state import ensure_serial_runtime
 from .novel_common import (
     build_fresh_snapshot,
     build_live_runtime_payload,
+    build_workspace_payload,
     ensure_bootstrap_not_running,
     raise_http_from_generation_error,
     require_novel,
@@ -19,6 +23,75 @@ from .novel_common import (
 )
 
 router = APIRouter(prefix="/novels", tags=["novels"])
+
+
+@router.get("/{novel_id}/tasks/{task_id}", response_model=AsyncTaskResponse)
+def get_async_task_status(novel_id: int, task_id: int, db: Session = Depends(get_db)):
+    require_novel(db, novel_id)
+    task = get_task(db, novel_id=novel_id, task_id=task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return serialize_task(task)
+
+
+
+
+@router.get("/{novel_id}/tasks/{task_id}/events", response_model=AsyncTaskEventListResponse)
+def get_async_task_events(novel_id: int, task_id: int, limit: int = Query(40, ge=1, le=200), db: Session = Depends(get_db)):
+    require_novel(db, novel_id)
+    task = get_task(db, novel_id=novel_id, task_id=task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    items = list_task_events(db, novel_id=novel_id, task_id=task_id, limit=limit)
+    return {"novel_id": novel_id, "task_id": task_id, "total": len(items), "items": items}
+
+
+@router.get("/{novel_id}/tasks", response_model=AsyncTaskListResponse)
+def get_async_tasks(novel_id: int, status: str | None = Query(None), limit: int = Query(20, ge=1, le=100), db: Session = Depends(get_db)):
+    require_novel(db, novel_id)
+    tasks = list_tasks(db, novel_id=novel_id, status=status, limit=limit)
+    return {"novel_id": novel_id, "total": len(tasks), "items": [serialize_task(task) for task in tasks]}
+
+
+
+
+@router.post("/{novel_id}/tasks/{task_id}/cancel", response_model=AsyncTaskResponse)
+def cancel_async_task(novel_id: int, task_id: int, db: Session = Depends(get_db)):
+    require_novel(db, novel_id)
+    try:
+        task = request_task_cancel(db, novel_id=novel_id, task_id=task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return serialize_task(task)
+
+
+@router.post("/{novel_id}/tasks/{task_id}/retry", response_model=AsyncTaskResponse, status_code=202)
+def retry_async_task(novel_id: int, task_id: int, db: Session = Depends(get_db)):
+    require_novel(db, novel_id)
+    try:
+        task, reused_existing = retry_task(db, novel_id=novel_id, task_id=task_id)
+    except ValueError as exc:
+        message = str(exc)
+        status_code = 404 if "not found" in message.lower() else 409
+        raise HTTPException(status_code=status_code, detail=message)
+    return serialize_task(task, reused_existing=reused_existing)
+
+
+@router.post("/{novel_id}/tasks/cleanup", response_model=AsyncTaskCleanupResponse)
+def cleanup_async_tasks(
+    novel_id: int,
+    keep_latest: int = Query(30, ge=0, le=200),
+    older_than_days: int | None = Query(14, ge=0, le=3650),
+    db: Session = Depends(get_db),
+):
+    require_novel(db, novel_id)
+    return cleanup_terminal_tasks(db, novel_id=novel_id, keep_latest=keep_latest, older_than_days=older_than_days)
+
+
+@router.get("/{novel_id}/workspace", response_model=WorkspaceResponse)
+def get_workspace(novel_id: int, desired_chapter_no: int | None = Query(None, ge=1), db: Session = Depends(get_db)):
+    novel = require_novel(db, novel_id)
+    return build_workspace_payload(db, novel, desired_chapter_no=desired_chapter_no)
 
 
 @router.get("/{novel_id}/planning-state")

@@ -11,6 +11,10 @@ class NovelCreate(BaseModel):
     style_preferences: dict[str, Any] = Field(default_factory=dict)
 
 
+class NovelRenameRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=255)
+
+
 class NovelListItemResponse(BaseModel):
     id: int
     title: str

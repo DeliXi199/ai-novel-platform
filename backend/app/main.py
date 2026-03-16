@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -10,11 +11,25 @@ from app.api.routes.health import router as health_router
 from app.api.routes.novels import router as novels_router
 from app.core.config import settings
 from app.db.init_db import init_db
+from app.db.session import create_session
+from app.services.async_tasks import recover_orphaned_tasks_on_startup
+
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
+    if settings.auto_init_db_on_startup:
+        init_db()
+    if settings.async_task_recover_orphaned_on_startup:
+        db = create_session()
+        try:
+            recovery = recover_orphaned_tasks_on_startup(db)
+            if recovery.get("recovered_count"):
+                logger.warning("Recovered %s orphaned async tasks on startup: %s", recovery.get("recovered_count"), recovery.get("task_ids"))
+        finally:
+            db.close()
     settings.media_root_path.mkdir(parents=True, exist_ok=True)
     yield
 
@@ -52,6 +67,7 @@ def root() -> dict:
 
 
 @app.get("/app", include_in_schema=False)
+@app.get("/app/create", include_in_schema=False)
 @app.get("/app/reader", include_in_schema=False)
 def studio_index():
     index_file = _FRONTEND_DIR / "index.html"

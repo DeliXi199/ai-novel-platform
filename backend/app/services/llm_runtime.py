@@ -35,6 +35,9 @@ _trace_var: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.Co
 _trace_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("llm_trace_id", default=None)
 
 _BOOTSTRAP_STAGE_PREFIXES = (
+    "story_engine_diagnosis",
+    "story_strategy_generation",
+    "story_engine_strategy_generation",
     "global_outline_generation",
     "arc_outline_generation",
 )
@@ -68,6 +71,7 @@ def mask_secret_tail(value: str | None) -> str | None:
 
 def provider_name() -> str:
     return (normalize_text(settings.llm_provider) or "openai").lower()
+
 
 
 def is_bootstrap_stage(stage: str | None) -> bool:
@@ -139,12 +143,11 @@ def current_base_url(stage: str | None = None, *, variant: int = 0) -> str | Non
 def current_model(stage: str | None = None) -> str:
     provider = provider_for_stage(stage)
     bootstrap_model = normalize_text(getattr(settings, "bootstrap_model", None)) if is_bootstrap_stage(stage) else None
-    if provider == "deepseek" and is_bootstrap_stage(stage) and (bootstrap_model or normalize_text(settings.deepseek_model)) == "deepseek-reasoner" and getattr(settings, "bootstrap_prefer_non_reasoning", True):
-        bootstrap_model = "deepseek-chat"
+    configured_deepseek_model = normalize_text(settings.deepseek_model) or "deepseek-chat"
     if provider == "openai":
         return bootstrap_model or normalize_text(settings.openai_model) or "gpt-5.4"
     if provider == "deepseek":
-        return bootstrap_model or normalize_text(settings.deepseek_model) or "deepseek-chat"
+        return bootstrap_model or configured_deepseek_model or "deepseek-chat"
     if provider == "groq":
         return bootstrap_model or normalize_text(settings.groq_model) or "openai/gpt-oss-20b"
     raise GenerationError(

@@ -1,3 +1,10 @@
+## 2026-03-14 - Task management hardening
+
+- Added async task retry / cancel / cleanup APIs, plus task-history payloads in workspace responses.
+- Async task records now support retry lineage (`retry_of_task_id`) and cooperative cancellation markers (`cancel_requested_at`, `cancelled_at`).
+- Batch generation can stop at safe boundaries and keep partial-result metadata instead of collapsing into a generic failure.
+- Frontend now shows a task center with recent tasks, retry and cancel actions, and one-click cleanup for older terminal records.
+
 ## 2026-03-13 - Chapter repair pipeline split
 
 - Added `chapter_repair_pipeline.py` to route chapter-quality failures into dedicated repair strategies instead of mixing all fixes inside one retry block.

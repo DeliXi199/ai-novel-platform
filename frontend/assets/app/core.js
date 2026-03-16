@@ -1,7 +1,9 @@
 export const API = "/api/v1";
 export const isReaderMode = window.location.pathname.startsWith("/app/reader");
+export const isCreateRoute = window.location.pathname.startsWith("/app/create");
 
 export const state = {
+  viewMode: isCreateRoute ? "create" : "workspace",
   novels: [],
   selectedNovelId: null,
   selectedNovel: null,
@@ -11,6 +13,9 @@ export const state = {
   consoleData: null,
   planningData: null,
   interventions: [],
+  recentTasks: [],
+  taskEventCache: {},
+  expandedTaskId: null,
   managementMode: false,
   activityItems: [],
   confirmResolver: null,
@@ -25,7 +30,16 @@ export const state = {
     batch: false,
     preparing: false,
     deleting: false,
+    renaming: false,
   },
+  activeTasks: {
+    chapterGeneration: null,
+    batchGeneration: null,
+    chapterTts: null,
+    novelBootstrap: null,
+  },
+  pendingCreateTask: null,
+  createTaskEventCursor: null,
   tts: {
     status: null,
     busy: false,
@@ -42,6 +56,8 @@ export const refs = {
   flashContainer: document.getElementById("flashContainer"),
   topbarTitle: document.getElementById("topbarTitle"),
   topbarSubtitle: document.getElementById("topbarSubtitle"),
+  workspaceView: document.getElementById("workspaceView"),
+  createView: document.getElementById("createView"),
   shelfSearchInput: document.getElementById("shelfSearchInput"),
   bookshelfList: document.getElementById("bookshelfList"),
   shelfStats: document.getElementById("shelfStats"),
@@ -52,8 +68,16 @@ export const refs = {
   pingLlmBtn: document.getElementById("pingLlmBtn"),
   openCreatePanelBtn: document.getElementById("openCreatePanelBtn"),
   closeCreatePanelBtn: document.getElementById("closeCreatePanelBtn"),
+  backToWorkspaceBtn: document.getElementById("backToWorkspaceBtn"),
   createPanel: document.getElementById("createPanel"),
   createNovelForm: document.getElementById("createNovelForm"),
+  createTaskPanel: document.getElementById("createTaskPanel"),
+  createTaskStatusText: document.getElementById("createTaskStatusText"),
+  createTaskStageChip: document.getElementById("createTaskStageChip"),
+  createTaskStepText: document.getElementById("createTaskStepText"),
+  createTaskProgressBar: document.getElementById("createTaskProgressBar"),
+  createTaskMeta: document.getElementById("createTaskMeta"),
+  createTaskEventList: document.getElementById("createTaskEventList"),
   metricNovelTitle: document.getElementById("metricNovelTitle"),
   metricNovelMeta: document.getElementById("metricNovelMeta"),
   metricChapterNo: document.getElementById("metricChapterNo"),
@@ -62,6 +86,8 @@ export const refs = {
   metricPlanningState: document.getElementById("metricPlanningState"),
   metricUpdatedAt: document.getElementById("metricUpdatedAt"),
   metricCreatedAt: document.getElementById("metricCreatedAt"),
+  renameNovelInput: document.getElementById("renameNovelInput"),
+  renameNovelBtn: document.getElementById("renameNovelBtn"),
   prepareWindowBtn: document.getElementById("prepareWindowBtn"),
   generateNextBtn: document.getElementById("generateNextBtn"),
   batchCountInput: document.getElementById("batchCountInput"),
@@ -83,6 +109,9 @@ export const refs = {
   interventionForm: document.getElementById("interventionForm"),
   interventionList: document.getElementById("interventionList"),
   activityLog: document.getElementById("activityLog"),
+  taskHistoryList: document.getElementById("taskHistoryList"),
+  refreshTaskHistoryBtn: document.getElementById("refreshTaskHistoryBtn"),
+  cleanupTaskHistoryBtn: document.getElementById("cleanupTaskHistoryBtn"),
   confirmModal: document.getElementById("confirmModal"),
   confirmEyebrow: document.getElementById("confirmEyebrow"),
   confirmTitle: document.getElementById("confirmTitle"),
@@ -264,7 +293,7 @@ export function renderActivity() {
 }
 
 export function hasLiveBusyTask() {
-  return state.busy.generating || state.busy.batch || state.busy.preparing;
+  return state.busy.generating || state.busy.batch || state.busy.preparing || !!state.activeTasks.chapterGeneration || !!state.activeTasks.batchGeneration;
 }
 
 export function mergeNovelIntoShelf(updatedNovel) {

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
@@ -13,6 +13,7 @@ from app.services.novel_bootstrap import (
     build_story_bible,
     generate_arc_outline_bundle,
     generate_global_story_outline,
+    generate_story_engine_strategy_bundle,
     generate_title,
 )
 from app.services.story_architecture import ensure_story_architecture, sync_long_term_state
@@ -22,6 +23,105 @@ from app.services.story_state import ensure_workflow_state, workflow_bootstrap_v
 BOOTSTRAP_STATUS_READY = "planning_ready"
 BOOTSTRAP_STATUS_RUNNING = "bootstrapping"
 BOOTSTRAP_STATUS_FAILED = "bootstrap_failed"
+
+
+BOOTSTRAP_STAGE_DEFINITIONS: list[dict[str, Any]] = [
+    {
+        "stage": "initial_story_seed",
+        "label": "初始化底稿",
+        "description": "准备基础世界设定、主角信息与风格底稿。",
+        "step_index": 1,
+        "step_total": 6,
+    },
+    {
+        "stage": "story_engine_strategy_generation",
+        "label": "题材推进引擎",
+        "description": "分析题材结构，生成前 30 章推进引擎与策略卡。",
+        "step_index": 2,
+        "step_total": 6,
+    },
+    {
+        "stage": "global_outline_generation",
+        "label": "全书总纲",
+        "description": "生成全书总纲，明确主线、阶段目标与长期矛盾。",
+        "step_index": 3,
+        "step_total": 6,
+    },
+    {
+        "stage": "title_generation",
+        "label": "作品包装",
+        "description": "生成书名并校准作品对外包装信息。",
+        "step_index": 4,
+        "step_total": 6,
+    },
+    {
+        "stage": "arc_outline_generation",
+        "label": "首段剧情弧",
+        "description": "生成首个剧情弧与近期章节卡，搭好开局节奏。",
+        "step_index": 5,
+        "step_total": 6,
+    },
+    {
+        "stage": "story_bible_finalize",
+        "label": "Story Bible 收口",
+        "description": "整理 Story Bible、长期状态、模板与控制台快照。",
+        "step_index": 6,
+        "step_total": 6,
+    },
+]
+BOOTSTRAP_STAGE_INDEX = {item["stage"]: item for item in BOOTSTRAP_STAGE_DEFINITIONS}
+
+
+def bootstrap_stage_meta(stage: str) -> dict[str, Any]:
+    item = BOOTSTRAP_STAGE_INDEX.get(stage, {})
+    return {
+        "stage": stage,
+        "label": item.get("label") or stage,
+        "description": item.get("description") or "",
+        "step_index": int(item.get("step_index") or 0),
+        "step_total": int(item.get("step_total") or len(BOOTSTRAP_STAGE_DEFINITIONS) or 0),
+    }
+
+
+def build_bootstrap_progress_payload(*, stage: str, message: str, status: str = "running", novel_id: int | None = None, title: str | None = None, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    meta = bootstrap_stage_meta(stage)
+    step_total = meta.get("step_total") or 0
+    step_index = meta.get("step_index") or 0
+    percent = int(round(step_index / step_total * 100)) if step_total and status == "running" else 100 if status == "completed" else 0
+    payload = {
+        "phase": "bootstrap",
+        "status": status,
+        "stage": stage,
+        "stage_label": meta.get("label") or stage,
+        "stage_description": meta.get("description") or "",
+        "message": message,
+        "step_index": step_index,
+        "step_total": step_total,
+        "percent": max(0, min(percent, 100)),
+    }
+    if novel_id is not None:
+        payload["novel_id"] = novel_id
+    if title:
+        payload["title"] = title
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _emit_bootstrap_progress(progress_callback: Callable[[dict[str, Any]], None] | None, *, stage: str, message: str, status: str = "running", novel: Novel | None = None, title: str | None = None, extra: dict[str, Any] | None = None) -> None:
+    if not progress_callback:
+        return
+    progress_callback(
+        build_bootstrap_progress_payload(
+            stage=stage,
+            message=message,
+            status=status,
+            novel_id=novel.id if novel is not None else None,
+            title=title or (novel.title if novel is not None else None),
+            extra=extra,
+        )
+    )
+
 
 
 class BootstrapLifecycleError(GenerationError):
@@ -180,34 +280,85 @@ def build_bootstrap_error_detail(novel: Novel, exc: GenerationError) -> dict[str
     }
 
 
-def run_bootstrap_pipeline(db: Session, *, novel: Novel, payload: NovelCreate) -> Novel:
+def run_bootstrap_pipeline(
+    db: Session,
+    *,
+    novel: Novel,
+    payload: NovelCreate,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> Novel:
+    _emit_bootstrap_progress(
+        progress_callback,
+        stage="initial_story_seed",
+        message="正在准备基础设定、主角信息与风格底稿。",
+        novel=novel,
+    )
     base_story_bible = build_base_story_bible(payload)
     novel = mark_bootstrap_progress(
         db,
         novel=novel,
-        stage="title_generation",
-        message="正在生成书名。",
+        stage="story_engine_strategy_generation",
+        message="正在分析题材类型并生成前30章推进引擎。",
         story_bible=base_story_bible,
     )
-    title = generate_title(payload)
+    _emit_bootstrap_progress(
+        progress_callback,
+        stage="story_engine_strategy_generation",
+        message="正在分析题材类型并生成前30章推进引擎。",
+        novel=novel,
+    )
+    current_story_bible = deepcopy(novel.story_bible or base_story_bible)
+    story_engine_diagnosis, story_strategy_card = generate_story_engine_strategy_bundle(payload, current_story_bible)
+    current_story_bible = build_base_story_bible(
+        payload,
+        story_engine_diagnosis=story_engine_diagnosis,
+        story_strategy_card=story_strategy_card,
+    )
 
     novel = mark_bootstrap_progress(
         db,
         novel=novel,
         stage="global_outline_generation",
         message="正在生成全书总纲。",
-        story_bible=novel.story_bible or base_story_bible,
-        title=title,
+        story_bible=current_story_bible,
     )
-    current_story_bible = deepcopy(novel.story_bible or base_story_bible)
+    _emit_bootstrap_progress(
+        progress_callback,
+        stage="global_outline_generation",
+        message="正在生成全书总纲。",
+        novel=novel,
+    )
+    current_story_bible = deepcopy(novel.story_bible or current_story_bible)
     global_outline = generate_global_story_outline(payload, current_story_bible)
     current_story_bible["global_outline"] = global_outline
+    novel = mark_bootstrap_progress(
+        db,
+        novel=novel,
+        stage="title_generation",
+        message="正在生成书名并校准作品包装信息。",
+        story_bible=current_story_bible,
+    )
+    _emit_bootstrap_progress(
+        progress_callback,
+        stage="title_generation",
+        message="正在生成书名并校准作品包装信息。",
+        novel=novel,
+    )
+    title = generate_title(payload)
     novel = mark_bootstrap_progress(
         db,
         novel=novel,
         stage="arc_outline_generation",
         message="正在生成首个剧情弧与近期章节卡。",
         story_bible=current_story_bible,
+        title=title,
+    )
+
+    _emit_bootstrap_progress(
+        progress_callback,
+        stage="arc_outline_generation",
+        message="正在生成首个剧情弧与近期章节卡。",
+        novel=novel,
         title=title,
     )
 
@@ -221,7 +372,32 @@ def run_bootstrap_pipeline(db: Session, *, novel: Novel, payload: NovelCreate) -
         recent_summaries=[],
     )
 
-    story_bible = build_story_bible(payload, title, global_outline, first_arc)
+    novel = mark_bootstrap_progress(
+        db,
+        novel=novel,
+        stage="story_bible_finalize",
+        message="正在整理 Story Bible、模板与长期状态。",
+        story_bible=current_story_bible,
+        title=title,
+    )
+    _emit_bootstrap_progress(
+        progress_callback,
+        stage="story_bible_finalize",
+        message="正在整理 Story Bible、模板与长期状态。",
+        novel=novel,
+        title=title,
+    )
+
+    story_bible = build_story_bible(
+        payload,
+        title,
+        global_outline,
+        first_arc,
+        story_engine_diagnosis=story_engine_diagnosis,
+        story_strategy_card=story_strategy_card,
+    )
+    story_bible["story_engine_diagnosis"] = story_engine_diagnosis
+    story_bible["story_strategy_card"] = story_strategy_card
     story_bible["global_outline"] = global_outline
     story_bible["active_arc"] = first_arc
     story_bible["pending_arc"] = None
@@ -231,7 +407,17 @@ def run_bootstrap_pipeline(db: Session, *, novel: Novel, payload: NovelCreate) -
         "bootstrap_generated_until": first_arc["end_chapter"],
     }
     story_bible = sync_story_bible_snapshot(novel=novel, story_bible=story_bible, chapters=[])
-    return mark_bootstrap_success(db, novel=novel, story_bible=story_bible, title=title)
+    result = mark_bootstrap_success(db, novel=novel, story_bible=story_bible, title=title)
+    _emit_bootstrap_progress(
+        progress_callback,
+        stage="completed",
+        message="初始化完成，可以开始生成章节。",
+        status="completed",
+        novel=result,
+        title=title,
+        extra={"percent": 100, "step_index": len(BOOTSTRAP_STAGE_DEFINITIONS), "step_total": len(BOOTSTRAP_STAGE_DEFINITIONS)},
+    )
+    return result
 
 
 def bootstrap_novel(db: Session, *, payload: NovelCreate) -> Novel:

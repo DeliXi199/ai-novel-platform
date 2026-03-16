@@ -28,6 +28,13 @@ def test_ensure_story_state_domains_backfills_missing_sections() -> None:
     assert payload["workflow_state"]["source_arc_no"] == 1
     assert payload["serial_runtime"]["delivery_mode"]
     assert payload["long_term_state"]["chapter_release_state"]["delivery_mode"]
+    assert "story_domains" in payload and "characters" in payload["story_domains"]
+    assert "power_system" in payload and "realm_system" in payload["power_system"]
+    assert "opening_constraints" in payload
+    assert "template_library" in payload
+    assert "planner_state" in payload
+    assert "retrospective_state" in payload
+    assert "flow_control" in payload
 
 
 

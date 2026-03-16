@@ -54,86 +54,109 @@
             <p id="topbarSubtitle" class="subtle-text">你可以在这里管理书架、自动续规划、按章生成、从末尾回删章节，并以沉浸式阅读器查看正文。</p>
           </div>
           <div class="topbar-actions">
-            <button id="openCreatePanelBtn" class="primary-btn" type="button">新建小说</button>
+            <button id="backToWorkspaceBtn" class="ghost-btn hidden" type="button">返回小说管理页</button>
+            <button id="openCreatePanelBtn" class="primary-btn" type="button">进入创建页</button>
             <a class="ghost-btn" href="/docs" target="_blank" rel="noreferrer">API Docs</a>
           </div>
         </header>
 
         <div id="flashContainer" class="flash-stack"></div>
 
-        <section id="createPanel" class="panel glass hidden">
-          <div class="panel-header">
-            <div>
-              <p class="eyebrow">新建项目</p>
-              <h3>初始化小说</h3>
+        <section id="createView" class="view-stack hidden">
+          <section id="createPanel" class="panel glass">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">新建项目</p>
+                <h3>初始化小说</h3>
+              </div>
+              <button id="closeCreatePanelBtn" class="ghost-btn" type="button">返回管理页</button>
             </div>
-            <button id="closeCreatePanelBtn" class="ghost-btn" type="button">收起</button>
-          </div>
-          <form id="createNovelForm" class="grid-form">
-            <label class="field">
-              <span>题材</span>
-              <input name="genre" type="text" placeholder="如：金手指修仙 / 诡异仙侠 / 凡人流" required />
-            </label>
-            <label class="field">
-              <span>主角名</span>
-              <input name="protagonist_name" type="text" placeholder="主角姓名" required />
-            </label>
-            <label class="field field-span-2">
-              <span>故事前提</span>
-              <textarea name="premise" rows="5" placeholder="一句话核心冲突 + 身份处境 + 初始目标 + 风险" required></textarea>
-            </label>
-            <label class="field">
-              <span>文风基调</span>
-              <select name="tone">
-                <option value="">自动</option>
-                <option>冷峻克制</option>
-                <option>热血爽感</option>
-                <option>诡异压抑</option>
-                <option>细腻沉稳</option>
-                <option>轻快俏皮</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>节奏</span>
-              <select name="pace">
-                <option value="">自动</option>
-                <option>慢热铺陈</option>
-                <option>稳步推进</option>
-                <option>高密度爽点</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>视角</span>
-              <select name="pov">
-                <option value="">自动</option>
-                <option>第三人称近距离</option>
-                <option>第一人称</option>
-                <option>多视角</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>战斗描写</span>
-              <select name="combat_style">
-                <option value="">自动</option>
-                <option>写实克制</option>
-                <option>爆发强烈</option>
-                <option>偏智斗与博弈</option>
-              </select>
-            </label>
-            <label class="field field-span-2">
-              <span>额外风格备注</span>
-              <textarea name="style_notes" rows="3" placeholder="如：避免模板化旁白；多用动作与物件带情绪；尽量减少口号式总结"></textarea>
-            </label>
-            <label class="field field-span-2">
-              <span>高级风格 JSON（可选）</span>
-              <textarea name="style_json" rows="4" placeholder='如：{"target_audience":"男频","chapter_feel":"画面感强"}'></textarea>
-            </label>
-            <div class="form-actions field-span-2">
-              <button id="createNovelSubmitBtn" class="primary-btn" type="submit">创建并生成初始规划</button>
+            <form id="createNovelForm" class="grid-form">
+              <label class="field">
+                <span>题材</span>
+                <input name="genre" type="text" placeholder="如：金手指修仙 / 诡异仙侠 / 凡人流" required />
+              </label>
+              <label class="field">
+                <span>主角名</span>
+                <input name="protagonist_name" type="text" placeholder="主角姓名" required />
+              </label>
+              <label class="field field-span-2">
+                <span>故事前提</span>
+                <textarea name="premise" rows="5" placeholder="一句话核心冲突 + 身份处境 + 初始目标 + 风险" required></textarea>
+              </label>
+              <label class="field">
+                <span>文风基调</span>
+                <select name="tone">
+                  <option value="">自动</option>
+                  <option>冷峻克制</option>
+                  <option>热血爽感</option>
+                  <option>诡异压抑</option>
+                  <option>细腻沉稳</option>
+                  <option>轻快俏皮</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>节奏</span>
+                <select name="pace">
+                  <option value="">自动</option>
+                  <option>慢热铺陈</option>
+                  <option>稳步推进</option>
+                  <option>高密度爽点</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>视角</span>
+                <select name="pov">
+                  <option value="">自动</option>
+                  <option>第三人称近距离</option>
+                  <option>第一人称</option>
+                  <option>多视角</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>战斗描写</span>
+                <select name="combat_style">
+                  <option value="">自动</option>
+                  <option>写实克制</option>
+                  <option>爆发强烈</option>
+                  <option>偏智斗与博弈</option>
+                </select>
+              </label>
+              <label class="field field-span-2">
+                <span>额外风格备注</span>
+                <textarea name="style_notes" rows="3" placeholder="如：避免模板化旁白；多用动作与物件带情绪；尽量减少口号式总结"></textarea>
+              </label>
+              <label class="field field-span-2">
+                <span>高级风格 JSON（可选）</span>
+                <textarea name="style_json" rows="4" placeholder='如：{"target_audience":"男频","chapter_feel":"画面感强"}'></textarea>
+              </label>
+              <div class="form-actions field-span-2">
+                <button id="createNovelSubmitBtn" class="primary-btn" type="submit">创建并进入初始化任务</button>
+              </div>
+            </form>
+          </section>
+
+          <section id="createTaskPanel" class="panel glass hidden">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">创建任务</p>
+                <h3>初始化进度</h3>
+              </div>
             </div>
-          </form>
+            <div id="createTaskStatusText">等待提交创建任务。</div>
+            <div class="create-task-stage-row">
+              <span id="createTaskStageChip" class="task-status-chip queued">等待提交</span>
+              <span id="createTaskStepText" class="subtle-text">阶段 0 / 0</span>
+            </div>
+            <div class="create-task-progress-track">
+              <div id="createTaskProgressBar" class="create-task-progress-bar"></div>
+            </div>
+            <div id="createTaskMeta" class="subtle-text">创建成功后会自动进入小说管理页；失败时会保留失败现场和任务记录。</div>
+            <div id="createTaskEventList" class="create-task-event-list subtle-text"></div>
+          </section>
         </section>
 
+        <section id="workspaceView">
         <section class="overview-grid">
           <article class="metric-card glass">
             <span class="metric-label">当前小说</span>
@@ -185,6 +208,17 @@
                 <button class="ghost-btn export-btn" data-format="docx" type="button">DOCX</button>
                 <button class="ghost-btn export-btn" data-format="pdf" type="button">PDF</button>
               </div>
+            </div>
+          </div>
+          <div class="section-divider"></div>
+          <div class="actions-grid">
+            <label class="field compact-field field-span-2">
+              <span>小说名称</span>
+              <input id="renameNovelInput" type="text" placeholder="选择小说后可修改名称" />
+            </label>
+            <div class="field compact-field">
+              <span>改名</span>
+              <button id="renameNovelBtn" class="ghost-btn" type="button">保存新名称</button>
             </div>
           </div>
           <div class="section-divider"></div>
@@ -282,6 +316,20 @@
             <section class="panel glass">
               <div class="panel-header">
                 <div>
+                  <p class="eyebrow">任务中心</p>
+                  <h3>最近任务与恢复操作</h3>
+                </div>
+                <div class="action-row wrap-row">
+                  <button id="refreshTaskHistoryBtn" class="ghost-btn" type="button">刷新任务</button>
+                  <button id="cleanupTaskHistoryBtn" class="ghost-btn" type="button">清理旧记录</button>
+                </div>
+              </div>
+              <div id="taskHistoryList" class="timeline-list"></div>
+            </section>
+
+            <section class="panel glass">
+              <div class="panel-header">
+                <div>
                   <p class="eyebrow">运行日志</p>
                   <h3>批量生成进度</h3>
                 </div>
@@ -289,6 +337,7 @@
               <div id="activityLog" class="activity-log"></div>
             </section>
           </aside>
+        </section>
         </section>
       </main>
     </div>
@@ -404,6 +453,6 @@
       </article>
     </template>
 
-    <script type="module" src="/app/assets/app.js?v=20260313d"></script>
+    <script type="module" src="/app/assets/app.js?v=20260316c"></script>
   </body>
 </html>

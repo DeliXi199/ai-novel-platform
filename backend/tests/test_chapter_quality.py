@@ -1,6 +1,6 @@
 import pytest
 
-from app.services.chapter_quality import build_quality_feedback, repair_incomplete_ending, validate_chapter_content
+from app.services.chapter_quality import build_quality_feedback, validate_chapter_content
 from app.services.generation_exceptions import ErrorCodes, GenerationError
 
 
@@ -203,25 +203,47 @@ def test_build_quality_feedback_no_longer_reports_unclear_progress_result() -> N
     assert all("结果线索" not in item for item in feedback["suggestions"])
 
 
-TRUNCATED_ENDING_TEXT = """
-林玄把那枚灰种压在掌心里，先没有急着继续催动，只把另一块灵石贴到指腹边缘。
-灵石中那点淡薄灵气随即被牵出一缕，顺着经络往胸口探去。
-灰种立刻有了反应。
-他当即停住动作，把灵石按回袖里，生怕再慢半拍，掌心那点余温都会被一并抽走。
-这一下虽短，却已经足够让他确认，灰种果然会吞掉外来的灵气。
-抽吸感骤然加剧，灵石里的灵气被强行
+WORD_REPETITION_BUT_NOT_STRUCTURAL_MESS_TEXT = """
+方尘先按住石面，又侧耳去听墙外的风声，确认那点温差是不是错位的风口。
+石下果然透出一缕微弱凉意，但他没有急着拆开，而是先把碎屑扫到一边，又抬手摸了一遍边缘，免得留下明显痕迹。
+他又换了个角度按下去，这次仍只有微弱触感顺着指腹滑过，像是底下另有夹层，逼得他把短刀翻出来慢慢试探。
+等院外脚步声逼近，他立刻抬刀沿着裂缝慢慢撬开，终于看见一张被潮气浸得发皱的油纸角。
+他刚把油纸抽出来，墙外便响起一声短促的咳嗽，让他立刻意识到这里未必只有自己发现了这道暗缝，也知道今晚不能再按原路退走。
 """.strip()
 
 
-def test_repair_incomplete_ending_trims_truncated_tail_to_last_complete_sentence() -> None:
-    repaired = repair_incomplete_ending(TRUNCATED_ENDING_TEXT, ending_issue="missing_terminal_punctuation")
-    assert repaired is not None
-    assert repaired.endswith("。")
-    assert "被强行" not in repaired
-    assert repaired.splitlines()[-1] == "这一下虽短，却已经足够让他确认，灰种果然会吞掉外来的灵气。"
+def test_validate_chapter_content_does_not_reject_single_word_repetition_alone() -> None:
+    validate_chapter_content(
+        title="第10章",
+        content=WORD_REPETITION_BUT_NOT_STRUCTURAL_MESS_TEXT,
+        min_visible_chars=80,
+        hard_min_visible_chars=60,
+        target_visible_chars_max=420,
+        hook_style="信息反转",
+        chapter_plan={"progress_kind": "信息推进", "event_type": "发现类"},
+        recent_plan_meta=[{"event_type": "试探类"}, {"event_type": "资源获取类"}],
+    )
 
 
-def test_repair_incomplete_ending_appends_terminal_punctuation_when_only_missing_period() -> None:
-    text = "林玄把木匣重新收入袖中，心里已经记下那道细微裂痕"
-    repaired = repair_incomplete_ending(text, ending_issue="missing_terminal_punctuation")
-    assert repaired == text + "。"
+STRUCTURALLY_MESSY_TEXT = """
+他没有立刻，而是先看着桌上的旧铜牌，像是非要把上面的裂痕看清。
+他没有立刻，而是先看着掌心的旧铜牌，像是非要把上面的裂痕看清。
+他没有立刻，而是先看着袖里的旧铜牌，像是非要把上面的裂痕看清。
+他没有立刻，而是先看着柜角的旧铜牌，像是非要把上面的裂痕看清。
+他没有立刻，而是先看着案边的旧铜牌，像是非要把上面的裂痕看清。
+""".strip()
+
+
+def test_validate_chapter_content_rejects_structural_repetition_as_too_messy(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.chapter_quality._messy_ai_review", lambda *args, **kwargs: None)
+    with pytest.raises(GenerationError) as exc_info:
+        validate_chapter_content(
+            title="第11章",
+            content=STRUCTURALLY_MESSY_TEXT,
+            min_visible_chars=20,
+            hard_min_visible_chars=20,
+            target_visible_chars_max=320,
+            hook_style="信息反转",
+        )
+    assert exc_info.value.code == ErrorCodes.CHAPTER_TOO_MESSY
+    assert "messy_metrics" in (exc_info.value.details or {})

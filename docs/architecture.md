@@ -17,10 +17,10 @@
 
 - `backend/app/api/routes/novels.py`：聚合入口，只负责挂载子路由
 - `backend/app/api/routes/novel_management.py`：建书、查书、删书、bootstrap 重试
-- `backend/app/api/routes/novel_runtime.py`：规划窗口、控制台、serial state、facts、serial mode
+- `backend/app/api/routes/novel_runtime.py`：规划窗口、控制台、serial state、facts、serial mode、workspace 聚合载入
 - `backend/app/api/routes/novel_chapters.py`：章节列表、发布、删尾、导出、单章/批量生成
 - `backend/app/api/routes/novel_interventions.py`：人工干预
-- `backend/app/api/routes/novel_common.py`：共享辅助函数
+- `backend/app/api/routes/novel_common.py`：共享辅助函数与运行态快照缓存接线
 
 ### Service layer
 
@@ -30,10 +30,11 @@
 - `chapter_quality.py`：质量检查与反馈
 - `hard_fact_guard.py`：硬事实守卫与冲突报告
 - `novel_lifecycle.py`：bootstrap 与快照同步
+- `runtime_snapshot_cache.py`：控制台 / serial-state / facts 等读取型接口的轻量 LRU 快照缓存
 
 ## Frontend structure
 
-- `frontend/assets/app.js`：工作台主编排层，连接数据加载、交互动作与页面模块
+- `frontend/assets/app.js`：工作台主编排层，优先通过 workspace 聚合接口完成整页装载
 - `frontend/assets/app/core.js`：全局状态、DOM 引用、基础工具、API 请求、活动日志
 - `frontend/assets/app/ui_helpers.js`：确认框、章节卡片、SSE block 解析、创建表单辅助
 - `frontend/assets/app/renderers.js`：书架、主控台、目录、预览、阅读页渲染
@@ -65,3 +66,4 @@
 - Story Bible 现在多了一层 `story_state` 域快照，为后续拆表、状态迁移和观测埋点准备了稳定接口
 - 默认初始化不再预生成正文，更符合连载项目的真实使用方式
 - 保留单体部署优点，但内部结构更适合继续扩展
+- 运行态读取接口不再次次全量重算 Story Bible 快照，长书场景下更稳

@@ -299,6 +299,7 @@ def _attempt_generate_validated_chapter(
         "too_short": max(int(getattr(settings, "chapter_too_short_retry_attempts", 0) or 0), 0),
         "ending_incomplete": max(int(getattr(settings, "chapter_tail_fix_attempts", 0) or 0), 0),
         "weak_ending": max(int(getattr(settings, "chapter_weak_ending_retry_attempts", 0) or 0), 0),
+        "too_messy": max(int(getattr(settings, "chapter_too_messy_retry_attempts", 0) or 0), 0),
     }
     idx = 0
     llm_attempt_count = 0
@@ -351,8 +352,14 @@ def _attempt_generate_validated_chapter(
         except GenerationError as exc:
             last_error = exc
             _record_quality_rejection(exc, quality_rejections=quality_rejections, attempt_no=attempt_no, attempt_plan=attempt_plan)
-            repair_action = classify_chapter_repair(exc, attempt_plan=attempt_plan, targets=targets)
-            if repair_action and repair_budgets.get(repair_action.repair_type, 0) > 0:
+            repair_action = classify_chapter_repair(
+                exc,
+                attempt_plan=attempt_plan,
+                targets=targets,
+                repair_trace=repair_trace,
+                attempt_no=attempt_no,
+            )
+            while repair_action and repair_budgets.get(repair_action.repair_type, 0) > 0:
                 repair_trace.append({
                     "attempt_no": attempt_no,
                     "repair_type": repair_action.repair_type,
@@ -360,7 +367,7 @@ def _attempt_generate_validated_chapter(
                     "reason": repair_action.reason,
                     "status": "scheduled",
                 })
-                if repair_action.execution_mode == "append_extension":
+                if repair_action.execution_mode in {"append_inline_tail", "replace_last_paragraph", "replace_last_two_paragraphs"}:
                     _ensure_generation_runtime_budget(started_at=started_at, stage="chapter_extension", chapter_no=chapter_no, attempt_no=attempt_no)
                     extension_timeout = _compute_llm_timeout_seconds(
                         started_at=started_at,
@@ -414,8 +421,17 @@ def _attempt_generate_validated_chapter(
                                 repair_attempt=True,
                                 repair_mode=repaired_result.strategy_id,
                             )
+                            repair_action = classify_chapter_repair(
+                                repair_exc,
+                                attempt_plan=attempt_plan,
+                                targets=targets,
+                                repair_trace=repair_trace,
+                                attempt_no=attempt_no,
+                            )
+                            continue
                     else:
                         repair_trace[-1]["status"] = "no_change"
+                    break
                 elif repair_action.execution_mode == "insert_retry_attempt" and repair_action.retry_plan:
                     repair_budgets[repair_action.repair_type] -= 1
                     attempts.insert(idx + 1, repair_action.retry_plan)
@@ -425,6 +441,7 @@ def _attempt_generate_validated_chapter(
                         time.sleep(delay_ms / 1000.0)
                     idx += 1
                     continue
+                break
             if idx >= len(attempts) - 1:
                 break
         idx += 1

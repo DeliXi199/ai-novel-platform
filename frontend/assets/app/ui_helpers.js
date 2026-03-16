@@ -3,7 +3,7 @@ import {
   refs,
   fmtDate,
   cloneTemplateFirstElement,
-} from "/app/assets/app/core.js?v=20260313b";
+} from "/app/assets/app/core.js?v=20260316c";
 
 export function buildChapterCardNode(chapter, lastChapterNo, { onSelectChapter, onOpenReader, onDeleteTailFrom }) {
   const node = cloneTemplateFirstElement(refs.chapterCardTemplate) || document.createElement("article");
@@ -102,7 +102,7 @@ export function collectStylePreferences(form) {
 }
 
 export function formatQualityFeedback(payload) {
-  const feedback = payload?.details?.quality_feedback;
+  const feedback = payload?.quality_feedback || payload?.details?.quality_feedback;
   if (!feedback || typeof feedback !== "object") return "";
   const parts = [];
   if (feedback.reasons?.length) parts.push(`原因：${feedback.reasons.join("；")}`);

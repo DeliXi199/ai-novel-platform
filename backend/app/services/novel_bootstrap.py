@@ -3,8 +3,13 @@ from __future__ import annotations
 from app.core.config import settings
 from app.schemas.novel import NovelCreate
 from app.services.openai_story_engine import (
+    apply_arc_casting_layout_review,
     generate_arc_outline,
     generate_global_outline,
+    review_arc_casting_layout,
+    generate_story_engine_diagnosis,
+    generate_story_engine_strategy_bundle as generate_story_engine_strategy_bundle_payload,
+    generate_story_strategy_card,
 )
 from app.services.story_architecture import compose_story_bible
 
@@ -22,7 +27,24 @@ def _story_text(payload: NovelCreate) -> str:
 
 
 
-def _opening_pacing_rules(payload: NovelCreate) -> dict[str, str]:
+def _opening_pacing_rules(
+    payload: NovelCreate,
+    story_engine_diagnosis: dict[str, object] | None = None,
+    story_strategy_card: dict[str, object] | None = None,
+) -> dict[str, str]:
+    diagnosis = story_engine_diagnosis or {}
+    strategy = story_strategy_card or {}
+    if diagnosis:
+        phase_1 = (strategy.get("chapter_1_to_10") or {}) if isinstance(strategy, dict) else {}
+        phase_2 = (strategy.get("chapter_11_to_20") or {}) if isinstance(strategy, dict) else {}
+        frequent = "、".join([str(item).strip() for item in (phase_1.get("frequent_elements") or []) if str(item).strip()][:4]) or "资源、关系、局势与结果"
+        limited = "、".join([str(item).strip() for item in (phase_1.get("limited_elements") or []) if str(item).strip()][:3]) or "重复被怀疑后被动应付"
+        must_haves = "、".join([str(item).strip() for item in (diagnosis.get("early_must_haves") or []) if str(item).strip()][:4]) or "现实压力、第一轮有效收益、主线入口"
+        return {
+            "overall": str(diagnosis.get("opening_drive") or "前期先把主角处境、第一轮目标和主线引擎钉牢。"),
+            "first_three_chapters": f"前3章先完成这些必要建立：{must_haves}。",
+            "first_twelve_chapters": f"前12章优先轮换{frequent}，主动限制{limited}；到中前段要完成：{str(phase_2.get('stage_mission') or strategy.get('first_30_mainline_summary') or '阶段推进')}",
+        }
     story_text = _story_text(payload)
     if any(token in story_text for token in ["金手指", "机缘", "外挂", "神器"]):
         return {
@@ -50,7 +72,26 @@ def _opening_pacing_rules(payload: NovelCreate) -> dict[str, str]:
 
 
 
-def build_base_story_bible(payload: NovelCreate) -> dict:
+def generate_story_engine_diagnosis_bundle(payload: NovelCreate, story_bible: dict[str, object]) -> dict:
+    diagnosis = generate_story_engine_diagnosis(payload.model_dump(mode="python"), story_bible)
+    return diagnosis.model_dump(mode="python")
+
+
+def generate_story_strategy_bundle(payload: NovelCreate, story_bible: dict[str, object]) -> dict:
+    strategy = generate_story_strategy_card(payload.model_dump(mode="python"), story_bible)
+    return strategy.model_dump(mode="python")
+
+
+def generate_story_engine_strategy_bundle(payload: NovelCreate, story_bible: dict[str, object]) -> tuple[dict, dict]:
+    bundle = generate_story_engine_strategy_bundle_payload(payload.model_dump(mode="python"), story_bible)
+    return bundle.story_engine_diagnosis.model_dump(mode="python"), bundle.story_strategy_card.model_dump(mode="python")
+
+
+def build_base_story_bible(
+    payload: NovelCreate,
+    story_engine_diagnosis: dict[str, object] | None = None,
+    story_strategy_card: dict[str, object] | None = None,
+) -> dict:
     genre = payload.genre.strip()
     premise = payload.premise.strip()
     protagonist = payload.protagonist_name.strip()
@@ -92,7 +133,9 @@ def build_base_story_bible(payload: NovelCreate) -> dict:
             "enforce_effective_progress": True,
             "enforce_hook_strength": True,
         },
-        "pacing_rules": _opening_pacing_rules(payload),
+        "story_engine_diagnosis": story_engine_diagnosis or {},
+        "story_strategy_card": story_strategy_card or {},
+        "pacing_rules": _opening_pacing_rules(payload, story_engine_diagnosis=story_engine_diagnosis, story_strategy_card=story_strategy_card),
         "characterization_rules": [
             "配角不能只做剧情按钮，要带一点自己的私心、职业习惯、说话方式或防备心理。",
             "重复出现的配角至少要有一个可辨认的小动作、小习惯或固定顾虑。",
@@ -208,7 +251,7 @@ def generate_arc_outline_bundle(
         if item and item not in seen_bridge:
             seen_bridge.append(item)
 
-    return {
+    bundle = {
         "arc_no": arc_no,
         "start_chapter": start_chapter,
         "end_chapter": end_chapter,
@@ -216,9 +259,32 @@ def generate_arc_outline_bundle(
         "bridge_note": " ".join(seen_bridge[:2]) if seen_bridge else "这一段先稳住承接，再把风险轻轻抬高。",
         "chapters": chapters,
     }
+    review = review_arc_casting_layout(
+        payload=payload.model_dump(mode="python"),
+        story_bible=story_bible,
+        global_outline=global_outline,
+        recent_summaries=recent,
+        arc_bundle=bundle,
+    )
+    return apply_arc_casting_layout_review(bundle, review)
 
 
 
-def build_story_bible(payload: NovelCreate, title: str, global_outline: dict, first_arc: dict) -> dict:
-    base = build_base_story_bible(payload)
-    return compose_story_bible(payload, title, base, global_outline, first_arc)
+def build_story_bible(
+    payload: NovelCreate,
+    title: str,
+    global_outline: dict,
+    first_arc: dict,
+    story_engine_diagnosis: dict[str, object] | None = None,
+    story_strategy_card: dict[str, object] | None = None,
+) -> dict:
+    base = build_base_story_bible(payload, story_engine_diagnosis=story_engine_diagnosis, story_strategy_card=story_strategy_card)
+    return compose_story_bible(
+        payload,
+        title,
+        base,
+        global_outline,
+        first_arc,
+        story_engine_diagnosis=story_engine_diagnosis,
+        story_strategy_card=story_strategy_card,
+    )

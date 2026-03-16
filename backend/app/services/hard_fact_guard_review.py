@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
 from app.core.config import settings
 from app.services.hard_fact_guard_utils import _clean_text
 from app.services.llm_runtime import call_json_response, provider_name
+from app.services.prompt_support import compact_json, middle_excerpt
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,10 @@ def _hard_fact_review_system_prompt() -> str:
 
 
 def _hard_fact_review_user_prompt(*, chapter_no: int, chapter_title: str, serial_stage: str, content: str, reference_state: dict[str, Any], facts: dict[str, Any], conflicts: list[dict[str, Any]]) -> str:
+    compact_conflicts = conflicts[:8]
+    compact_facts = {key: facts.get(key) for key in list((facts or {}).keys())[:8]}
+    compact_reference = _compact_state_for_review(reference_state, compact_conflicts)
+    content_excerpt = middle_excerpt(content, max_chars=1800)
     return (
         f"chapter_no: {chapter_no}\n"
         f"chapter_title: {chapter_title}\n"
