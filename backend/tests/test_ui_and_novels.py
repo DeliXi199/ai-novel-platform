@@ -275,8 +275,8 @@ def test_hard_fact_endpoint_exposes_guard(novel_id: int) -> None:
     assert "published_state" in payload["hard_fact_guard"]
 
 
-def test_control_console_and_serial_state_expose_story_state(novel_id: int) -> None:
-    console_payload = client.get(f"/api/v1/novels/{novel_id}/control-console").json()
+def test_story_workspace_and_serial_state_expose_story_state(novel_id: int) -> None:
+    console_payload = client.get(f"/api/v1/novels/{novel_id}/story-workspace").json()
     assert "story_state" in console_payload
     assert "planning_window" in console_payload["story_state"]
 
@@ -559,13 +559,13 @@ def test_failed_generation_feedback_is_exposed_for_retry_prompt() -> None:
         db.close()
 
 
-def test_workspace_endpoint_returns_aggregated_payload(novel_id: int) -> None:
-    response = client.get(f"/api/v1/novels/{novel_id}/workspace")
+def test_story_studio_endpoint_returns_aggregated_payload(novel_id: int) -> None:
+    response = client.get(f"/api/v1/novels/{novel_id}/story-studio")
     assert response.status_code == 200
     payload = response.json()
     assert payload["novel"]["id"] == novel_id
     assert payload["chapters"]["total"] == 3
-    assert payload["console_data"]["novel_id"] == novel_id
+    assert payload["story_workspace"]["novel_id"] == novel_id
     assert payload["planning_data"]["novel_id"] == novel_id
     assert payload["interventions"]["total"] == 1
     assert payload["selected_chapter_no"] == 3
@@ -573,15 +573,15 @@ def test_workspace_endpoint_returns_aggregated_payload(novel_id: int) -> None:
 
 
 
-def test_workspace_endpoint_honors_desired_chapter(novel_id: int) -> None:
-    response = client.get(f"/api/v1/novels/{novel_id}/workspace?desired_chapter_no=2")
+def test_story_studio_endpoint_honors_desired_chapter(novel_id: int) -> None:
+    response = client.get(f"/api/v1/novels/{novel_id}/story-studio?desired_chapter_no=2")
     assert response.status_code == 200
     payload = response.json()
     assert payload["selected_chapter_no"] == 2
     assert payload["selected_chapter"]["title"] == "河滩碎骨"
 
 
-def test_control_console_uses_runtime_snapshot_cache(novel_id: int, monkeypatch) -> None:
+def test_story_workspace_uses_runtime_snapshot_cache(novel_id: int, monkeypatch) -> None:
     from app.api.routes import novel_common
 
     calls = {"count": 0}
@@ -593,8 +593,8 @@ def test_control_console_uses_runtime_snapshot_cache(novel_id: int, monkeypatch)
 
     monkeypatch.setattr(novel_common, "sync_story_bible_snapshot", _counted)
 
-    first = client.get(f"/api/v1/novels/{novel_id}/control-console")
-    second = client.get(f"/api/v1/novels/{novel_id}/control-console")
+    first = client.get(f"/api/v1/novels/{novel_id}/story-workspace")
+    second = client.get(f"/api/v1/novels/{novel_id}/story-workspace")
 
     assert first.status_code == 200
     assert second.status_code == 200
@@ -613,7 +613,7 @@ def test_runtime_snapshot_cache_invalidates_after_chapter_update(novel_id: int, 
 
     monkeypatch.setattr(novel_common, "sync_story_bible_snapshot", _counted)
 
-    first = client.get(f"/api/v1/novels/{novel_id}/control-console")
+    first = client.get(f"/api/v1/novels/{novel_id}/story-workspace")
     assert first.status_code == 200
     assert calls["count"] == 1
 
@@ -627,7 +627,7 @@ def test_runtime_snapshot_cache_invalidates_after_chapter_update(novel_id: int, 
     finally:
         db.close()
 
-    second = client.get(f"/api/v1/novels/{novel_id}/control-console")
+    second = client.get(f"/api/v1/novels/{novel_id}/story-workspace")
     assert second.status_code == 200
     assert calls["count"] == 2
 
@@ -640,3 +640,91 @@ def test_rename_novel_endpoint_updates_title(novel_id: int) -> None:
 
     shelf = client.get("/api/v1/novels").json()
     assert shelf["items"][0]["title"] == "改名后的测试小说"
+
+
+def test_live_runtime_payload_exposes_payoff_runtime_and_queue_preview(novel_id: int) -> None:
+    db = TestingSessionLocal()
+    novel = db.query(Novel).filter(Novel.id == novel_id).first()
+    novel.story_bible = {
+        **(novel.story_bible or {}),
+        "workflow_state": {
+            "live_runtime": {
+                "stage": "drafting",
+                "payoff_mode": "压价反杀",
+                "payoff_debt_level": "medium",
+                "payoff_runtime_note": "最近节奏略欠回报，这章至少要有一手可感兑现。",
+                "failed_stage": "chapter_quality",
+                "last_error_message": "上一章场景没收干净，这章开头却直接跳场。",
+                "updated_at": "2026-03-16T21:00:00Z",
+                "retry_feedback": {"problem": "上一章旧场景没有先续上", "correction": "开头两段先吃掉上一章动作后果。"},
+                "last_error_details": {
+                    "scene_continuity_issue": "missing_opening_continuation",
+                    "quality_feedback": {
+                        "message": "上一章明明还挂着旧场景，这一章开头却没有先吃掉旧场景的动作后果或关键承接物。",
+                        "display_message": "开头没先续上旧场景",
+                        "metrics": {"scene_continuity_issue": "missing_opening_continuation"},
+                    },
+                },
+            },
+            "current_pipeline": {"target_chapter_no": 4, "last_live_stage": "drafting"},
+        },
+        "story_workspace": {
+            "planning_status": {"planned_until": 6},
+            "chapter_card_queue": [
+                {
+                    "chapter_no": 4,
+                    "title": "药铺压价",
+                    "goal": "拿到关键药材",
+                    "progress_kind": "资源推进",
+                    "payoff_or_pressure": "换到药材，但被掌柜记住",
+                    "payoff_mode": "压价反杀",
+                }
+            ],
+            "current_execution_packet": {
+                "scene_execution_card": {
+                    "scene_count": 2,
+                    "scene_transition_mode": "soft_cut",
+                    "must_continue_same_scene": True,
+                    "scene_opening_anchor": "掌柜递茶时，主角没有立刻接。",
+                    "scene_sequence_note": "先续上，再决定切不切。",
+                },
+                "scene_outline": [
+                    {"scene_no": 1, "scene_name": "同场景续接场", "scene_role": "opening", "purpose": "先把旧场景动作收住"},
+                    {"scene_no": 2, "scene_name": "交易试探场", "scene_role": "main", "purpose": "继续压价试探"},
+                ],
+            },
+        },
+        "serial_runtime": {
+            "previous_chapter_bridge": {
+                "scene_handoff_card": {
+                    "scene_status_at_end": "open",
+                    "must_continue_same_scene": True,
+                    "allowed_transition": "none",
+                    "next_opening_anchor": "掌柜递茶时，主角没有立刻接。",
+                    "unfinished_actions": ["还没试出掌柜底线"],
+                    "carry_over_items": ["半张账单"],
+                }
+            }
+        },
+    }
+    db.add(novel)
+    db.commit()
+    db.close()
+
+    response = client.get(f"/api/v1/novels/{novel_id}/live-runtime")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["live_runtime"]["payoff_mode"] == "压价反杀"
+    assert payload["live_runtime"]["payoff_debt_level"] == "medium"
+    assert payload["queue_preview"][0]["payoff_or_pressure"] == "换到药材，但被掌柜记住"
+    assert payload["queue_preview"][0]["payoff_mode"] == "压价反杀"
+    assert payload["scene_debug"]["scene_handoff_card"]["scene_status_at_end"] == "open"
+    assert payload["scene_debug"]["scene_execution_card"]["must_continue_same_scene"] is True
+    assert payload["scene_debug"]["continuity_diagnostic"]["issue"] == "missing_opening_continuation"
+
+
+def test_workspace_payload_exposes_scene_debug(novel_id: int) -> None:
+    response = client.get(f"/api/v1/novels/{novel_id}/story-studio")
+    assert response.status_code == 200
+    payload = response.json()
+    assert "scene_debug" in payload["planning_data"]

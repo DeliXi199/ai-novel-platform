@@ -200,7 +200,7 @@ input:focus, textarea:focus, select:focus {
 }
 
 .overview-grid,
-.workspace-grid,
+.studio-grid,
 .grid-form,
 .actions-grid,
 .reader-layout {
@@ -209,9 +209,9 @@ input:focus, textarea:focus, select:focus {
 }
 .overview-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .actions-grid { grid-template-columns: 180px 1fr 1fr; }
-.workspace-grid { grid-template-columns: minmax(0, 1.3fr) minmax(340px, 0.9fr); align-items: start; }
-.workspace-main-column,
-.workspace-side-column,
+.studio-grid { grid-template-columns: minmax(0, 1.3fr) minmax(340px, 0.9fr); align-items: start; }
+.studio-main-column,
+.studio-side-column,
 .info-stack,
 .timeline-list,
 .activity-log,
@@ -523,7 +523,7 @@ input:focus, textarea:focus, select:focus {
 
 @media (max-width: 1480px) {
   .overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .workspace-grid { grid-template-columns: 1fr; }
+  .studio-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 1120px) {
   .shell { grid-template-columns: 1fr; }
@@ -582,3 +582,6 @@ input:focus, textarea:focus, select:focus {
   background: rgba(15, 23, 42, 0.42);
   border: 1px solid rgba(148, 163, 184, 0.14);
 }
+
+
+#createTaskHistoryPanel .task-item { margin-bottom: 10px; }

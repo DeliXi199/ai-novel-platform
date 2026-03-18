@@ -41,6 +41,30 @@ def _dedupe_texts(values: list[Any] | None, *, limit: int = 6) -> list[str]:
     return items
 
 
+def _clean_role_function_label(value: Any) -> str:
+    text = _text(value)
+    if not text:
+        return ""
+    prefixes = (
+        "切到",
+        "换到",
+        "换成",
+        "改成",
+        "转成",
+        "升级为",
+        "升级成",
+        "调整为",
+        "切换到",
+        "变成",
+    )
+    cleaned = text
+    for prefix in prefixes:
+        if cleaned.startswith(prefix) and len(cleaned) > len(prefix):
+            cleaned = cleaned[len(prefix):].strip(" ：:，,。；;")
+            break
+    return cleaned[:20] or text[:20]
+
+
 def _casting_action_label(action: str) -> str:
     mapping = {
         "new_core_entry": "补新人",
@@ -271,8 +295,8 @@ def summarize_arc_casting_layout_review(arc: dict[str, Any] | None, *, limit: in
 
 
 def _latest_stage_review(story_bible: dict[str, Any]) -> dict[str, Any] | None:
-    console = (story_bible or {}).get("control_console") or {}
-    reviews = console.get("stage_character_reviews") or []
+    workspace_state = (story_bible or {}).get("story_workspace") or {}
+    reviews = workspace_state.get("stage_character_reviews") or []
     for item in reversed(reviews):
         if isinstance(item, dict):
             return item
@@ -335,10 +359,10 @@ def _build_casting_defer_diagnostics(
     stage_start_chapter: int,
     stage_end_chapter: int,
 ) -> dict[str, Any]:
-    console = (story_bible or {}).get("control_console") or {}
+    workspace_state = (story_bible or {}).get("story_workspace") or {}
     history = [
         item
-        for item in (console.get("stage_casting_resolution_history") or [])
+        for item in (workspace_state.get("stage_casting_resolution_history") or [])
         if isinstance(item, dict) and stage_start_chapter <= int(item.get("chapter_no", 0) or 0) <= stage_end_chapter
     ]
     history.sort(key=lambda item: int(item.get("chapter_no", 0) or 0))
@@ -396,7 +420,7 @@ def _build_casting_defer_diagnostics(
         summary = "最近几章人物投放更像是节奏不顺或同类动作挤在一起，不是纯名额问题；下一窗口要错章、换对象或降频。"
         bias = "restage_actions"
     else:
-        summary = "最近几章人物投放常被 AI 判断为本章不合适，说明章法承接偏弱；下一窗口先让人物线和冲突线更顺，再落动作。"
+        summary = "最近几章人物投放常被 AI 判断为本章不合适而延后，说明窗口承接偏弱；下一窗口先让人物线和冲突线更顺，再落动作。"
         bias = "tighten_chapter_fit"
 
     return {
@@ -438,8 +462,8 @@ def build_stage_review_window_progress(story_bible: dict[str, Any], review: dict
         if isinstance(item, dict) and start_chapter <= int(item.get("chapter_no", 0) or 0) <= end_chapter and (_text(item.get("slot_id")) or _text(item.get("character")))
     }
 
-    console = (story_bible or {}).get("control_console") or {}
-    role_refresh_history = console.get("role_refresh_history") or []
+    workspace_state = (story_bible or {}).get("story_workspace") or {}
+    role_refresh_history = workspace_state.get("role_refresh_history") or []
     executed_role_targets = {
         _text(item.get("character"))
         for item in role_refresh_history
@@ -448,7 +472,7 @@ def build_stage_review_window_progress(story_bible: dict[str, Any], review: dict
 
     resolution_history = [
         item
-        for item in (console.get("stage_casting_resolution_history") or [])
+        for item in (workspace_state.get("stage_casting_resolution_history") or [])
         if isinstance(item, dict) and start_chapter <= int(item.get("chapter_no", 0) or 0) <= end_chapter
     ]
     reviewed_new_execute_targets = {
@@ -687,7 +711,7 @@ def record_stage_casting_resolution(
         elif planned_action:
             execution_status = "deferred_after_review" if ai_verdict in {"defer_to_next", "hold_steady", "soft_consider"} or final_do_not_force else "not_executed"
     elif planned_action == "role_refresh":
-        role_refresh_history = (((story_bible or {}).get("control_console") or {}).get("role_refresh_history") or [])
+        role_refresh_history = (((story_bible or {}).get("story_workspace") or {}).get("role_refresh_history") or [])
         executed_refresh = next(
             (
                 item
@@ -746,10 +770,10 @@ def record_stage_casting_resolution(
         "execution_status": execution_status,
         "resolution_status": resolution_status,
     }
-    console = (story_bible or {}).setdefault("control_console", {})
-    history = [item for item in (console.get("stage_casting_resolution_history") or []) if isinstance(item, dict) and int(item.get("chapter_no", 0) or 0) != int(chapter_no or 0)]
+    workspace_state = (story_bible or {}).setdefault("story_workspace", {})
+    history = [item for item in (workspace_state.get("stage_casting_resolution_history") or []) if isinstance(item, dict) and int(item.get("chapter_no", 0) or 0) != int(chapter_no or 0)]
     history.append(entry)
-    console["stage_casting_resolution_history"] = history[-40:]
+    workspace_state["stage_casting_resolution_history"] = history[-40:]
     return entry
 
 
@@ -767,7 +791,9 @@ def apply_role_refresh_execution(story_bible: dict[str, Any], *, chapter_no: int
         if isinstance(item, dict) and _text(item.get("character")) == character:
             suggestion = item
             break
-    suggested_function = _text(suggestion.get("suggested_function"), _text((plan or {}).get("stage_casting_note"), "作用位调整"))
+    suggested_function = _clean_role_function_label(
+        suggestion.get("suggested_function") or _text((plan or {}).get("stage_casting_note"), "作用位调整")
+    )
     reason = _text(suggestion.get("reason"), _text((plan or {}).get("stage_casting_note"), "本章开始给旧角色换作用位。"))
 
     domains = (story_bible or {}).setdefault("story_domains", {})
@@ -778,12 +804,12 @@ def apply_role_refresh_execution(story_bible: dict[str, Any], *, chapter_no: int
         card["function_refresh_note"] = reason[:48]
         card["last_role_refresh_chapter"] = int(chapter_no or 0)
 
-    console = (story_bible or {}).setdefault("control_console", {})
-    legacy = (console.setdefault("character_cards", {}) or {}).get(character)
-    if isinstance(legacy, dict):
-        legacy["current_plot_function"] = suggested_function
-        legacy["possible_change"] = reason[:48]
-    history = console.setdefault("role_refresh_history", [])
+    workspace_state = (story_bible or {}).setdefault("story_workspace", {})
+    workspace_card = (workspace_state.setdefault("cast_cards", {}) or {}).get(character)
+    if isinstance(workspace_card, dict):
+        workspace_card["current_plot_function"] = suggested_function
+        workspace_card["possible_change"] = reason[:48]
+    history = workspace_state.setdefault("role_refresh_history", [])
     entry = {
         "chapter_no": int(chapter_no or 0),
         "character": character,
@@ -792,7 +818,7 @@ def apply_role_refresh_execution(story_bible: dict[str, Any], *, chapter_no: int
     }
     if not any(int(item.get("chapter_no", 0) or 0) == entry["chapter_no"] and _text(item.get("character")) == character for item in history if isinstance(item, dict)):
         history.append(entry)
-    console["role_refresh_history"] = history[-20:]
+    workspace_state["role_refresh_history"] = history[-20:]
     return entry
 
 
@@ -841,9 +867,9 @@ def build_stage_character_review_snapshot(
     current_chapter_no: int,
     recent_summaries: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    console = (story_bible or {}).get("control_console") or {}
+    workspace_state = (story_bible or {}).get("story_workspace") or {}
     core_cast = (story_bible or {}).get("core_cast_state") or {}
-    schedule = console.get("character_relation_schedule") or {}
+    schedule = workspace_state.get("character_relation_schedule") or {}
     review_interval = max(int(((story_bible or {}).get("retrospective_state") or {}).get("scheduled_review_interval", 5) or 5), 1)
     stage_start = max(1, current_chapter_no - review_interval + 1)
     stage_end = current_chapter_no
@@ -884,7 +910,7 @@ def build_stage_character_review_snapshot(
     due_slots.sort(key=lambda item: (int((item.get("entry_window") or [999])[0] or 999), _text(item.get("slot_id"))))
 
     recent_retrospectives = []
-    for item in (console.get("chapter_retrospectives") or [])[-review_interval:]:
+    for item in (workspace_state.get("chapter_retrospectives") or [])[-review_interval:]:
         if not isinstance(item, dict):
             continue
         recent_retrospectives.append(
@@ -1208,9 +1234,56 @@ def heuristic_stage_character_review(snapshot: dict[str, Any]) -> dict[str, Any]
 
 
 
-def normalize_stage_character_review(review: dict[str, Any] | None, snapshot: dict[str, Any]) -> dict[str, Any]:
-    fallback = heuristic_stage_character_review(snapshot)
+def _merge_stage_review_with_heuristic_baseline(review: dict[str, Any] | None, snapshot: dict[str, Any]) -> dict[str, Any]:
+    baseline = heuristic_stage_character_review(snapshot)
     payload = deepcopy(review or {})
+    merged = deepcopy(baseline)
+    if not isinstance(payload, dict) or not payload:
+        return merged
+
+    scalar_fields = [
+        "stage_start_chapter",
+        "stage_end_chapter",
+        "next_window_start",
+        "next_window_end",
+        "casting_strategy",
+        "casting_strategy_note",
+        "max_new_core_entries",
+        "max_role_refreshes",
+        "should_introduce_character",
+        "should_refresh_role_functions",
+        "review_note",
+        "source",
+    ]
+    list_fields = [
+        "focus_characters",
+        "supporting_characters",
+        "defer_characters",
+        "priority_relation_ids",
+        "light_touch_relation_ids",
+        "defer_relation_ids",
+        "candidate_slot_ids",
+        "role_refresh_targets",
+        "role_refresh_suggestions",
+        "next_window_tasks",
+        "watchouts",
+    ]
+    for field in scalar_fields:
+        if field in payload and payload.get(field) is not None:
+            merged[field] = payload.get(field)
+    for field in list_fields:
+        if field in payload and payload.get(field) is not None:
+            merged[field] = payload.get(field)
+    return merged
+
+
+
+def normalize_stage_character_review(review: dict[str, Any] | None, snapshot: dict[str, Any]) -> dict[str, Any]:
+    payload = _merge_stage_review_with_heuristic_baseline(review, snapshot)
+    default_stage_start = int(snapshot.get("stage_start_chapter") or 0)
+    default_stage_end = int(snapshot.get("stage_end_chapter") or default_stage_start)
+    default_next_window_start = int(snapshot.get("next_window_start") or (default_stage_end + 1 if default_stage_end else 0))
+    default_next_window_end = int(snapshot.get("next_window_end") or default_next_window_start)
     candidate_characters = _dedupe_texts([
         *(item.get("name") for item in _safe_list(snapshot.get("priority_characters"))),
         *(item.get("character") for item in _safe_list(snapshot.get("active_core_characters"))),
@@ -1232,7 +1305,7 @@ def normalize_stage_character_review(review: dict[str, Any] | None, snapshot: di
                 break
         return items
 
-    role_refresh_targets = keep_texts(payload.get("role_refresh_targets"), candidate_role_refresh, 3) or fallback.get("role_refresh_targets", [])
+    role_refresh_targets = keep_texts(payload.get("role_refresh_targets"), candidate_role_refresh, 3)
     role_refresh_suggestions = []
     for item in _safe_list(payload.get("role_refresh_suggestions"))[:3]:
         if not isinstance(item, dict):
@@ -1249,16 +1322,16 @@ def normalize_stage_character_review(review: dict[str, Any] | None, snapshot: di
             "suggested_function": suggested_function,
             "reason": reason,
         })
-    casting_strategy = _text(payload.get("casting_strategy"), _text(fallback.get("casting_strategy"), "hold_steady"))
+    casting_strategy = _text(payload.get("casting_strategy"), "hold_steady")
     if casting_strategy not in {"prefer_refresh_existing", "introduce_one_new", "balanced_light", "hold_steady"}:
-        casting_strategy = _text(fallback.get("casting_strategy"), "hold_steady")
-    candidate_slot_ids_kept = keep_texts(payload.get("candidate_slot_ids"), candidate_slots, 2) or fallback["candidate_slot_ids"]
-    raw_should_intro = bool(payload.get("should_introduce_character")) if payload.get("should_introduce_character") is not None else bool(fallback["should_introduce_character"])
-    raw_should_refresh = bool(payload.get("should_refresh_role_functions")) if payload.get("should_refresh_role_functions") is not None else bool(fallback.get("should_refresh_role_functions"))
+        casting_strategy = "hold_steady"
+    candidate_slot_ids_kept = keep_texts(payload.get("candidate_slot_ids"), candidate_slots, 2)
+    raw_should_intro = bool(payload.get("should_introduce_character")) if payload.get("should_introduce_character") is not None else False
+    raw_should_refresh = bool(payload.get("should_refresh_role_functions")) if payload.get("should_refresh_role_functions") is not None else False
     role_refresh_targets_kept = role_refresh_targets
-    role_refresh_suggestions_kept = role_refresh_suggestions or fallback.get("role_refresh_suggestions", [])
-    max_new_core_entries = int(payload.get("max_new_core_entries") or fallback.get("max_new_core_entries") or 0)
-    max_role_refreshes = int(payload.get("max_role_refreshes") or fallback.get("max_role_refreshes") or 0)
+    role_refresh_suggestions_kept = role_refresh_suggestions
+    max_new_core_entries = int(payload.get("max_new_core_entries") or 0)
+    max_role_refreshes = int(payload.get("max_role_refreshes") or 0)
 
     if casting_strategy == "prefer_refresh_existing":
         should_introduce_character = False
@@ -1294,18 +1367,18 @@ def normalize_stage_character_review(review: dict[str, Any] | None, snapshot: di
         max_role_refreshes = 0
 
     normalized = {
-        "stage_start_chapter": int(payload.get("stage_start_chapter") or fallback["stage_start_chapter"]),
-        "stage_end_chapter": int(payload.get("stage_end_chapter") or fallback["stage_end_chapter"]),
-        "next_window_start": int(payload.get("next_window_start") or fallback["next_window_start"]),
-        "next_window_end": int(payload.get("next_window_end") or fallback["next_window_end"]),
-        "focus_characters": keep_texts(payload.get("focus_characters"), candidate_characters, 4) or fallback["focus_characters"],
-        "supporting_characters": keep_texts(payload.get("supporting_characters"), candidate_characters, 3) or fallback["supporting_characters"],
+        "stage_start_chapter": int(payload.get("stage_start_chapter") or default_stage_start),
+        "stage_end_chapter": int(payload.get("stage_end_chapter") or default_stage_end),
+        "next_window_start": int(payload.get("next_window_start") or default_next_window_start),
+        "next_window_end": int(payload.get("next_window_end") or default_next_window_end),
+        "focus_characters": keep_texts(payload.get("focus_characters"), candidate_characters, 4),
+        "supporting_characters": keep_texts(payload.get("supporting_characters"), candidate_characters, 3),
         "defer_characters": keep_texts(payload.get("defer_characters"), candidate_characters, 3),
-        "priority_relation_ids": keep_texts(payload.get("priority_relation_ids"), candidate_relations, 3) or fallback["priority_relation_ids"],
-        "light_touch_relation_ids": keep_texts(payload.get("light_touch_relation_ids"), candidate_relations, 3) or fallback["light_touch_relation_ids"],
+        "priority_relation_ids": keep_texts(payload.get("priority_relation_ids"), candidate_relations, 3),
+        "light_touch_relation_ids": keep_texts(payload.get("light_touch_relation_ids"), candidate_relations, 3),
         "defer_relation_ids": keep_texts(payload.get("defer_relation_ids"), candidate_relations, 3),
         "casting_strategy": casting_strategy,
-        "casting_strategy_note": _text(payload.get("casting_strategy_note"), fallback.get("casting_strategy_note", ""))[:72],
+        "casting_strategy_note": _text(payload.get("casting_strategy_note"), "")[:72],
         "max_new_core_entries": max(0, min(max_new_core_entries, 1)),
         "max_role_refreshes": max(0, min(max_role_refreshes, 1)),
         "should_introduce_character": should_introduce_character,
@@ -1313,10 +1386,10 @@ def normalize_stage_character_review(review: dict[str, Any] | None, snapshot: di
         "should_refresh_role_functions": should_refresh_role_functions,
         "role_refresh_targets": role_refresh_targets_kept,
         "role_refresh_suggestions": role_refresh_suggestions_kept,
-        "next_window_tasks": _dedupe_texts(_safe_list(payload.get("next_window_tasks")), limit=5) or fallback["next_window_tasks"],
-        "watchouts": _dedupe_texts(_safe_list(payload.get("watchouts")), limit=5) or fallback["watchouts"],
-        "review_note": _text(payload.get("review_note"), fallback["review_note"])[:96],
-        "source": _text(payload.get("source"), fallback.get("source", "heuristic")),
+        "next_window_tasks": _dedupe_texts(_safe_list(payload.get("next_window_tasks")), limit=5),
+        "watchouts": _dedupe_texts(_safe_list(payload.get("watchouts")), limit=5),
+        "review_note": _text(payload.get("review_note"), "")[:96],
+        "source": _text(payload.get("source"), "ai"),
     }
     return normalized
 
@@ -1325,11 +1398,11 @@ def normalize_stage_character_review(review: dict[str, Any] | None, snapshot: di
 def store_stage_character_review(story_bible: dict[str, Any], review: dict[str, Any], *, current_chapter_no: int) -> dict[str, Any]:
     normalized = normalize_stage_character_review(review, build_stage_character_review_snapshot(story_bible, current_chapter_no=current_chapter_no))
     normalized["review_chapter"] = int(current_chapter_no or 0)
-    console = (story_bible or {}).setdefault("control_console", {})
-    reviews = console.setdefault("stage_character_reviews", [])
+    workspace_state = (story_bible or {}).setdefault("story_workspace", {})
+    reviews = workspace_state.setdefault("stage_character_reviews", [])
     reviews.append(normalized)
-    console["stage_character_reviews"] = reviews[-8:]
-    console["latest_stage_character_review"] = normalized
+    workspace_state["stage_character_reviews"] = reviews[-8:]
+    workspace_state["latest_stage_character_review"] = normalized
     retrospective_state = (story_bible or {}).setdefault("retrospective_state", {})
     retrospective_state["last_stage_review_chapter"] = int(current_chapter_no or 0)
     retrospective_state["latest_stage_character_review"] = normalized

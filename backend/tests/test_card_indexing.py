@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.services.card_indexing import apply_card_selection_to_packet, apply_soft_card_ranking_to_packet, build_card_index_payload
 from app.services.openai_story_engine import choose_chapter_card_selection
 from app.services.prompt_templates import _chapter_body_plan_packet_summary
@@ -84,7 +86,7 @@ def test_apply_card_selection_keeps_only_selected_full_cards() -> None:
     assert updated["card_selection"]["selected_card_ids"] == ["C002", "R001"]
 
 
-def test_choose_chapter_card_selection_heuristic_picks_focus_and_new_resource() -> None:
+def test_choose_chapter_card_selection_heuristic_picks_focus_and_new_resource(monkeypatch: pytest.MonkeyPatch) -> None:
     planning_packet = {
         "selected_elements": {"focus_character": "林秋雨"},
         "card_index": {
@@ -107,6 +109,11 @@ def test_choose_chapter_card_selection_heuristic_picks_focus_and_new_resource() 
         "supporting_character_focus": "林秋雨",
         "new_resources": ["旧账簿"],
     }
+    monkeypatch.setattr("app.services.openai_story_engine.is_openai_enabled", lambda: True)
+    monkeypatch.setattr(
+        "app.services.openai_story_engine.call_json_response",
+        lambda **kwargs: {"selected_card_ids": ["C001", "C002", "R001"], "selection_note": "只保留本章真会动到的卡。"},
+    )
 
     payload = choose_chapter_card_selection(chapter_plan=chapter_plan, planning_packet=planning_packet, request_timeout_seconds=1)
 

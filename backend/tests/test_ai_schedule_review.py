@@ -3,6 +3,7 @@ from app.services.openai_story_engine import (
     CharacterRelationScheduleReviewPayload,
     _heuristic_character_relation_schedule_review,
     apply_schedule_review_to_packet,
+    review_character_relation_schedule_and_select_cards,
 )
 
 
@@ -176,3 +177,134 @@ def test_soft_card_ranking_respects_ai_casting_deferral() -> None:
     )
     char_rows = {item["title"]: item for item in ranked["characters"]}
     assert "本章换功能" not in (char_rows["周执事"].get("soft_reason_tags") or [])
+
+
+def test_chapter_preparation_selection_runs_multistage_ai_pipeline(monkeypatch) -> None:
+    packet = _planning_packet()
+    packet["payoff_candidate_index"] = {
+        "candidates": [
+            {"card_id": "P001", "title": "账册反制", "payoff_mode": "反制兑现"},
+        ]
+    }
+    packet["scene_template_index"] = {
+        "scene_templates": [
+            {"scene_template_id": "S001", "name": "查账对峙"},
+            {"scene_template_id": "S002", "name": "暗线摸排"},
+        ]
+    }
+    packet["prompt_strategy_index"] = [
+        {"strategy_id": "PS001", "name": "压迫递进"},
+        {"strategy_id": "PS002", "name": "关系拉扯"},
+    ]
+    packet["flow_template_index"] = [
+        {"flow_id": "FT001", "name": "合作破局"},
+    ]
+    packet["prompt_bundle_index"] = {
+        "flow_templates": [{"flow_id": "FT001", "name": "合作破局"}],
+        "prompt_strategies": [
+            {"strategy_id": "PS001", "name": "压迫递进"},
+            {"strategy_id": "PS002", "name": "关系拉扯"},
+        ],
+    }
+    calls: list[str] = []
+
+    monkeypatch.setattr("app.services.openai_story_engine.is_openai_enabled", lambda: True)
+    monkeypatch.setattr("app.core.config.settings.chapter_preparation_parallel_selection_enabled", False, raising=False)
+
+    def fake_call_json_response(**kwargs):
+        stage = kwargs.get("stage") or ""
+        calls.append(stage)
+        if stage == "chapter_prepare_shortlist":
+            return {
+                "focus_characters": ["陈砚", "林秋雨"],
+                "main_relation_ids": ["陈砚::林秋雨"],
+                "card_candidate_ids": ["C001", "C002", "REL001"],
+                "payoff_candidate_ids": ["P001"],
+                "scene_template_ids": ["S001", "S002"],
+                "flow_template_ids": ["FT001"],
+                "prompt_strategy_ids": ["PS001", "PS002"],
+                "shortlist_note": "先缩范围。",
+            }
+        if stage == "chapter_prepare_schedule_selector":
+            return {
+                "focus_characters": ["陈砚", "林秋雨"],
+                "supporting_characters": ["周执事"],
+                "defer_characters": ["沈三"],
+                "main_relation_ids": ["陈砚::林秋雨"],
+                "light_touch_relation_ids": ["陈砚::周执事"],
+                "defer_relation_ids": ["林秋雨::沈三"],
+                "review_note": "主推陈砚与林秋雨。",
+            }
+        if stage == "chapter_prepare_card_selector":
+            return {
+                "selected_card_ids": ["C001", "C002", "REL001"],
+                "selection_note": "主推主角、焦点人物和主关系。",
+            }
+        if stage == "chapter_prepare_payoff_selector":
+            return {
+                "selected_card_id": "P001",
+                "selection_note": "本章兑现一格反制。",
+            }
+        if stage == "chapter_prepare_scene_selector":
+            return {
+                "selected_scene_template_ids": ["S001", "S002"],
+                "selection_note": "先正面对峙，再暗线摸排。",
+            }
+        if stage == "chapter_prepare_prompt_selector":
+            return {
+                "selected_flow_template_id": "FT001",
+                "selected_strategy_ids": ["PS001", "PS002"],
+                "selection_note": "压迫与拉扯并行。",
+            }
+        if stage == "chapter_prepare_selection_merge":
+            return {
+                "schedule_review": {
+                    "focus_characters": ["陈砚", "林秋雨"],
+                    "supporting_characters": ["周执事"],
+                    "defer_characters": ["沈三"],
+                    "main_relation_ids": ["陈砚::林秋雨"],
+                    "light_touch_relation_ids": ["陈砚::周执事"],
+                    "defer_relation_ids": ["林秋雨::沈三"],
+                    "review_note": "统一收口到主线人物与主关系。",
+                },
+                "card_selection": {
+                    "selected_card_ids": ["C001", "C002", "REL001"],
+                    "selection_note": "只保留真正会动到的卡。",
+                },
+                "payoff_selection": {
+                    "selected_card_id": "P001",
+                    "selection_note": "反制兑现。",
+                },
+                "scene_selection": {
+                    "selected_scene_template_ids": ["S001", "S002"],
+                    "selection_note": "两段场景链。",
+                },
+                "prompt_strategy_selection": {
+                    "selected_flow_template_id": "FT001",
+                    "selected_strategy_ids": ["PS001", "PS002"],
+                    "selection_note": "合作破局 + 压迫递进。",
+                },
+            }
+        raise AssertionError(f"unexpected stage: {stage}")
+
+    monkeypatch.setattr("app.services.openai_story_engine.call_json_response", fake_call_json_response)
+
+    schedule_review, card_selection = review_character_relation_schedule_and_select_cards(
+        chapter_plan={"goal": "和林秋雨联手查账", "flow_template_name": "合作破局"},
+        planning_packet=packet,
+        request_timeout_seconds=1,
+    )
+
+    assert calls == [
+        "chapter_prepare_shortlist",
+        "chapter_prepare_schedule_selector",
+        "chapter_prepare_card_selector",
+        "chapter_prepare_payoff_selector",
+        "chapter_prepare_scene_selector",
+        "chapter_prepare_prompt_selector",
+        "chapter_prepare_selection_merge",
+    ]
+    assert schedule_review.focus_characters[0] == "陈砚"
+    assert "林秋雨" in schedule_review.focus_characters
+    assert schedule_review.main_relation_ids == ["陈砚::林秋雨"]
+    assert card_selection.selected_card_ids == ["C001", "C002", "REL001"]

@@ -9,8 +9,8 @@ import {
   normalizeChapterPayload,
   buildBookshelfItemNode,
   getCurrentChapterIndex,
-} from "/app/assets/app/core.js?v=20260316c";
-import { buildChapterCardNode } from "/app/assets/app/ui_helpers.js?v=20260316c";
+} from "/app/assets/app/core.js?v=20260317d";
+import { buildChapterCardNode } from "/app/assets/app/ui_helpers.js?v=20260317d";
 
 export function setTopbar() {
   if (!refs.topbarTitle) return;
@@ -116,6 +116,77 @@ function collectStageCastingRuntimeLines(liveRuntime, executionCard, dailyWorkbe
   return lines.filter(Boolean);
 }
 
+
+function describeSceneOutline(sceneDebug) {
+  const items = Array.isArray(sceneDebug?.scene_outline) ? sceneDebug.scene_outline : [];
+  if (!items.length) return "—";
+  return items.map((item) => {
+    const bits = [`${item.scene_no || 0}. ${item.scene_name || item.purpose || "未命名场景"}`];
+    if (item.scene_role) bits.push(`(${item.scene_role})`);
+    if (item.purpose) bits.push(`· ${item.purpose}`);
+    return bits.join(" ");
+  }).join("\n");
+}
+
+function summarizeSceneHandoff(sceneDebug) {
+  const handoff = sceneDebug?.scene_handoff_card || {};
+  if (!Object.keys(handoff).length) return null;
+  const lines = [
+    `状态：${handoff.scene_status_at_end || "—"}` + (handoff.must_continue_same_scene ? " · 下一章先续接" : ""),
+  ];
+  if (handoff.allowed_transition) lines.push(`允许切场：${handoff.allowed_transition}`);
+  if (handoff.next_opening_anchor) lines.push(`开场锚点：${handoff.next_opening_anchor}`);
+  if (Array.isArray(handoff.unfinished_actions) && handoff.unfinished_actions.length) {
+    lines.push(`未完动作：${handoff.unfinished_actions.join("、")}`);
+  }
+  if (Array.isArray(handoff.carry_over_items) && handoff.carry_over_items.length) {
+    lines.push(`必须带入：${handoff.carry_over_items.join("、")}`);
+  }
+  return lines.join("\n");
+}
+
+function summarizeSceneContinuity(sceneDebug) {
+  const continuity = sceneDebug?.continuity_diagnostic || {};
+  if (!Object.keys(continuity).length) return ["场景连续性质检：当前没有新的诊断结果。"];
+  if (continuity.status === "issue") {
+    const lines = [`当前判定：${continuity.issue || "scene_continuity_issue"}`];
+    if (continuity.message) lines.push(continuity.message);
+    if (continuity.failed_stage) lines.push(`失败阶段：${continuity.failed_stage}`);
+    const retryFeedback = continuity.retry_feedback || {};
+    if (retryFeedback.problem) lines.push(`问题归因：${retryFeedback.problem}`);
+    if (retryFeedback.correction) lines.push(`修正方向：${retryFeedback.correction}`);
+    return lines;
+  }
+  if (continuity.status === "ok") {
+    return ["场景连续性质检：当前链路正常，没有新的断场报警。"];
+  }
+  return ["场景连续性质检：当前还没有足够数据。"];
+}
+
+function summarizeRealizedSceneReport(sceneDebug) {
+  const report = sceneDebug?.realized_scene_report || {};
+  const lines = Array.isArray(report.preview_lines) ? report.preview_lines.filter(Boolean).slice(0, 6) : [];
+  if (lines.length) return lines.join("\n");
+  if (report.event_summary) return `实绩摘要：${report.event_summary}`;
+  return null;
+}
+
+function describeExecutionIntent(executionPacket, dailyWorkbench, sceneDebug) {
+  const packet = executionPacket || {};
+  const planningPacket = sceneDebug?.planning_packet || {};
+  const lines = [];
+  const packetChapter = packet.for_chapter_no || planningPacket.for_chapter_no || dailyWorkbench?.for_chapter_no || sceneDebug?.packet_target_chapter_no;
+  const packetPhase = packet.packet_phase || planningPacket.packet_phase || dailyWorkbench?.packet_phase;
+  if (packetChapter) lines.push(`目标章节：第 ${packetChapter} 章`);
+  if (packetPhase) lines.push(`卡片阶段：${packetPhase}`);
+  const chapterFunction = dailyWorkbench?.today_function || packet.chapter_execution_card?.chapter_function || planningPacket.chapter_function || "等待执行意图写入";
+  lines.push(chapterFunction);
+  lines.push(packet.chapter_execution_card?.opening || planningPacket.opening || dailyWorkbench?.three_line_outline?.opening || "—");
+  lines.push(packet.chapter_execution_card?.middle || planningPacket.middle || dailyWorkbench?.three_line_outline?.middle || "—");
+  lines.push(packet.chapter_execution_card?.ending || planningPacket.ending || dailyWorkbench?.three_line_outline?.ending || "—");
+  return lines.filter(Boolean);
+}
+
 function planningRefreshReasonLabel(reason) {
   const mapping = {
     queue_low: "待写队列偏短",
@@ -156,10 +227,157 @@ function summarizePlanningRefresh(liveRuntime) {
   };
 }
 
+
+function formatDurationMs(value) {
+  const ms = Number(value || 0);
+  if (!Number.isFinite(ms) || ms <= 0) return "—";
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(seconds >= 10 ? 1 : 2)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainSeconds = Math.round(seconds % 60);
+  return `${minutes}m ${remainSeconds}s`;
+}
+
+function formatPercent(value) {
+  const ratio = Number(value || 0);
+  if (!Number.isFinite(ratio) || ratio <= 0) return "—";
+  return `${(ratio * 100).toFixed(ratio >= 0.1 ? 1 : 2)}%`;
+}
+
+function formatTrendDirection(value) {
+  const direction = String(value || "").trim().toLowerCase();
+  if (direction === "up") return "上行";
+  if (direction === "down") return "下行";
+  return "持平";
+}
+
+function formatAlertSeverity(value) {
+  const severity = String(value || "").trim().toLowerCase();
+  if (severity === "high") return "高";
+  if (severity === "medium") return "中";
+  return "低";
+}
+
+function summarizeGenerationReport(report) {
+  if (!report || typeof report !== "object" || !Object.keys(report).length) return null;
+  const payoff = report.payoff_delivery || {};
+  const title = report.title_refinement || {};
+  const drafting = report.drafting || {};
+  const contextBudget = report.context_budget || {};
+  const scenePlan = report.scene_plan || {};
+  const lines = [];
+  const chapterNo = report.chapter_no ? `第 ${report.chapter_no} 章` : "最近一章";
+  lines.push(`${chapterNo} · ${report.chapter_title || title.final_title || "未命名章节"}`);
+  if (report.summary_line) lines.push(report.summary_line);
+  const titleChange = title.final_title && title.final_title !== title.original_title
+    ? `标题精修：${title.original_title || report.chapter_title || "原题"} → ${title.final_title}`
+    : `标题：${title.final_title || report.chapter_title || "—"}`;
+  lines.push(titleChange);
+  lines.push(`耗时：${formatDurationMs(report.duration_ms)} · LLM ${report.llm_trace?.total_calls || 0} 次 · 爽点 ${payoff.delivery_level || "—"}/${payoff.delivery_score || 0}`);
+  lines.push(`正文：尝试 ${drafting.attempt_count || 0} 次，续写 ${drafting.continuation_rounds || 0} 次，质检打回 ${drafting.quality_rejections || 0} 次`);
+  lines.push(`上下文：${contextBudget.payload_chars_after || 0}/${contextBudget.budget || 0} chars · 利用率 ${formatPercent(contextBudget.utilization_ratio)}`);
+  if (scenePlan.scene_count) {
+    lines.push(`场景：${scenePlan.scene_count} 段 · ${scenePlan.transition_mode || "—"}${scenePlan.must_continue_same_scene ? " · 下章先续场" : ""}`);
+  }
+  if (payoff.verdict) lines.push(`兑现判断：${payoff.verdict}`);
+  return { title: "最近一章生成战报", body: lines.join("\n"), lines };
+}
+
+function summarizeGenerationSelectors(report) {
+  if (!report || typeof report !== "object") return null;
+  const selected = report.selected_outputs || {};
+  const prep = Array.isArray(report.preparation_summary) ? report.preparation_summary.filter(Boolean) : [];
+  if (!prep.length && !Object.keys(selected).length) return null;
+  const lines = [...prep];
+  lines.push(`人物/关系卡：${selected.selected_cards || 0} · 场景模板：${selected.selected_scene_templates || 0} · prompt 策略：${selected.selected_prompt_strategies || 0}`);
+  if (selected.selected_flow_template) lines.push(`流程模板：${selected.selected_flow_template}`);
+  if (selected.selected_payoff_card) lines.push(`爽点卡：${selected.selected_payoff_card}`);
+  return { title: "章节准备筛选", body: lines.join("\n"), lines };
+}
+
+function summarizeGenerationStages(report) {
+  if (!report || typeof report !== "object") return null;
+  const trace = report.llm_trace || {};
+  const stageOrder = Array.isArray(trace.stage_order) ? trace.stage_order.filter(Boolean) : [];
+  const stageTotals = Array.isArray(trace.stage_totals) ? trace.stage_totals.filter((item) => item && item.stage) : [];
+  if (!stageOrder.length && !stageTotals.length) return null;
+  const lines = [];
+  if (stageOrder.length) lines.push(`阶段顺序：${stageOrder.join(" → ")}`);
+  stageTotals.slice(0, 6).forEach((item) => {
+    lines.push(`${item.stage} · ${item.calls || 0} 次 · ${formatDurationMs(item.duration_ms)} · ${item.status || "ok"}`);
+  });
+  return { title: "LLM 阶段链", body: lines.join("\n"), lines };
+}
+
+function summarizeGenerationHistory(report) {
+  if (!report || typeof report !== "object") return null;
+  const history = Array.isArray(report.history) ? report.history.filter((item) => item && item.chapter_no) : [];
+  if (!history.length) return null;
+  const lines = history.slice().reverse().map((item) => {
+    const title = item.final_title || item.chapter_title || `第 ${item.chapter_no} 章`;
+    const scoreText = item.delivery_score ? `/${item.delivery_score}` : "";
+    const llmText = item.llm_calls ? ` · LLM ${item.llm_calls}` : "";
+    return `第 ${item.chapter_no} 章 · ${title} · ${item.delivery_level || "—"}${scoreText} · ${formatDurationMs(item.duration_ms)}${llmText}`;
+  });
+  return { title: "最近战报历史", body: lines.join("\n"), lines };
+}
+
+function summarizeGenerationTrends(report) {
+  if (!report || typeof report !== "object") return null;
+  const trends = report.trends || {};
+  const delivery = trends.delivery || {};
+  const performance = trends.performance || {};
+  const context = trends.context || {};
+  const selection = trends.selection || {};
+  const window = Number(trends.window || 0);
+  if (!window) return null;
+  const lines = [];
+  lines.push(`近 ${window} 章：平均兑现 ${delivery.avg_score || 0} 分 · 平均耗时 ${formatDurationMs(performance.avg_duration_ms)} · 平均 LLM ${performance.avg_llm_calls || 0} 次`);
+  lines.push(`兑现趋势：${delivery.latest_level || "—"}${delivery.latest_score ? `/${delivery.latest_score}` : ""} · 分数 ${formatTrendDirection(delivery.direction)} · 等级 ${formatTrendDirection(delivery.level_direction)}`);
+  lines.push(`性能趋势：耗时 ${formatTrendDirection(performance.duration_direction)} · 调用 ${formatTrendDirection(performance.llm_calls_direction)}`);
+  lines.push(`上下文压力：平均 ${formatPercent(context.avg_utilization_ratio)} · 高压 ${context.high_pressure_count || 0}/${window}`);
+  lines.push(`筛选规模：平均用卡 ${selection.avg_selected_cards || 0} · 平均 prompt 策略 ${selection.avg_prompt_strategies || 0}`);
+  if (delivery.low_count) lines.push(`低兑现章节：${delivery.low_count}/${window}`);
+  return { title: "最近趋势面板", body: lines.join("\n"), lines };
+}
+
+function summarizeGenerationAlerts(report) {
+  if (!report || typeof report !== "object") return null;
+  const alerts = report.alerts || {};
+  const items = Array.isArray(alerts.items) ? alerts.items.filter((item) => item && (item.title || item.message)) : [];
+  if (!items.length) return null;
+  const lines = [];
+  lines.push(`近 ${alerts.window || report.trends?.window || items.length} 章预警：${alerts.count || items.length} 条 · 最高 ${formatAlertSeverity(alerts.highest_severity)}`);
+  items.slice(0, 4).forEach((item) => {
+    const title = item.title || item.code || "未命名预警";
+    const detail = item.message || "";
+    lines.push(`[${formatAlertSeverity(item.severity)}] ${title}${detail ? `：${detail}` : ""}`);
+  });
+  return { title: "最近异常预警", body: lines.join("\n"), lines };
+}
+
+function summarizeAiPolicyAudit(audit) {
+  if (!audit || typeof audit !== "object" || !Object.keys(audit).length) return null;
+  const lines = [];
+  lines.push(`运行态：${audit.runtime_policy_ok ? "通过" : "需复查"} · warning ${audit.warning_count || 0}`);
+  const storyChecks = audit.story_bible_checks || {};
+  lines.push(`关键标记：fallback=${storyChecks.forbid_silent_fallback ? "on" : "off"} · manual=${storyChecks.strict_manual_pipeline ? "on" : "off"}`);
+  const prep = audit.preparation_checks || {};
+  if (prep.has_packet) {
+    lines.push(`章节准备：${prep.selection_mode || "—"} · diagnostics=${prep.has_diagnostics ? "yes" : "no"} · LLM ${prep.preparation_llm_calls || 0} 次`);
+  }
+  const required = Array.isArray(audit.required_flags_missing) ? audit.required_flags_missing.filter(Boolean) : [];
+  if (required.length) lines.push(`缺失标记：${required.join("、")}`);
+  const warnings = Array.isArray(audit.warnings) ? audit.warnings.filter(Boolean) : [];
+  if (warnings.length) lines.push(...warnings.slice(0, 3));
+  return lines.length ? { title: "AI 严格模式审计", body: lines.join("\n"), lines } : null;
+}
+
 export function renderPlanning() {
   if (!refs.planningSummary) return;
   refs.planningSummary.innerHTML = "";
-  refs.consoleHighlights.innerHTML = "";
+  refs.storyWorkspaceHighlights.innerHTML = "";
 
   if (!state.selectedNovel) {
     refs.planningSummary.innerHTML = '<div class="panel-muted subtle-text">选择小说后，这里会显示当前规划窗口、活跃 arc、自动规划状态与执行卡。</div>';
@@ -167,19 +385,23 @@ export function renderPlanning() {
   }
 
   const planning = state.planningData || {};
-  const consoleData = state.consoleData || {};
+  const storyStudioData = state.storyStudioData || {};
   const planningState = planning.planning_state || {};
   const planningStatus = planning.planning_status || {};
   const liveRuntime = planningState.live_runtime || {};
   const currentPipeline = planningState.current_pipeline || {};
-  const executionPacket = consoleData.control_console?.current_execution_packet || {};
+  const workspace = storyStudioData.story_workspace || {};
+  const executionPacket = workspace.current_execution_packet || workspace.next_chapter_preview_packet || {};
   const executionCard = executionPacket.chapter_execution_card || {};
-  const dailyWorkbench = executionPacket.daily_workbench || consoleData.control_console?.daily_workbench || {};
-  const activeArcFromConsole = consoleData.control_console?.active_arc || {};
+  const dailyWorkbench = executionPacket.daily_workbench || workspace.daily_workbench || {};
+  const activeArcFromWorkspace = workspace.active_arc || {};
   const activeArcFromPlanning = planningStatus.active_arc || {};
-  const activeArc = { ...activeArcFromPlanning, ...activeArcFromConsole };
+  const activeArc = { ...activeArcFromPlanning, ...activeArcFromWorkspace };
   const pendingArc = planningStatus.pending_arc || {};
   const queue = planning.chapter_card_queue || [];
+  const sceneDebug = planning.scene_debug || planningState.scene_debug || workspace.scene_debug || {};
+  const generationReport = planning.generation_report || workspace.generation_report || {};
+  const aiPolicyAudit = planning.ai_policy_audit || planningState.ai_policy_audit || {};
 
   const summaryCards = [
     {
@@ -198,6 +420,10 @@ export function renderPlanning() {
       title: "待写队列",
       body: queue.length ? queue.map((item) => describeQueueItem(item)).join("\n\n") : "当前没有待写 card。",
     },
+    {
+      title: "当前场景规划链",
+      body: describeSceneOutline(sceneDebug),
+    },
   ];
 
   const activeLayoutReview = activeArc.casting_layout_review_summary || planningStatus.active_arc_casting_layout_review || {};
@@ -214,6 +440,19 @@ export function renderPlanning() {
   if (planningRefreshSummary) {
     summaryCards.push({ title: planningRefreshSummary.title, body: planningRefreshSummary.body });
   }
+  const sceneHandoffSummary = summarizeSceneHandoff(sceneDebug);
+  if (sceneHandoffSummary) {
+    summaryCards.push({ title: "上章场景交接", body: sceneHandoffSummary });
+  }
+  [
+    summarizeGenerationReport(generationReport),
+    summarizeGenerationTrends(generationReport),
+    summarizeGenerationAlerts(generationReport),
+    summarizeGenerationSelectors(generationReport),
+    summarizeGenerationStages(generationReport),
+    summarizeGenerationHistory(generationReport),
+    summarizeAiPolicyAudit(aiPolicyAudit),
+  ].filter(Boolean).forEach((card) => summaryCards.push(card));
 
   summaryCards.forEach((card) => {
     const div = document.createElement("div");
@@ -227,40 +466,45 @@ export function renderPlanning() {
     `目标章节：${liveRuntime.target_chapter_no || currentPipeline.target_chapter_no || "—"}`,
     `更新时间：${fmtDate(liveRuntime.updated_at)}`,
   ];
+  const sceneContinuityLines = summarizeSceneContinuity(sceneDebug);
   if (liveRuntime.chapter_title) runtimeList.push(`执行标题：${liveRuntime.chapter_title}`);
   if (liveRuntime.chapter_goal) runtimeList.push(`本章目标：${liveRuntime.chapter_goal}`);
   if (liveRuntime.stage_casting_runtime_note) runtimeList.push(`人物投放：${liveRuntime.stage_casting_runtime_note}`);
   if (planningRefreshSummary?.lines?.[0]) runtimeList.push(`补规划：${planningRefreshSummary.lines[0]}`);
+  if (generationReport?.summary_line) runtimeList.push(`最近战报：${generationReport.summary_line}`);
 
   const stageCastingRuntimeLines = collectStageCastingRuntimeLines(liveRuntime, executionCard, dailyWorkbench);
+  const realizedSceneSummary = summarizeRealizedSceneReport(sceneDebug);
 
   const blocks = [
     {
       title: "活跃 Arc",
       list: [
         activeArc.focus || "—",
-        activeArc.bridge_note || consoleData.planning_layers?.active_arc?.bridge_note || "—",
+        activeArc.bridge_note || storyStudioData.planning_layers?.active_arc?.bridge_note || "—",
       ],
     },
     ...(activeLayoutText
       ? [{ title: "排法复核细节", list: activeLayoutText.split("\n").filter(Boolean) }]
       : []),
     {
-      title: "当前执行卡",
+      title: "当前执行意图卡",
       list: [
-        dailyWorkbench.today_function || executionCard.chapter_function || "等待执行卡写入",
-        executionCard.opening || dailyWorkbench.three_line_outline?.opening || "—",
-        executionCard.middle || dailyWorkbench.three_line_outline?.middle || "—",
-        executionCard.ending || dailyWorkbench.three_line_outline?.ending || "—",
+        ...describeExecutionIntent(executionPacket, dailyWorkbench, sceneDebug),
         ...(stageCastingRuntimeLines.length ? stageCastingRuntimeLines.slice(0, 2) : []),
       ],
     },
+    ...(realizedSceneSummary ? [{ title: "上章实绩场景卡", list: realizedSceneSummary.split("\n").filter(Boolean) }] : []),
     ...(stageCastingRuntimeLines.length
       ? [{ title: "人物投放执行提示", list: stageCastingRuntimeLines }]
       : []),
     ...(planningRefreshSummary?.lines?.length
       ? [{ title: planningRefreshSummary.title, list: planningRefreshSummary.lines }]
       : []),
+    {
+      title: "场景连续性调试",
+      list: sceneContinuityLines,
+    },
     {
       title: "实时运行状态",
       list: runtimeList,
@@ -271,7 +515,7 @@ export function renderPlanning() {
     const div = document.createElement("div");
     div.className = "info-card";
     div.innerHTML = `<strong>${escapeHtml(block.title)}</strong><ul>${block.list.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
-    refs.consoleHighlights.appendChild(div);
+    refs.storyWorkspaceHighlights.appendChild(div);
   });
 }
 

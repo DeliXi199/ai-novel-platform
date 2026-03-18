@@ -22,7 +22,7 @@ def test_ensure_story_state_domains_backfills_missing_sections() -> None:
 
     ensure_story_state_domains(payload, workflow_factory=workflow_factory)
 
-    assert payload["control_console"] == {}
+    assert payload["story_workspace"] == {}
     assert payload["planning_layers"] == {}
     assert payload["story_state"] == {}
     assert payload["workflow_state"]["source_arc_no"] == 1
@@ -54,7 +54,7 @@ def test_story_state_accessors_read_nested_sections() -> None:
             "bootstrap_state": {"status": "running"},
             "bootstrap_retry_count": 2,
         },
-        "control_console": {
+        "story_workspace": {
             "planning_status": {"planned_until": 9},
             "chapter_card_queue": [{"chapter_no": 7}, {"chapter_no": 8}, "bad"],
         },

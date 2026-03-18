@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.services.openai_story_engine import ChapterPlan, _apply_flow_template_to_chapter
-from app.services.story_blueprint_builders import build_flow_templates
+from app.services.story_blueprint_builders import build_flow_templates, build_template_library
 
 
 def test_build_flow_templates_expanded_to_twenty_with_short_tags() -> None:
@@ -38,3 +38,14 @@ def test_apply_flow_template_to_chapter_avoids_immediate_repeat() -> None:
     assert chapter.flow_template_tag
     assert chapter.flow_template_name
     assert chapter.flow_turning_points
+
+
+def test_build_template_library_includes_payoff_cards() -> None:
+    from app.schemas.novel import NovelCreate
+
+    payload = NovelCreate(genre="凡人修仙", premise="边城求生", protagonist_name="林凡", style_preferences={})
+    library = build_template_library(payload)
+
+    assert len(library.get("payoff_cards") or []) >= 20
+    assert library["roadmap"]["current_payoff_card_count"] == len(library.get("payoff_cards") or [])
+    assert any((item.get("payoff_mode") == "捡漏反压") for item in (library.get("payoff_cards") or []))

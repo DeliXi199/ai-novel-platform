@@ -3,15 +3,162 @@ from __future__ import annotations
 from app.core.config import settings
 from app.schemas.novel import NovelCreate
 from app.services.openai_story_engine import (
-    apply_arc_casting_layout_review,
     generate_arc_outline,
     generate_global_outline,
-    review_arc_casting_layout,
     generate_story_engine_diagnosis,
     generate_story_engine_strategy_bundle as generate_story_engine_strategy_bundle_payload,
     generate_story_strategy_card,
 )
+from app.services.openai_story_engine_arc import (
+    apply_arc_casting_layout_review,
+    review_arc_casting_layout,
+)
 from app.services.story_architecture import compose_story_bible
+from app.services.payoff_compensation_support import apply_payoff_window_event_bias_to_plan, payoff_window_event_bias
+
+
+def _text(value: object, fallback: str = "") -> str:
+    text = str(value or "").strip()
+    return text or fallback
+
+
+def _truncate_text(value: object, limit: int = 120) -> str:
+    text = _text(value)
+    if len(text) <= limit:
+        return text
+    return text[: max(limit - 1, 1)].rstrip() + "…"
+
+
+def _append_unique_sentence(base: str, addition: str, *, limit: int = 140) -> str:
+    left = _text(base)
+    right = _text(addition)
+    if not right:
+        return left
+    if right in left:
+        return _truncate_text(left, limit)
+    joined = f"{left}；{right}" if left else right
+    return _truncate_text(joined, limit)
+
+
+def _planning_payoff_compensation_window(story_bible: dict, *, start_chapter: int, end_chapter: int) -> dict:
+    retrospective_state = (story_bible or {}).get("retrospective_state") or {}
+    payload = retrospective_state.get("pending_payoff_compensation") or {}
+    if not isinstance(payload, dict) or not payload or not bool(payload.get("enabled", True)):
+        return {}
+    chapter_biases = payload.get("chapter_biases") or []
+    overlaps: list[dict] = []
+    for item in chapter_biases:
+        if not isinstance(item, dict):
+            continue
+        chapter_no = int(item.get("chapter_no", 0) or 0)
+        if start_chapter <= chapter_no <= end_chapter:
+            role = _text(item.get("bias") or item.get("window_role"), "primary_repay")
+            priority = _text(item.get("priority") or payload.get("priority"), "medium")
+            bias_payload = payoff_window_event_bias(role, priority=priority)
+            overlaps.append({
+                "chapter_no": chapter_no,
+                "bias": role,
+                "priority": priority,
+                "note": _text(item.get("note") or payload.get("note") or payload.get("reason")),
+                "preferred_event_types": list(bias_payload.get("preferred_event_types") or []),
+                "limited_event_types": list(bias_payload.get("limited_event_types") or []),
+                "preferred_progress_kinds": list(bias_payload.get("preferred_progress_kinds") or []),
+                "event_bias_note": _text(bias_payload.get("event_bias_note")),
+            })
+    if not overlaps:
+        return {}
+    source_chapter_no = int(payload.get("source_chapter_no", 0) or 0)
+    note = _text(payload.get("note") or payload.get("reason"), "上一章兑现偏虚，接下来 1-2 章要追回一次明确回报。")
+    hint_lines = [
+        f"这次追账来自第{source_chapter_no}章，先把读者应得的回报追回来。" if source_chapter_no else "当前窗口里有待追回的回报。",
+        "第一顺位章节优先给明确落袋，别继续纯蓄压。",
+    ]
+    if len(overlaps) >= 2:
+        hint_lines.append("若两章都受影响，前一章追回，后一章稳住余波并换一种显影方式。")
+    if bool(payload.get("should_reduce_pressure", True)):
+        hint_lines.append("补偿窗口里适度降低继续只抬风险的比例。")
+    event_guidance = []
+    for item in overlaps[:2]:
+        chapter_no = int(item.get("chapter_no", 0) or 0)
+        preferred = " / ".join([_text(name) for name in (item.get("preferred_event_types") or [])[:3] if _text(name)])
+        limited = " / ".join([_text(name) for name in (item.get("limited_event_types") or [])[:2] if _text(name)])
+        if preferred:
+            line = f"第{chapter_no}章优先安排{preferred}"
+            if limited:
+                line += f"，少用{limited}"
+            event_guidance.append(line)
+    return {
+        "source_chapter_no": source_chapter_no,
+        "priority": _text(payload.get("priority"), "medium"),
+        "note": note,
+        "target_chapter_no": int(payload.get("target_chapter_no", 0) or 0),
+        "window_end_chapter_no": int(payload.get("window_end_chapter_no", 0) or 0),
+        "overlapping_chapters": overlaps,
+        "hint_lines": hint_lines[:4],
+        "event_guidance": event_guidance[:2],
+        "should_reduce_pressure": bool(payload.get("should_reduce_pressure", True)),
+    }
+
+
+def _apply_payoff_compensation_window_to_bundle(bundle: dict, story_bible: dict, *, start_chapter: int, end_chapter: int) -> dict:
+    window = _planning_payoff_compensation_window(story_bible, start_chapter=start_chapter, end_chapter=end_chapter)
+    if not window:
+        return bundle
+    chapter_bias_map = {int(item.get("chapter_no", 0) or 0): item for item in (window.get("overlapping_chapters") or []) if isinstance(item, dict)}
+    chapters = bundle.get("chapters") or []
+    for chapter in chapters:
+        if not isinstance(chapter, dict):
+            continue
+        chapter_no = int(chapter.get("chapter_no", 0) or 0)
+        bias = chapter_bias_map.get(chapter_no)
+        if not bias:
+            continue
+        role = _text(bias.get("bias"), "primary_repay")
+        priority = _text(bias.get("priority"), _text(window.get("priority"), "medium")).lower()
+        note = _text(bias.get("note") or window.get("note"))
+        compensation = {
+            "enabled": True,
+            "source_chapter_no": int(window.get("source_chapter_no", 0) or 0),
+            "target_chapter_no": chapter_no,
+            "priority": priority,
+            "note": note,
+            "reason": note,
+            "window_role": role,
+            "window_end_chapter_no": int(window.get("window_end_chapter_no", 0) or 0),
+            "should_reduce_pressure": bool(window.get("should_reduce_pressure", True)),
+        }
+        chapter["payoff_compensation"] = compensation
+        chapter["payoff_window_bias"] = role
+        prior_events = [
+            _text(item.get("event_type"))
+            for item in chapters
+            if isinstance(item, dict) and int(item.get("chapter_no", 0) or 0) < chapter_no and _text(item.get("event_type"))
+        ]
+        adjusted = apply_payoff_window_event_bias_to_plan(
+            chapter,
+            role=role,
+            priority=priority,
+            note=note,
+            recent_event_types=prior_events[-2:],
+        )
+        chapter.update(adjusted)
+        if role == "primary_repay":
+            chapter["payoff_level"] = "strong" if priority == "high" else "medium"
+            chapter["payoff_or_pressure"] = _append_unique_sentence(chapter.get("payoff_or_pressure"), "本章优先补一次明确回报落袋，不要继续只蓄压。")
+            chapter.setdefault("reader_payoff", "本章要把读者应得的回报真正拿到手。")
+            chapter.setdefault("new_pressure", "回报落袋后立刻带出新的盯防、代价或后患。")
+            chapter["writing_note"] = _append_unique_sentence(chapter.get("writing_note"), note or "这一章先把兑现追回来，再把后患接上。")
+        else:
+            if _text(chapter.get("payoff_level")).lower() not in {"medium", "strong"}:
+                chapter["payoff_level"] = "medium"
+            chapter["payoff_or_pressure"] = _append_unique_sentence(chapter.get("payoff_or_pressure"), "本章至少保留一次可感回收，别重新连续两章只抬压力。")
+            chapter["writing_note"] = _append_unique_sentence(chapter.get("writing_note"), note or "这一章负责稳住兑现余波，并换一种显影方式。")
+    bundle["planning_payoff_compensation"] = window
+    if window.get("hint_lines"):
+        bundle["bridge_note"] = _append_unique_sentence(bundle.get("bridge_note"), " ".join([_text(item) for item in (window.get("hint_lines") or [])[:2] if _text(item)]), limit=180)
+    if window.get("event_guidance"):
+        bundle["bridge_note"] = _append_unique_sentence(bundle.get("bridge_note"), " ".join([_text(item) for item in (window.get("event_guidance") or [])[:2] if _text(item)]), limit=180)
+    return bundle
 
 
 
@@ -266,7 +413,8 @@ def generate_arc_outline_bundle(
         recent_summaries=recent,
         arc_bundle=bundle,
     )
-    return apply_arc_casting_layout_review(bundle, review)
+    bundle = apply_arc_casting_layout_review(bundle, review)
+    return _apply_payoff_compensation_window_to_bundle(bundle, story_bible, start_chapter=start_chapter, end_chapter=end_chapter)
 
 
 

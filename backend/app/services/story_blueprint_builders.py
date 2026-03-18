@@ -3,7 +3,11 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from app.services.payoff_cards import build_payoff_cards
+from app.services.scene_templates import build_scene_templates
+
 from app.schemas.novel import NovelCreate
+from app.services.generation_exceptions import ErrorCodes, GenerationError
 from app.services.resource_card_support import build_resource_card, normalize_resource_refs
 from app.services.core_cast_support import build_core_cast_state
 from app.services.story_character_support import _safe_list, _text
@@ -43,82 +47,17 @@ def _golden_finger(payload: NovelCreate) -> str:
 
 
 
-def _fallback_story_engine_profile(payload: NovelCreate) -> dict[str, Any]:
-    story_text = f"{payload.genre} {payload.premise} {_text((payload.style_preferences or {}).get('story_engine'))}".lower()
-    if any(token in story_text for token in ["宗门", "学院", "试炼", "大比"]):
-        subgenres = ["宗门成长流", "竞争升级流"]
-        primary = "身份成长 + 同辈竞争 + 阶段胜负"
-        secondary = "师承与站队变化"
-    elif any(token in story_text for token in ["金手指", "机缘", "外挂", "神器"]):
-        subgenres = ["机缘兑现流", "升级反馈流"]
-        primary = "机缘试错 + 能力兑现 + 代价上升"
-        secondary = "异常线索慢展开"
-    elif any(token in story_text for token in ["黑暗", "诡异", "污染", "禁忌"]):
-        subgenres = ["黑暗修仙", "诡异修仙"]
-        primary = "认知风险 + 代价成长 + 真相逼近"
-        secondary = "规则扭曲下的求生"
-    else:
-        subgenres = ["凡人苟道修仙", "资源求生流"]
-        primary = "低位求生 + 资源争取 + 谨慎试探"
-        secondary = "异常线索慢兑现"
-    return {
-        "story_subgenres": subgenres,
-        "primary_story_engine": primary,
-        "secondary_story_engine": secondary,
-        "opening_drive": _text((payload.style_preferences or {}).get("opening_goal"), "前期先钉牢处境、目标、代价与可持续推进入口。"),
-        "early_hook_focus": "前10章要给出题材辨识度、现实压力和第一轮有效收益。",
-        "protagonist_action_logic": _text((payload.style_preferences or {}).get("temperament"), "先判断，再行动，关键时必须主动做决定。"),
-        "pacing_profile": _text((payload.style_preferences or {}).get("opening_pace"), "稳中有推进，章章有结果。"),
-        "world_reveal_strategy": "先讲主角眼下用得上的局部规则，再逐步抬到更高层势力与地图。",
-        "power_growth_strategy": "成长必须绑定资源、代价、风险和后果，不走纯数值冲级。",
-        "early_must_haves": ["明确现实压力", "第一轮有效收益", "可持续主线入口"],
-        "avoid_tropes": ["固定药铺/坊市/残页组合", "连续多章只围着同一线索试探", "重复被怀疑后被动应付"],
-        "differentiation_focus": ["把题材真正的独特卖点写进前10章的推进方式"],
-        "must_establish_relationships": ["核心绑定角色", "长期压迫源", "阶段合作对象"],
-        "tone_keywords": ["克制", "具体", "有代价"],
-    }
-
-
-def _fallback_first_30_engine(payload: NovelCreate) -> dict[str, Any]:
-    protagonist = _text(payload.protagonist_name, "主角")
-    return {
-        "story_promise": f"前30章要让读者明确感到：{protagonist}不是在重复试探，而是在一步步换取更大的行动空间。",
-        "strategic_premise": f"围绕‘{payload.premise}’，让{protagonist}在现实压力、关系绑定和阶段破局中持续向上。",
-        "main_conflict_axis": "立足需求与暴露风险的长期拉扯。",
-        "first_30_mainline_summary": _text((payload.style_preferences or {}).get("first_30_chapter_mainline"), "前30章围绕立足、试错、关系绑定与阶段破局推进，不让同一桥段垄断。"),
-        "chapter_1_to_10": {
-            "range": "1-10",
-            "stage_mission": "先用题材最有辨识度的推进方式抓住读者。",
-            "reader_hook": "给出第一轮具体收益、代价和继续追更的理由。",
-            "frequent_elements": ["现实压力", "主动试探", "具体结果"],
-            "limited_elements": ["重复盘问", "连续隐藏同一秘密"],
-            "relationship_tasks": ["建立一条会长期变化的关键关系"],
-            "phase_result": "主角拿到第一阶段立足资本。",
-        },
-        "chapter_11_to_20": {
-            "range": "11-20",
-            "stage_mission": "扩大地图、对手和关系压力。",
-            "reader_hook": "阶段收益之后出现更高位风险或更大诱惑。",
-            "frequent_elements": ["关系变化", "资源争夺", "局势升级"],
-            "limited_elements": ["原地踏步试探"],
-            "relationship_tasks": ["让关键配角关系发生第一次实质变化"],
-            "phase_result": "主角失去一部分原有安全区，但获得新的行动空间。",
-        },
-        "chapter_21_to_30": {
-            "range": "21-30",
-            "stage_mission": "做出阶段高潮并确认下一层故事方向。",
-            "reader_hook": "更大的地图、规则或敌意被清楚打开。",
-            "frequent_elements": ["阶段破局", "主动布局", "关系站队"],
-            "limited_elements": ["只靠气氛拖章"],
-            "relationship_tasks": ["把至少一条关系推入不可逆的新状态"],
-            "phase_result": "主角从开书状态进入新的故事层级。",
-        },
-        "frequent_event_types": ["资源获取类", "关系推进类", "反制类"],
-        "limited_event_types": ["连续被怀疑后被动应付"],
-        "must_establish_relationships": ["核心绑定角色", "长期压迫源", "阶段合作对象"],
-        "escalation_path": ["处境压力", "局部破局", "关系重组", "阶段高潮"],
-        "anti_homogenization_rules": ["不要让前30章只围着一个物件打转", "每个阶段都要换推进重心"],
-    }
+def _require_creation_ai_payload(*, payload_name: str, value: dict[str, Any] | None) -> dict[str, Any]:
+    if isinstance(value, dict) and value:
+        return deepcopy(value)
+    raise GenerationError(
+        code=ErrorCodes.AI_REQUIRED_UNAVAILABLE,
+        message=f"project_card 构建失败：缺少创建阶段 AI 产物 {payload_name}。新系统不再允许本地兜底。",
+        stage="project_card_build",
+        retryable=False,
+        http_status=503,
+        details={"missing_payload": payload_name},
+    )
 
 
 def _mid_term_direction(global_outline: dict[str, Any]) -> str:
@@ -1215,14 +1154,22 @@ def build_flow_templates() -> list[dict[str, Any]]:
 def build_template_library(payload: NovelCreate) -> dict[str, Any]:
     character_templates = build_character_templates(payload)
     flow_templates = build_flow_templates()
+    payoff_cards = build_payoff_cards()
+    scene_templates = build_scene_templates()
     return {
         "character_templates": character_templates,
         "flow_templates": flow_templates,
+        "payoff_cards": payoff_cards,
+        "scene_templates": scene_templates,
         "roadmap": {
             "character_template_target_count": 40,
             "flow_template_target_count": 20,
+            "payoff_card_target_count": 20,
+            "scene_template_target_count": 20,
             "current_character_template_count": len(character_templates),
             "current_flow_template_count": len(flow_templates),
+            "current_payoff_card_count": len(payoff_cards),
+            "current_scene_template_count": len(scene_templates),
             "status": "foundation_ready",
             "note": "人物模板库已扩到首批可用规模，后续继续补风格缝隙与题材特化模板。",
         },
@@ -1357,6 +1304,7 @@ def build_retrospective_state() -> dict[str, Any]:
         "scheduled_review_interval": 5,
         "last_review_notes": [],
         "latest_stage_character_review": {},
+        "pending_payoff_compensation": {},
         "status": "foundation_ready",
     }
 
@@ -1405,15 +1353,16 @@ def build_project_card(
     story_engine_diagnosis: dict[str, Any] | None = None,
     story_strategy_card: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    diagnosis = deepcopy(story_engine_diagnosis or _fallback_story_engine_profile(payload))
-    strategy = deepcopy(story_strategy_card or _fallback_first_30_engine(payload))
-    first_30_summary = _text(strategy.get("first_30_mainline_summary"), _text(payload.style_preferences.get("first_30_chapter_mainline"), "前30章围绕立足、关系绑定、阶段破局与更大局势展开。"))
+    diagnosis = _require_creation_ai_payload(payload_name="story_engine_diagnosis", value=story_engine_diagnosis)
+    strategy = _require_creation_ai_payload(payload_name="story_strategy_card", value=story_strategy_card)
+    style_preferences = payload.style_preferences or {}
+    first_30_summary = _text(strategy.get("first_30_mainline_summary"), _text(style_preferences.get("first_30_chapter_mainline"), "前30章围绕立足、关系绑定、阶段破局与更大局势展开。"))
     protagonist_defaults = {
         "name": _text(payload.protagonist_name),
-        "core_desire": _text(payload.style_preferences.get("core_desire"), "先活下去，再争取更稳的立足点与主动权。"),
-        "core_fear": _text(payload.style_preferences.get("core_fear"), "秘密暴露、失去退路、被更高位者盯上。"),
-        "advantage": _text(payload.style_preferences.get("advantage"), "谨慎、耐心、肯观察，有能力从细节里找生机。"),
-        "flaw": _text(payload.style_preferences.get("flaw"), "过度克制，容易把代价都压到自己身上。"),
+        "core_desire": _text(style_preferences.get("core_desire"), "先活下去，再争取更稳的立足点与主动权。"),
+        "core_fear": _text(style_preferences.get("core_fear"), "秘密暴露、失去退路、被更高位者盯上。"),
+        "advantage": _text(style_preferences.get("advantage"), "谨慎、耐心、肯观察，有能力从细节里找生机。"),
+        "flaw": _text(style_preferences.get("flaw"), "过度克制，容易把代价都压到自己身上。"),
     }
     return {
         "book_title": title,
@@ -1431,7 +1380,7 @@ def build_project_card(
     }
 
 
-def build_control_console(payload: NovelCreate, first_arc: dict[str, Any] | None = None) -> dict[str, Any]:
+def build_story_workspace(payload: NovelCreate, first_arc: dict[str, Any] | None = None) -> dict[str, Any]:
     protagonist_name = _text(payload.protagonist_name)
     active_arc = first_arc or {}
     near_window = []
@@ -1447,7 +1396,7 @@ def build_control_console(payload: NovelCreate, first_arc: dict[str, Any] | None
             }
         )
     return {
-        "protagonist_state": {
+        "protagonist_profile": {
             "current_realm": _text(payload.style_preferences.get("initial_realm"), "未显明确高阶境界，处于低阶求生阶段"),
             "combat_positioning": _text(payload.style_preferences.get("initial_combat_positioning"), "偏弱但谨慎，有特定场景下的应对手段。"),
             "main_skill": _text(payload.style_preferences.get("main_skill"), "观察、试探、藏拙、借力打力"),
@@ -1468,7 +1417,7 @@ def build_control_console(payload: NovelCreate, first_arc: dict[str, Any] | None
             "hard_no_cross_lines": ["大境界碾压不可常态硬跨", "受伤与消耗不能写了就忘"],
             "special_combat_features": _safe_list(payload.style_preferences.get("special_combat_features")) or ["信息差", "地形", "法器/材料", "时间差"],
         },
-        "character_cards": {
+        "cast_cards": {
             protagonist_name: {
                 "name": protagonist_name,
                 "role_type": "protagonist",
@@ -1490,7 +1439,7 @@ def build_control_console(payload: NovelCreate, first_arc: dict[str, Any] | None
                 "do_not_break": ["谨慎不等于停滞", "关键抉择时必须体现主动判断"],
             }
         },
-        "relation_tracks": [],
+        "relationship_journal": [],
         "foreshadowing": [],
         "timeline": [],
         "near_7_chapter_outline": near_window,

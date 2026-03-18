@@ -521,6 +521,23 @@ def apply_card_selection_to_packet(packet: dict[str, Any], selected_card_ids: li
         "selected_card_ids": ordered_ids,
         "selection_note": _truncate_text(selection_note, 96),
     }
+    selected_resource_names = set(filtered_resources.keys())
+    resource_plan = packet.get("resource_plan") or {}
+    if isinstance(resource_plan, dict) and selected_resource_names:
+        packet["resource_plan"] = {
+            key: value
+            for key, value in resource_plan.items()
+            if key in selected_resource_names
+        }
+    capability_plan = packet.get("resource_capability_plan") or {}
+    if isinstance(capability_plan, dict) and selected_resource_names:
+        filtered_capability = {}
+        for key, value in capability_plan.items():
+            if key == "__meta__":
+                filtered_capability[key] = value
+            elif key in selected_resource_names:
+                filtered_capability[key] = value
+        packet["resource_capability_plan"] = filtered_capability
     input_policy = packet.setdefault("input_policy", {})
-    input_policy["card_selection_rule"] = "先看 card_index 里的轻量索引，再只展开 card_selection 选中的完整卡。"
+    input_policy["card_selection_rule"] = "AI 先看 card_index 里的全量轻量索引做筛选，再只展开 card_selection 选中的完整卡。"
     return packet

@@ -13,6 +13,7 @@ from app.services.hard_fact_guard import (
     ensure_hard_fact_guard,
 )
 from app.services.importance_evaluator import evaluate_story_elements_importance
+from app.services.payoff_compensation_support import payoff_window_event_bias
 from app.services.story_blueprint_builders import (
     _default_cultivation_system,
     _default_world_bible,
@@ -22,7 +23,7 @@ from app.services.story_blueprint_builders import (
     _one_line_intro,
     _sell_line,
     _target_end,
-    build_control_console,
+    build_story_workspace,
     build_core_cast_state_payload,
     build_entity_registry,
     build_flow_control,
@@ -76,7 +77,7 @@ from app.services.story_runtime_support import (
     sync_long_term_state,
 )
 from app.services.story_state import (
-    ensure_control_console,
+    ensure_story_workspace,
     ensure_planning_layers,
     ensure_serial_runtime,
     ensure_story_state_domains,
@@ -121,6 +122,151 @@ def _compact_value(value: Any, *, text_limit: int = 60) -> Any:
         return compact
     return _truncate_text(value, text_limit)
 
+
+
+def _clone_execution_packet(
+    execution_brief: dict[str, Any] | None,
+    *,
+    chapter_no: int,
+    packet_phase: str,
+) -> dict[str, Any]:
+    packet = deepcopy(execution_brief or {})
+    packet["for_chapter_no"] = int(chapter_no or 0)
+    packet["packet_phase"] = _text(packet.get("packet_phase"), packet_phase)
+    packet["packet_label"] = _text(packet.get("packet_label"), f"第{int(chapter_no or 0)}章执行意图卡")
+    chapter_card = packet.setdefault("chapter_execution_card", {})
+    if isinstance(chapter_card, dict):
+        chapter_card.setdefault("for_chapter_no", int(chapter_no or 0))
+        chapter_card.setdefault("packet_phase", _text(packet.get("packet_phase"), packet_phase))
+    daily = packet.setdefault("daily_workbench", {})
+    if isinstance(daily, dict):
+        daily["for_chapter_no"] = int(chapter_no or 0)
+        daily["packet_phase"] = _text(packet.get("packet_phase"), packet_phase)
+    return packet
+
+
+def _paragraphs(text: Any) -> list[str]:
+    raw = str(text or "")
+    lines = [part.strip() for part in raw.replace("\r", "").split("\n")]
+    blocks: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        if not line:
+            if current:
+                blocks.append("".join(current).strip())
+                current = []
+            continue
+        current.append(line)
+    if current:
+        blocks.append("".join(current).strip())
+    return [item for item in blocks if item]
+
+
+def build_realized_scene_report(
+    *,
+    chapter_no: int,
+    chapter_title: str,
+    plan: dict[str, Any] | None,
+    summary: Any,
+    content: str,
+    execution_packet: dict[str, Any] | None = None,
+    scene_handoff_card: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    packet = execution_packet if isinstance(execution_packet, dict) else {}
+    planned_outline = [
+        {
+            "scene_no": int(item.get("scene_no", index + 1) or (index + 1)),
+            "scene_name": _text(item.get("scene_name"), "未命名场景"),
+            "scene_role": _text(item.get("scene_role")),
+            "purpose": _text(item.get("purpose")),
+        }
+        for index, item in enumerate((packet.get("scene_outline") or [])[:3])
+        if isinstance(item, dict)
+    ]
+    paragraphs = _paragraphs(content)
+    first_para = _truncate_text(paragraphs[0] if paragraphs else content, 120)
+    last_para = _truncate_text(paragraphs[-1] if paragraphs else content, 120)
+    event_summary = _text(getattr(summary, "event_summary", None), _text((plan or {}).get("goal"), "本章完成一次推进。"))
+    new_clues = [_text(item) for item in (getattr(summary, "new_clues", None) or []) if _text(item)][:3]
+    open_hooks = [_text(item) for item in (getattr(summary, "open_hooks", None) or []) if _text(item)][:3]
+    closed_hooks = [_text(item) for item in (getattr(summary, "closed_hooks", None) or []) if _text(item)][:3]
+    actual_slots = [
+        {
+            "slot": "opening",
+            "planned": _text((plan or {}).get("opening_beat"), _text((planned_outline[0] if planned_outline else {}).get("purpose"))),
+            "actual": first_para,
+        },
+        {
+            "slot": "middle",
+            "planned": _text((plan or {}).get("mid_turn"), _text((planned_outline[1] if len(planned_outline) >= 2 else {}).get("purpose"))),
+            "actual": _truncate_text(event_summary, 120),
+        },
+        {
+            "slot": "ending",
+            "planned": _text((plan or {}).get("closing_image") or (plan or {}).get("ending_hook"), _text((planned_outline[2] if len(planned_outline) >= 3 else {}).get("purpose"))),
+            "actual": last_para,
+        },
+    ]
+    preview_lines = [
+        f"第{int(chapter_no or 0)}章《{_text(chapter_title, '未命名章节')}》",
+        f"实绩摘要：{event_summary}",
+    ]
+    if first_para:
+        preview_lines.append(f"正文开场：{first_para}")
+    if last_para:
+        preview_lines.append(f"正文收束：{last_para}")
+    if new_clues:
+        preview_lines.append(f"新增线索：{'、'.join(new_clues)}")
+    if open_hooks:
+        preview_lines.append(f"未回收点：{'、'.join(open_hooks)}")
+    if closed_hooks:
+        preview_lines.append(f"已回收点：{'、'.join(closed_hooks)}")
+    handoff = scene_handoff_card if isinstance(scene_handoff_card, dict) else {}
+    return {
+        "chapter_no": int(chapter_no or 0),
+        "chapter_title": _text(chapter_title),
+        "report_phase": "realized",
+        "event_summary": event_summary,
+        "planned_scene_outline": planned_outline,
+        "actual_scene_slots": actual_slots,
+        "new_clues": new_clues,
+        "open_hooks": open_hooks,
+        "closed_hooks": closed_hooks,
+        "handoff_hint": {
+            "scene_status_at_end": _text(handoff.get("scene_status_at_end")),
+            "must_continue_same_scene": bool(handoff.get("must_continue_same_scene")),
+            "next_opening_anchor": _text(handoff.get("next_opening_anchor")),
+        },
+        "preview_lines": preview_lines[:6],
+    }
+
+
+def prepare_story_workspace_for_chapter_entry(
+    story_bible: dict[str, Any],
+    *,
+    next_chapter_no: int,
+) -> dict[str, Any]:
+    story_bible = ensure_story_state_domains(story_bible)
+    workspace_state = ensure_story_workspace(story_bible)
+    current_packet = workspace_state.get("current_execution_packet") if isinstance(workspace_state.get("current_execution_packet"), dict) else {}
+    current_target = int(current_packet.get("for_chapter_no", 0) or 0)
+    if current_packet and current_target and current_target != int(next_chapter_no or 0):
+        stale_packet = deepcopy(current_packet)
+        stale_packet["packet_phase"] = "stale_cleared"
+        stale_packet["resolved_for_chapter_no"] = int(next_chapter_no or 0)
+        workspace_state["last_completed_execution_packet"] = stale_packet
+        history = workspace_state.setdefault("execution_packet_history", [])
+        history.append({
+            "chapter_no": current_target,
+            "packet_phase": "stale_cleared",
+            "chapter_function": _text(((stale_packet.get("chapter_execution_card") or {}).get("chapter_function"))),
+        })
+        workspace_state["execution_packet_history"] = history[-8:]
+        workspace_state.pop("current_execution_packet", None)
+    workspace_state["entry_target_chapter_no"] = int(next_chapter_no or 0)
+    story_bible["story_workspace"] = workspace_state
+    return story_bible
+
 DEFAULT_STRICT_PIPELINE = [
     "定位",
     "读状态",
@@ -147,6 +293,9 @@ def _chapter_cards_from_arc(arc: dict[str, Any] | None) -> list[dict[str, Any]]:
                 "title": _text(chapter.get("title"), ""),
                 "goal": _text(chapter.get("goal"), "推进当前主线"),
                 "chapter_type": _text(chapter.get("chapter_type"), "progress"),
+                "progress_kind": _text(chapter.get("progress_kind"), ""),
+                "payoff_or_pressure": _text(chapter.get("payoff_or_pressure"), ""),
+                "payoff_mode": _text(chapter.get("payoff_mode"), ""),
                 "hook_style": _text(chapter.get("hook_style"), ""),
                 "opening": _text(chapter.get("opening_beat"), ""),
                 "middle": _text(chapter.get("mid_turn"), ""),
@@ -234,6 +383,8 @@ def _merge_character_template_library(existing: dict[str, Any], built: dict[str,
     _deep_fill_missing(roadmap, built_roadmap)
     roadmap["current_character_template_count"] = len(merged.get("character_templates") or [])
     roadmap["current_flow_template_count"] = len(merged.get("flow_templates") or [])
+    roadmap["current_payoff_card_count"] = len(merged.get("payoff_cards") or [])
+    roadmap["current_scene_template_count"] = len(merged.get("scene_templates") or [])
     return merged
 
 
@@ -347,127 +498,6 @@ def _normalize_story_domain_resources(domains: dict[str, Any], *, default_owner:
     domains["resources"] = normalized
 
 
-def _bridge_story_domains_from_legacy(
-    story_bible: dict[str, Any],
-    *,
-    protagonist_name: str,
-) -> dict[str, Any]:
-    domains = story_bible.setdefault("story_domains", {})
-    domains.setdefault("characters", {})
-    domains.setdefault("resources", {})
-    domains.setdefault("relations", {})
-    domains.setdefault("factions", {})
-
-    console = story_bible.get("control_console") or {}
-    cards = console.get("character_cards") or {}
-    if isinstance(cards, dict):
-        for name, card in cards.items():
-            if isinstance(card, dict):
-                _upsert_story_domain_character(domains, protagonist_name=protagonist_name, name=_text(name), source=card)
-
-    protagonist_state = console.get("protagonist_state") or {}
-    if protagonist_name and protagonist_name not in (domains.get("characters") or {}):
-        _upsert_story_domain_character(
-            domains,
-            protagonist_name=protagonist_name,
-            name=protagonist_name,
-            source={
-                "role_type": "protagonist",
-                "camp": "主角阵营",
-                "current_strength": protagonist_state.get("current_realm"),
-                "current_desire": protagonist_state.get("current_goal"),
-                "core_desire": protagonist_state.get("current_goal"),
-                "speech_style": "简短、留后手、尽量不把真实判断一次说满。",
-                "work_style": protagonist_state.get("main_skill") or "先观察和试探，再决定是否行动。",
-            },
-        )
-
-    resources = domains.setdefault("resources", {})
-    for item in _safe_list(protagonist_state.get("current_resources")):
-        resource_name, resource_card = build_resource_card(
-            item,
-            owner=protagonist_name or "主角阵营",
-            resource_type="当前资源",
-            status="持有中",
-            rarity="普通/待判定",
-            exposure_risk=_text(protagonist_state.get("exposure_risk"), "待观察"),
-            narrative_role="当前生存与推进资源。",
-            recent_change="由旧档主角状态迁入。",
-            source="legacy_protagonist_state",
-        )
-        if resource_name:
-            resources.setdefault(resource_name, resource_card)
-
-    factions = domains.setdefault("factions", {})
-    factions.setdefault(
-        "主角阵营",
-        {
-            "name": "主角阵营",
-            "entity_type": "faction",
-            "faction_level": "个人",
-            "faction_type": "临时自保单元",
-            "territory": "当前活动区域",
-            "core_goal": "先活下去，再建立稳定立足点。",
-            "relation_to_protagonist": "self",
-            "resource_control": list(resources.keys()),
-            "key_characters": [protagonist_name] if protagonist_name else [],
-        },
-    )
-    for item in _safe_list((story_bible.get("world_bible") or {}).get("factions")):
-        if isinstance(item, dict):
-            faction_name = _text(item.get("name"))
-        else:
-            faction_name = _text(item)
-        if not faction_name:
-            continue
-        factions.setdefault(
-            faction_name,
-            {
-                "name": faction_name,
-                "entity_type": "faction",
-                "faction_level": "地区级/待细化",
-                "faction_type": "既有势力",
-                "territory": "待后续章节补充",
-                "core_goal": "控制资源、维持影响力并压住风险。",
-                "relation_to_protagonist": "待观察",
-                "resource_control": [],
-                "key_characters": [],
-            },
-        )
-
-    relations = domains.setdefault("relations", {})
-    for track in _safe_list(console.get("relation_tracks")):
-        if not isinstance(track, dict):
-            continue
-        subject = _text(track.get("subject"))
-        target = _text(track.get("target"))
-        if not subject or not target:
-            continue
-        relation_id = f"{subject}::{target}"
-        entry = relations.setdefault(
-            relation_id,
-            {
-                "relation_id": relation_id,
-                "left": subject,
-                "right": target,
-                "relation_type": "待观察",
-                "current_level": "待观察",
-                "trust": 0,
-                "hostility": 0,
-                "dependency": 0,
-                "recent_trigger": "",
-                "next_direction": "待后续发展",
-            },
-        )
-        entry["recent_trigger"] = _text(track.get("change"), entry.get("recent_trigger", ""))
-        entry["last_updated_chapter"] = int(track.get("chapter_no", 0) or 0)
-        if subject == protagonist_name or target == protagonist_name:
-            entry["relation_type"] = "与主角关系"
-            entry["current_level"] = _text(track.get("change"), entry.get("current_level", "待观察"))
-
-    _normalize_story_domain_resources(domains, default_owner=protagonist_name or "主角阵营")
-    _rebuild_entity_registry(story_bible)
-    return story_bible
 
 
 
@@ -512,7 +542,6 @@ def _ensure_story_bible_foundation(
     )
     story_bible["flow_control"] = _deep_fill_missing(story_bible.get("flow_control") or {}, build_flow_control())
     story_bible["entity_registry"] = _deep_fill_missing(story_bible.get("entity_registry") or {}, build_entity_registry())
-    story_bible = _bridge_story_domains_from_legacy(story_bible, protagonist_name=payload.protagonist_name)
     importance_state = story_bible.get("importance_state") or {}
     entity_index = (importance_state.get("entity_index") or {}) if isinstance(importance_state, dict) else {}
     if not any((entity_index.get(key) or {}) for key in ["character", "resource", "relation", "faction"]):
@@ -531,9 +560,10 @@ def _ensure_story_bible_foundation(
 
 def refresh_planning_views(story_bible: dict[str, Any], current_chapter_no: int = 0) -> dict[str, Any]:
     story_bible = ensure_story_state_domains(story_bible, workflow_factory=_workflow_state_from_arc)
-    console = ensure_control_console(story_bible)
+    workspace_state = ensure_story_workspace(story_bible)
     workflow_state = ensure_workflow_state(story_bible, workflow_factory=_workflow_state_from_arc)
 
+    retrospective_state = story_bible.get("retrospective_state") or {}
     active_arc = story_bible.get("active_arc") or {}
     pending_arc = story_bible.get("pending_arc") or {}
     queue = [item for item in _chapter_cards_from_arc(active_arc) if int(item.get("chapter_no", 0) or 0) > current_chapter_no]
@@ -541,17 +571,43 @@ def refresh_planning_views(story_bible: dict[str, Any], current_chapter_no: int 
         remaining = 7 - len(queue)
         queue.extend(_chapter_cards_from_arc(pending_arc)[:remaining])
 
-    console["chapter_card_queue"] = queue[:7]
+    pending_payoff_compensation = (retrospective_state.get("pending_payoff_compensation") or {}) if isinstance(retrospective_state, dict) else {}
+    bias_map = {
+        int(item.get("chapter_no", 0) or 0): item
+        for item in (pending_payoff_compensation.get("chapter_biases") or [])
+        if isinstance(item, dict)
+    }
+    queue_with_payoff_bias: list[dict[str, Any]] = []
+    for item in queue[:7]:
+        if not isinstance(item, dict):
+            continue
+        copied = dict(item)
+        bias = bias_map.get(int(copied.get("chapter_no", 0) or 0))
+        if bias:
+            note = _text(bias.get("note") or pending_payoff_compensation.get("note") or pending_payoff_compensation.get("reason"))
+            copied["payoff_compensation"] = {
+                "enabled": True,
+                "source_chapter_no": int(pending_payoff_compensation.get("source_chapter_no", 0) or 0),
+                "target_chapter_no": int(copied.get("chapter_no", 0) or 0),
+                "priority": _text(bias.get("priority") or pending_payoff_compensation.get("priority"), "medium"),
+                "note": note,
+                "window_role": _text(bias.get("bias") or bias.get("window_role"), "primary_repay"),
+                "window_end_chapter_no": int(pending_payoff_compensation.get("window_end_chapter_no", 0) or 0),
+            }
+            role = _text(bias.get("bias") or bias.get("window_role"), "primary_repay")
+            copied["payoff_window_bias"] = role
+            copied["payoff_window_event_bias"] = payoff_window_event_bias(role, priority=_text(bias.get("priority") or pending_payoff_compensation.get("priority"), "medium"))
+        queue_with_payoff_bias.append(copied)
+    workspace_state["chapter_card_queue"] = queue_with_payoff_bias
     outline_state = story_bible.get("outline_state") or {}
     current_stage_review = stage_character_review_for_window(story_bible, current_chapter_no=current_chapter_no)
-    retrospective_state = story_bible.get("retrospective_state") or {}
     review_interval = max(int(retrospective_state.get("scheduled_review_interval", 5) or 5), 1)
     stage_review_due = bool(current_chapter_no > 0 and current_chapter_no % review_interval == 0 and int(retrospective_state.get("last_stage_review_chapter", 0) or 0) < current_chapter_no)
 
     active_arc_layout_review = summarize_arc_casting_layout_review(active_arc)
     pending_arc_layout_review = summarize_arc_casting_layout_review(pending_arc) if pending_arc else {}
 
-    console["planning_status"] = {
+    workspace_state["planning_status"] = {
         "documents_only_bootstrap": True,
         "auto_planning_enabled": True,
         "planned_until": int(outline_state.get("planned_until", 0) or 0),
@@ -579,10 +635,32 @@ def refresh_planning_views(story_bible: dict[str, Any], current_chapter_no: int 
         "pending_arc_casting_layout_review": pending_arc_layout_review,
         "ready_chapter_cards": [int(item.get("chapter_no", 0) or 0) for item in queue[:7]],
         "core_cast_brief": core_cast_guidance_for_chapter(story_bible, chapter_no=current_chapter_no + 1),
+        "pending_payoff_compensation": {
+            "enabled": bool(((retrospective_state.get("pending_payoff_compensation") or {}).get("enabled", False))),
+            "source_chapter_no": int((((retrospective_state.get("pending_payoff_compensation") or {}).get("source_chapter_no")) or 0)),
+            "target_chapter_no": int((((retrospective_state.get("pending_payoff_compensation") or {}).get("target_chapter_no")) or 0)),
+            "window_end_chapter_no": int((((retrospective_state.get("pending_payoff_compensation") or {}).get("window_end_chapter_no")) or 0)),
+            "priority": _text(((retrospective_state.get("pending_payoff_compensation") or {}).get("priority")), ""),
+            "note": _text((((retrospective_state.get("pending_payoff_compensation") or {}).get("note")) or ((retrospective_state.get("pending_payoff_compensation") or {}).get("reason"))), ""),
+            "chapter_biases": [
+                {
+                    "chapter_no": int(item.get("chapter_no", 0) or 0),
+                    "bias": _text(item.get("bias") or item.get("window_role")),
+                    "priority": _text(item.get("priority"), ""),
+                    "note": _text(item.get("note"), ""),
+                    "event_bias": payoff_window_event_bias(
+                        _text(item.get("bias") or item.get("window_role")),
+                        priority=_text(item.get("priority") or ((retrospective_state.get("pending_payoff_compensation") or {}).get("priority")), "medium"),
+                    ),
+                }
+                for item in (((retrospective_state.get("pending_payoff_compensation") or {}).get("chapter_biases")) or [])[:3]
+                if isinstance(item, dict)
+            ],
+        },
     }
 
     if queue:
-        console["near_7_chapter_outline"] = [
+        workspace_state["near_7_chapter_outline"] = [
             {
                 "chapter_no": int(item.get("chapter_no", 0) or 0),
                 "title": _text(item.get("title"), f"第{item.get('chapter_no', '')}章"),
@@ -609,7 +687,7 @@ def refresh_planning_views(story_bible: dict[str, Any], current_chapter_no: int 
     planning_layers["long_term_state_ready"] = True
     planning_layers["initialization_packet_ready"] = True
     story_bible["workflow_state"] = workflow_state
-    story_bible["control_console"] = console
+    story_bible["story_workspace"] = workspace_state
     story_bible["serial_runtime"] = runtime
     story_bible["initialization_packet"] = _build_initialization_packet(story_bible, current_chapter_no)
     update_story_state_bucket(
@@ -641,7 +719,7 @@ def set_pipeline_target(
             "target_chapter_no": next_chapter_no,
             "project_card_ready": bool(story_bible.get("project_card")),
             "current_volume_ready": bool(story_bible.get("volume_cards")),
-            "near_outline_ready": bool((story_bible.get("control_console") or {}).get("chapter_card_queue")),
+            "near_outline_ready": bool((story_bible.get("story_workspace") or {}).get("chapter_card_queue")),
             "chapter_card_ready": execution_brief is not None,
             "draft_ready": False,
             "summary_review_ready": False,
@@ -651,9 +729,14 @@ def set_pipeline_target(
     if last_completed_chapter_no is not None:
         pipeline["last_completed_chapter_no"] = last_completed_chapter_no
     if execution_brief is not None:
-        console = ensure_control_console(story_bible)
-        console["current_execution_packet"] = execution_brief
-        console["daily_workbench"] = execution_brief.get("daily_workbench", {})
+        workspace_state = ensure_story_workspace(story_bible)
+        packet = _clone_execution_packet(
+            execution_brief,
+            chapter_no=next_chapter_no,
+            packet_phase="planning",
+        )
+        workspace_state["current_execution_packet"] = packet
+        workspace_state["daily_workbench"] = deepcopy(packet.get("daily_workbench", {}))
     story_bible["workflow_state"] = workflow_state
     return story_bible
 
@@ -676,7 +759,7 @@ def compose_story_bible(
     story_bible["world_bible"] = _default_world_bible(payload)
     story_bible["cultivation_system"] = _default_cultivation_system(payload)
     story_bible["volume_cards"] = build_volume_cards(global_outline, first_arc)
-    story_bible["control_console"] = build_control_console(payload, first_arc)
+    story_bible["story_workspace"] = build_story_workspace(payload, first_arc)
     story_bible = _ensure_story_bible_foundation(
         story_bible,
         payload=payload,
@@ -761,8 +844,8 @@ def ensure_story_architecture(story_bible: dict[str, Any], novel: Novel) -> dict
         story_bible["cultivation_system"] = _default_cultivation_system(payload)
     if "volume_cards" not in story_bible:
         story_bible["volume_cards"] = build_volume_cards(global_outline, active_arc)
-    if "control_console" not in story_bible:
-        story_bible["control_console"] = build_control_console(payload, active_arc)
+    if "story_workspace" not in story_bible:
+        story_bible["story_workspace"] = build_story_workspace(payload, active_arc)
     if "serial_rules" not in story_bible:
         story_bible["serial_rules"] = build_serial_rules()
     if "continuity_rules" not in story_bible:
@@ -803,7 +886,7 @@ def build_execution_brief(
     plan: dict[str, Any],
     last_chapter_tail: str,
 ) -> dict[str, Any]:
-    console = ensure_control_console(story_bible)
+    workspace_state = ensure_story_workspace(story_bible)
     current_volume = _current_volume_card(story_bible, next_chapter_no)
     today_function = _text(plan.get("goal"), "推进剧情")
     if plan.get("supporting_character_focus"):
@@ -812,10 +895,32 @@ def build_execution_brief(
     focus_name = _text(plan.get("supporting_character_focus"))
     character_focus_card = {}
     if focus_name:
-        character_focus_card = ((console.get("character_cards") or {}).get(focus_name) or {}) if isinstance(console.get("character_cards"), dict) else {}
+        character_focus_card = ((workspace_state.get("cast_cards") or {}).get(focus_name) or {}) if isinstance(workspace_state.get("cast_cards"), dict) else {}
     character_voice_pack = _character_voice_pack(character_focus_card) if character_focus_card else {}
-    retrospective_feedback = _recent_retrospective_feedback(console)
+    retrospective_feedback = _recent_retrospective_feedback(workspace_state)
     planning_packet = (plan.get("planning_packet") or {}) if isinstance(plan, dict) else {}
+    selected_payoff_card = (planning_packet.get("selected_payoff_card") or {}) if isinstance(planning_packet, dict) else {}
+    payoff_runtime = (planning_packet.get("payoff_runtime") or {}) if isinstance(planning_packet, dict) else {}
+    payoff_diagnostics = (payoff_runtime.get("payoff_diagnostics") or {}) if isinstance(payoff_runtime, dict) else {}
+    preparation_diagnostics = (((planning_packet.get("preparation_selection") or {}).get("diagnostics")) or {}) if isinstance(planning_packet, dict) else {}
+    preparation_summary_lines = list(preparation_diagnostics.get("readable_lines") or [])[:3] if isinstance(preparation_diagnostics, dict) else []
+    pending_payoff_compensation = (((story_bible.get("retrospective_state") or {}).get("pending_payoff_compensation")) or {})
+    if isinstance(pending_payoff_compensation, dict) and pending_payoff_compensation:
+        matched_bias = _pending_payoff_compensation_bias_for_chapter(pending_payoff_compensation, next_chapter_no)
+        if matched_bias:
+            pending_payoff_compensation = {
+                **pending_payoff_compensation,
+                "target_chapter_no": int(matched_bias.get("chapter_no", 0) or next_chapter_no),
+                "priority": _text(matched_bias.get("priority") or pending_payoff_compensation.get("priority"), "medium"),
+                "note": _text(matched_bias.get("note") or pending_payoff_compensation.get("note") or pending_payoff_compensation.get("reason")),
+                "window_role": _text(matched_bias.get("bias") or matched_bias.get("window_role"), "primary_repay"),
+            }
+        elif int(pending_payoff_compensation.get("target_chapter_no", 0) or 0) != int(next_chapter_no or 0):
+            pending_payoff_compensation = {}
+    else:
+        pending_payoff_compensation = {}
+    plan_payoff_compensation = (plan.get("payoff_compensation") or {}) if isinstance(plan, dict) else {}
+    effective_payoff_compensation = plan_payoff_compensation or pending_payoff_compensation
     rolling_continuity = (planning_packet.get("recent_continuity_plan") or {}) if isinstance(planning_packet, dict) else {}
     chapter_stage_casting_hint = (planning_packet.get("chapter_stage_casting_hint") or {}) if isinstance(planning_packet, dict) else {}
     chapter_stage_casting_runtime = build_chapter_casting_runtime_summary(
@@ -824,6 +929,28 @@ def build_execution_brief(
         plan=plan,
         stage_hint=chapter_stage_casting_hint,
     )
+    scene_runtime = (planning_packet.get("scene_runtime") or {}) if isinstance(planning_packet, dict) else {}
+    scene_execution_card = (scene_runtime.get("scene_execution_card") or {}) if isinstance(scene_runtime, dict) else {}
+    scene_sequence_plan = (scene_runtime.get("scene_sequence_plan") or []) if isinstance(scene_runtime, dict) else []
+    resolved_scene_outline = [
+        {
+            "scene_no": int(item.get("scene_no", index + 1) or (index + 1)),
+            "scene_name": _text(item.get("scene_name")),
+            "scene_role": _text(item.get("scene_role")),
+            "purpose": _text(item.get("purpose"), "推进当前场景"),
+            "transition_in": _text(item.get("transition_in")),
+            "target_result": _text(item.get("target_result")),
+            "must_carry_over": _safe_list(item.get("must_carry_over"))[:3],
+        }
+        for index, item in enumerate(scene_sequence_plan)
+        if isinstance(item, dict)
+    ]
+    if not resolved_scene_outline:
+        resolved_scene_outline = [
+            {"scene_no": 1, "purpose": _text(plan.get("opening_beat"), "承接上一章结尾并定位本章场景")},
+            {"scene_no": 2, "purpose": _text(plan.get("mid_turn"), "中段制造受阻、试探或发现")},
+            {"scene_no": 3, "purpose": _text(plan.get("closing_image") or plan.get("ending_hook"), "结尾落到结果、钩子或下一章入口")},
+        ]
     tomorrow_hints = [
         f"明天从第{next_chapter_no}章结尾的后续局势接上。",
         f"明天最大冲突：{_text(plan.get('conflict') or plan.get('goal'), '继续推进当前矛盾。')}",
@@ -841,6 +968,17 @@ def build_execution_brief(
             "agency_mode": _text(plan.get("agency_mode_label") or plan.get("agency_mode"), "通用主动推进"),
             "proactive_move": _text(plan.get("proactive_move"), "主角必须主动做出判断并推动局势前进。"),
             "payoff_or_pressure": _text(plan.get("payoff_or_pressure"), "本章必须给出明确回报或压力升级。"),
+            "payoff_mode": _text(plan.get("payoff_mode") or selected_payoff_card.get("payoff_mode"), "明确兑现"),
+            "payoff_level": _text(plan.get("payoff_level") or selected_payoff_card.get("payoff_level"), "medium"),
+            "payoff_visibility": _text(plan.get("payoff_visibility") or selected_payoff_card.get("payoff_visibility"), "semi_public"),
+            "payoff_card_id": _text(selected_payoff_card.get("card_id")),
+            "reader_payoff": _text(plan.get("reader_payoff") or selected_payoff_card.get("reader_payoff"), _text(plan.get("payoff_or_pressure"), "本章必须给出明确回报或压力升级。")),
+            "new_pressure": _text(plan.get("new_pressure") or selected_payoff_card.get("new_pressure")),
+            "aftershock": _text(selected_payoff_card.get("aftershock")),
+            "payoff_external_reaction": _text(selected_payoff_card.get("external_reaction")),
+            "payoff_compensation_note": _text((effective_payoff_compensation or {}).get("note") or (effective_payoff_compensation or {}).get("reason")),
+            "payoff_compensation_priority": _text((effective_payoff_compensation or {}).get("priority")),
+            "payoff_diagnostics": _compact_value(payoff_diagnostics, text_limit=72),
             "hook_kind": _text(plan.get("hook_kind"), "更大谜团"),
             "opening": _text(plan.get("opening_beat"), "顺着上一章结尾自然接入场景。"),
             "middle": _text(plan.get("mid_turn"), "中段加入受阻、试探或代价。"),
@@ -849,13 +987,18 @@ def build_execution_brief(
             "chapter_change": change_line,
             "chapter_hook": _text(plan.get("ending_hook"), "留下继续追更的拉力。"),
             "stage_casting_hint": _compact_value(chapter_stage_casting_hint, text_limit=72),
-            "stage_casting_runtime": _compact_value(chapter_stage_casting_runtime, text_limit=72),
+            "stage_casting_runtime": chapter_stage_casting_runtime,
+            "scene_count": int(scene_execution_card.get("scene_count", len(resolved_scene_outline)) or len(resolved_scene_outline)),
+            "scene_transition_mode": _text(scene_execution_card.get("transition_mode"), "single_scene"),
+            "must_continue_same_scene": bool(scene_execution_card.get("must_continue_same_scene")),
+            "scene_opening_anchor": _text(scene_execution_card.get("opening_anchor")),
+            "scene_first_focus": _text(scene_execution_card.get("first_scene_focus")),
+            "scene_must_carry_over": _safe_list(scene_execution_card.get("must_carry_over"))[:4],
+            "scene_sequence_note": _text(scene_execution_card.get("sequence_note")),
+            "preparation_summary": preparation_summary_lines,
         },
-        "scene_outline": [
-            {"scene_no": 1, "purpose": _text(plan.get("opening_beat"), "承接上一章结尾并定位本章场景")},
-            {"scene_no": 2, "purpose": _text(plan.get("mid_turn"), "中段制造受阻、试探或发现")},
-            {"scene_no": 3, "purpose": _text(plan.get("closing_image") or plan.get("ending_hook"), "结尾落到结果、钩子或下一章入口")},
-        ],
+        "scene_execution_card": scene_execution_card,
+        "scene_outline": resolved_scene_outline,
         "serial_context": {
             "delivery_mode": release_state.get("delivery_mode", DEFAULT_SERIAL_DELIVERY_MODE),
             "published_through": int(release_state.get("published_through", 0) or 0),
@@ -878,9 +1021,17 @@ def build_execution_brief(
                 "carry_in": _safe_list((((rolling_continuity.get("carry_in") or {}).get("carry_over_points")) or []))[:3],
                 "preserve_for_next": _safe_list((((rolling_continuity.get("lookahead_handoff") or {}).get("preserve_for_next")) or []))[:3],
             },
+            "payoff_diagnostics": _compact_value(payoff_diagnostics, text_limit=72),
+            "payoff_runtime_note": _text(((payoff_diagnostics.get("summary_lines") or ["", "", ""])[2])),
+            "payoff_compensation": _compact_value(effective_payoff_compensation, text_limit=72),
+            "payoff_compensation_note": _text((effective_payoff_compensation or {}).get("note") or (effective_payoff_compensation or {}).get("reason")),
             "chapter_stage_casting_hint": _compact_value(chapter_stage_casting_hint, text_limit=72),
-            "chapter_stage_casting_runtime": _compact_value(chapter_stage_casting_runtime, text_limit=72),
+            "chapter_stage_casting_runtime": chapter_stage_casting_runtime,
             "chapter_stage_casting_runtime_note": _text(chapter_stage_casting_runtime.get("runtime_note")),
+            "preparation_diagnostics": _compact_value(preparation_diagnostics, text_limit=72),
+            "preparation_runtime_note": _text((preparation_summary_lines or ["", "", ""])[2]),
+            "scene_execution_card": _compact_value(scene_execution_card, text_limit=72),
+            "scene_sequence_plan": _compact_value(resolved_scene_outline, text_limit=72),
             "tomorrow_hints": tomorrow_hints,
         },
         "quality_floor": [
@@ -895,8 +1046,8 @@ def build_execution_brief(
     }
 
 
-def _merge_character_card(console: dict[str, Any], name: str, defaults: dict[str, Any]) -> None:
-    cards = console.setdefault("character_cards", {})
+def _merge_character_card(workspace_state: dict[str, Any], name: str, defaults: dict[str, Any]) -> None:
+    cards = workspace_state.setdefault("cast_cards", {})
     existing = cards.get(name, {}) if isinstance(cards, dict) else {}
     merged = dict(defaults)
     merged.update({k: v for k, v in existing.items() if v not in (None, "", [], {})})
@@ -911,9 +1062,9 @@ def sync_character_registry(
     plan: dict[str, Any],
     summary: Any,
 ) -> None:
-    console = story_bible.get("control_console") or {}
-    protagonist_state = console.get("protagonist_state") or {}
-    cards = console.get("character_cards") or {}
+    workspace_state = story_bible.get("story_workspace") or {}
+    protagonist_profile = workspace_state.get("protagonist_profile") or {}
+    cards = workspace_state.get("cast_cards") or {}
 
     def upsert(name: str, role_type: str, core_profile: dict[str, Any], dynamic_state: dict[str, Any]) -> None:
         if not name:
@@ -935,7 +1086,7 @@ def sync_character_registry(
         protagonist_name,
         "protagonist",
         protagonist_card or {"name": protagonist_name, "role_type": "protagonist"},
-        protagonist_state,
+        protagonist_profile,
     )
 
     focus_name = _text(plan.get("supporting_character_focus"))
@@ -986,6 +1137,87 @@ def sync_character_registry(
             upsert(char_name, role_type, profile, dynamic_state)
 
 
+def _build_pending_payoff_compensation_payload(*, source_chapter_no: int, priority: str, note: str) -> dict[str, Any]:
+    clean_priority = _text(priority, "medium").lower()
+    if clean_priority not in {"high", "medium", "low"}:
+        clean_priority = "medium"
+    chapter_biases: list[dict[str, Any]] = [
+        {
+            "chapter_no": source_chapter_no + 1,
+            "bias": "primary_repay",
+            "priority": clean_priority,
+            "note": note,
+        }
+    ]
+    if clean_priority == "high":
+        chapter_biases.append(
+            {
+                "chapter_no": source_chapter_no + 2,
+                "bias": "stabilize_after_repay",
+                "priority": "medium",
+                "note": "若上一章只追回一半，这一章继续补一次可感兑现，并换一种显影方式。",
+            }
+        )
+    window_end = max(int(item.get("chapter_no", 0) or 0) for item in chapter_biases) if chapter_biases else source_chapter_no + 1
+    return {
+        "enabled": True,
+        "source_chapter_no": source_chapter_no,
+        "target_chapter_no": source_chapter_no + 1,
+        "window_end_chapter_no": window_end,
+        "priority": clean_priority,
+        "reason": note,
+        "note": note,
+        "chapter_biases": chapter_biases,
+        "should_reduce_pressure": True,
+    }
+
+
+def _pending_payoff_compensation_bias_for_chapter(payload: dict[str, Any] | None, chapter_no: int) -> dict[str, Any]:
+    source = payload or {}
+    for item in (source.get("chapter_biases") or []):
+        if not isinstance(item, dict):
+            continue
+        if int(item.get("chapter_no", 0) or 0) == int(chapter_no or 0):
+            return item
+    if int(source.get("target_chapter_no", 0) or 0) == int(chapter_no or 0):
+        return {
+            "chapter_no": chapter_no,
+            "bias": _text(source.get("window_role"), "primary_repay"),
+            "priority": _text(source.get("priority"), "medium"),
+            "note": _text(source.get("note") or source.get("reason")),
+        }
+    return {}
+
+
+def _roll_pending_payoff_compensation(payload: dict[str, Any] | None, *, chapter_no: int, payoff_delivery: dict[str, Any] | None) -> dict[str, Any]:
+    source = dict(payload or {})
+    if not source:
+        return {}
+    current_bias = _pending_payoff_compensation_bias_for_chapter(source, chapter_no)
+    if not current_bias:
+        future = [item for item in (source.get("chapter_biases") or []) if isinstance(item, dict) and int(item.get("chapter_no", 0) or 0) > int(chapter_no or 0)]
+        if future:
+            return source
+        if int(source.get("target_chapter_no", 0) or 0) > int(chapter_no or 0):
+            return source
+        return {}
+    future_biases = [item for item in (source.get("chapter_biases") or []) if isinstance(item, dict) and int(item.get("chapter_no", 0) or 0) > int(chapter_no or 0)]
+    delivery_level = _text((payoff_delivery or {}).get("delivery_level"), "").lower()
+    role = _text(current_bias.get("bias"), "primary_repay")
+    if role == "primary_repay" and delivery_level == "high":
+        return {}
+    if future_biases:
+        next_bias = future_biases[0]
+        source["target_chapter_no"] = int(next_bias.get("chapter_no", 0) or 0)
+        source["window_end_chapter_no"] = max(int(item.get("chapter_no", 0) or 0) for item in future_biases)
+        source["chapter_biases"] = future_biases
+        source["priority"] = _text(next_bias.get("priority") or source.get("priority"), "medium")
+        source["note"] = _text(next_bias.get("note") or source.get("note") or source.get("reason"))
+        source["reason"] = _text(source.get("reason") or source.get("note"))
+        return source
+    return {}
+
+
 def update_story_architecture_after_chapter(
     *,
     story_bible: dict[str, Any],
@@ -995,25 +1227,21 @@ def update_story_architecture_after_chapter(
     plan: dict[str, Any],
     summary: Any,
     last_chapter_tail: str,
+    chapter_content: str = "",
+    payoff_delivery: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     story_bible = ensure_story_architecture(story_bible, novel)
-    console = ensure_control_console(story_bible)
-    protagonist_state = console.setdefault("protagonist_state", {})
-    protagonist_state["current_goal"] = _text(plan.get("ending_hook") or plan.get("goal"), protagonist_state.get("current_goal", ""))
-    protagonist_state["current_status"] = _text(getattr(summary, "event_summary", None), protagonist_state.get("current_status", ""))
+    workspace_state = ensure_story_workspace(story_bible)
+    retrospective_state = story_bible.setdefault("retrospective_state", {})
+    pending_compensation = retrospective_state.get("pending_payoff_compensation") or {}
+    protagonist_profile = workspace_state.setdefault("protagonist_profile", {})
+    protagonist_profile["current_goal"] = _text(plan.get("ending_hook") or plan.get("goal"), protagonist_profile.get("current_goal", ""))
+    protagonist_profile["current_status"] = _text(getattr(summary, "event_summary", None), protagonist_profile.get("current_status", ""))
 
     volume_card = _current_volume_card(story_bible, chapter_no)
     update_volume_card_statuses(story_bible, chapter_no)
 
-    daily = build_execution_brief(
-        story_bible=story_bible,
-        next_chapter_no=chapter_no + 1,
-        plan=plan,
-        last_chapter_tail=last_chapter_tail,
-    )
-    console["daily_workbench"] = daily["daily_workbench"]
-
-    progress = console.setdefault("recent_progress", [])
+    progress = workspace_state.setdefault("recent_progress", [])
     progress.append(
         {
             "chapter_no": chapter_no,
@@ -1023,35 +1251,84 @@ def update_story_architecture_after_chapter(
             "chapter_hook": _text(plan.get("ending_hook"), "新的问题浮出。"),
         }
     )
-    console["recent_progress"] = progress[-12:]
+    workspace_state["recent_progress"] = progress[-12:]
 
     retrospective = _build_chapter_retrospective(
         chapter_no=chapter_no,
         chapter_title=chapter_title,
         plan=plan,
         summary=summary,
-        console=console,
+        workspace_state=workspace_state,
+        payoff_delivery=payoff_delivery,
     )
-    retrospectives = console.setdefault("chapter_retrospectives", [])
+    retrospectives = workspace_state.setdefault("chapter_retrospectives", [])
     retrospectives.append(retrospective)
-    console["chapter_retrospectives"] = retrospectives[-12:]
+    workspace_state["chapter_retrospectives"] = retrospectives[-12:]
+    rolled_pending_compensation = _roll_pending_payoff_compensation(
+        pending_compensation if isinstance(pending_compensation, dict) else {},
+        chapter_no=chapter_no,
+        payoff_delivery=payoff_delivery,
+    )
+    if bool((payoff_delivery or {}).get("should_compensate_next_chapter")):
+        retrospective_state["pending_payoff_compensation"] = _build_pending_payoff_compensation_payload(
+            source_chapter_no=chapter_no,
+            priority=_text((payoff_delivery or {}).get("compensation_priority"), "medium"),
+            note=_text((payoff_delivery or {}).get("compensation_note"), retrospective.get("next_chapter_correction")),
+        )
+    else:
+        retrospective_state["pending_payoff_compensation"] = rolled_pending_compensation
 
-    near_progress = console.setdefault("near_30_progress", {})
+    current_execution_packet = workspace_state.get("current_execution_packet") if isinstance(workspace_state.get("current_execution_packet"), dict) else {}
+    if current_execution_packet:
+        completed_packet = deepcopy(current_execution_packet)
+        completed_packet["packet_phase"] = "completed_plan_reference"
+        completed_packet["completed_at_chapter_no"] = int(chapter_no or 0)
+        workspace_state["last_completed_execution_packet"] = completed_packet
+        history = workspace_state.setdefault("execution_packet_history", [])
+        history.append(
+            {
+                "chapter_no": int(completed_packet.get("for_chapter_no", chapter_no) or chapter_no),
+                "packet_phase": "completed_plan_reference",
+                "chapter_function": _text((((completed_packet.get("chapter_execution_card") or {}).get("chapter_function"))), ""),
+            }
+        )
+        workspace_state["execution_packet_history"] = history[-8:]
+    workspace_state["last_generated_scene_report"] = build_realized_scene_report(
+        chapter_no=chapter_no,
+        chapter_title=chapter_title,
+        plan=plan,
+        summary=summary,
+        content=chapter_content or last_chapter_tail,
+        execution_packet=current_execution_packet,
+    )
+    workspace_state.pop("current_execution_packet", None)
+
+    daily = build_execution_brief(
+        story_bible=story_bible,
+        next_chapter_no=chapter_no + 1,
+        plan=plan,
+        last_chapter_tail=last_chapter_tail,
+    )
+    next_preview = _clone_execution_packet(daily, chapter_no=chapter_no + 1, packet_phase="next_chapter_preview")
+    workspace_state["next_chapter_preview_packet"] = next_preview
+    workspace_state["daily_workbench"] = deepcopy(next_preview.get("daily_workbench", {}))
+
+    near_progress = workspace_state.setdefault("near_30_progress", {})
     near_progress["current_position"] = f"已写到第{chapter_no}章"
     near_progress["current_volume_gap"] = _text(volume_card.get("main_conflict"), near_progress.get("current_volume_gap", ""))
     near_progress["next_big_payoff"] = _text(volume_card.get("cool_point"), near_progress.get("next_big_payoff", ""))
     near_progress["next_twist"] = _text(plan.get("ending_hook"), near_progress.get("next_twist", ""))
 
-    timeline = console.setdefault("timeline", [])
+    timeline = workspace_state.setdefault("timeline", [])
     timeline.append(
         {
             "chapter_no": chapter_no,
             "event": _text(getattr(summary, "event_summary", None), _text(plan.get("goal"), "推进当前主线")),
         }
     )
-    console["timeline"] = timeline[-30:]
+    workspace_state["timeline"] = timeline[-30:]
 
-    foreshadowing = console.setdefault("foreshadowing", [])
+    foreshadowing = workspace_state.setdefault("foreshadowing", [])
     existing_open = {str(item.get("surface_info", "")): item for item in foreshadowing if isinstance(item, dict)}
     for hook in getattr(summary, "open_hooks", []) or []:
         hook_text = _text(hook)
@@ -1075,16 +1352,16 @@ def update_story_architecture_after_chapter(
         if _text(item.get("surface_info")) in closed:
             item["status"] = "closed"
             item["expected_resolution"] = f"已在第{chapter_no}章阶段性回收"
-    console["foreshadowing"] = foreshadowing[-30:]
+    workspace_state["foreshadowing"] = foreshadowing[-30:]
 
     protagonist_name = novel.protagonist_name
     _merge_character_card(
-        console,
+        workspace_state,
         protagonist_name,
         {
             "name": protagonist_name,
             "role_type": "protagonist",
-            "current_strength": _text(protagonist_state.get("current_realm"), "低阶求生阶段"),
+            "current_strength": _text(protagonist_profile.get("current_realm"), "低阶求生阶段"),
             "current_plot_function": "推动视角、承接风险、做出选择。",
             "behavior_logic": "先观察和试探，再决定是否行动。",
             "relationship_to_protagonist": "self",
@@ -1103,7 +1380,7 @@ def update_story_architecture_after_chapter(
             fallback_id="starter_hard_shell_soft_core",
         )
         _merge_character_card(
-            console,
+            workspace_state,
             focus_name,
             apply_character_template_defaults(
                 {
@@ -1123,7 +1400,7 @@ def update_story_architecture_after_chapter(
                 template,
             ),
         )
-        relations = console.setdefault("relation_tracks", [])
+        relations = workspace_state.setdefault("relationship_journal", [])
         relations.append(
             {
                 "subject": protagonist_name,
@@ -1132,7 +1409,7 @@ def update_story_architecture_after_chapter(
                 "change": _text(plan.get("conflict") or plan.get("goal"), "关系发生新的试探或位移。"),
             }
         )
-        console["relation_tracks"] = relations[-20:]
+        workspace_state["relationship_journal"] = relations[-20:]
 
     if focus_name:
         bind_character_to_core_slot(
@@ -1172,26 +1449,26 @@ def update_story_architecture_after_chapter(
 
     current_volume_end = int(volume_card.get("end_chapter", 0) or 0)
     if current_volume_end and chapter_no >= current_volume_end:
-        reviews = console.setdefault("volume_reviews", [])
+        reviews = workspace_state.setdefault("volume_reviews", [])
         reviews.append(
             {
                 "volume_no": int(volume_card.get("volume_no", 0) or 0),
                 "volume_name": _text(volume_card.get("volume_name"), f"第{volume_card.get('volume_no', '')}卷"),
                 "mainline_advanced": True,
-                "protagonist_growth": _text(protagonist_state.get("current_status"), "主角完成了一次阶段性成长与位置变化。"),
+                "protagonist_growth": _text(protagonist_profile.get("current_status"), "主角完成了一次阶段性成长与位置变化。"),
                 "best_cool_point": _text(volume_card.get("cool_point"), "阶段性破局。"),
                 "drag_point": "留待人工复盘微调。",
                 "recovered_foreshadowing": [_text(x) for x in (getattr(summary, "closed_hooks", []) or []) if _text(x)],
-                "unresolved_foreshadowing": [_text(item.get("surface_info")) for item in console.get("foreshadowing", []) if item.get("status") != "closed"][:6],
+                "unresolved_foreshadowing": [_text(item.get("surface_info")) for item in workspace_state.get("foreshadowing", []) if item.get("status") != "closed"][:6],
                 "next_volume_newness": _text(volume_card.get("next_hook"), "下一卷会抬高地图、规则与代价。"),
             }
         )
-        console["volume_reviews"] = reviews[-8:]
+        workspace_state["volume_reviews"] = reviews[-8:]
 
-    next_outline = console.setdefault("near_7_chapter_outline", [])
+    next_outline = workspace_state.setdefault("near_7_chapter_outline", [])
     if next_outline and next_outline[0].get("chapter_no") == chapter_no:
         next_outline = next_outline[1:]
-    console["near_7_chapter_outline"] = next_outline
+    workspace_state["near_7_chapter_outline"] = next_outline
     delivery_mode = ((story_bible.get("serial_runtime") or {}).get("delivery_mode") or DEFAULT_SERIAL_DELIVERY_MODE)
     serial_stage = "published" if delivery_mode == "live_publish" else "stock"
     story_bible = record_chapter_fact_entries(
@@ -1243,6 +1520,7 @@ def update_story_architecture_after_chapter(
             "chapter_no": chapter_no,
             "resource_names": [name for name in list(resource_capability_plan.keys())[:6] if name != "__meta__"],
             "used_ai": bool(((resource_capability_plan.get("__meta__") or {}).get("used_ai"))) if isinstance(resource_capability_plan, dict) else False,
+            "cache_status": _text((((resource_capability_plan.get("__meta__") or {}).get("cache_status")))) if isinstance(resource_capability_plan, dict) else "",
         })
         planner_state["resource_capability_history"] = capability_history[-12:]
     continuity_plan = (planning_packet.get("recent_continuity_plan") or {}) if isinstance(planning_packet, dict) else {}
@@ -1300,7 +1578,7 @@ def update_story_architecture_after_chapter(
         touched_entities=touched_entities,
         allow_ai=True,
     )
-    story_bible["control_console"] = console
+    story_bible["story_workspace"] = workspace_state
     story_bible = _ensure_story_bible_foundation(
         story_bible,
         payload=payload,
@@ -1318,15 +1596,15 @@ def update_story_architecture_after_chapter(
             "chapter_no": chapter_no,
             "chapter_title": chapter_title,
             "delivery_mode": delivery_mode,
-            "recent_progress_count": len(console.get("recent_progress", [])),
+            "recent_progress_count": len(workspace_state.get("recent_progress", [])),
         },
     )
     return sync_long_term_state(story_bible, novel)
 
 
-def build_control_console_snapshot(novel: Novel) -> dict[str, Any]:
+def build_story_workspace_snapshot(novel: Novel) -> dict[str, Any]:
     story_bible = ensure_story_architecture(novel.story_bible or {}, novel)
-    console = ensure_control_console(story_bible)
+    workspace_state = ensure_story_workspace(story_bible)
     return {
         "novel_id": novel.id,
         "title": novel.title,
@@ -1348,7 +1626,7 @@ def build_control_console_snapshot(novel: Novel) -> dict[str, Any]:
         "long_term_state": story_bible.get("long_term_state", {}),
         "initialization_packet": story_bible.get("initialization_packet", {}),
         "current_volume_card": _current_volume_card(story_bible, novel.current_chapter_no + 1),
-        "control_console": console,
+        "story_workspace": workspace_state,
         "planning_layers": story_bible.get("planning_layers", {}),
         "planning_state": story_bible.get("workflow_state", {}),
         "continuity_rules": story_bible.get("continuity_rules", list(DEFAULT_CONTINUITY_RULES)),

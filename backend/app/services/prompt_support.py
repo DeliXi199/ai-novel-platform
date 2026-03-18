@@ -213,10 +213,16 @@ def summarize_story_bible(story_bible: dict[str, Any] | None) -> dict[str, Any]:
         summary["template_library"] = {
             "character_template_target_count": roadmap.get("character_template_target_count") or template_library.get("character_template_target_count"),
             "flow_template_target_count": roadmap.get("flow_template_target_count") or template_library.get("flow_template_target_count"),
+            "payoff_card_target_count": roadmap.get("payoff_card_target_count") or template_library.get("payoff_card_target_count"),
+            "scene_template_target_count": roadmap.get("scene_template_target_count") or template_library.get("scene_template_target_count"),
             "current_character_template_count": roadmap.get("current_character_template_count") or len(template_library.get("character_templates") or []),
             "current_flow_template_count": roadmap.get("current_flow_template_count") or len(template_library.get("flow_templates") or []),
+            "current_payoff_card_count": roadmap.get("current_payoff_card_count") or len(template_library.get("payoff_cards") or []),
+            "current_scene_template_count": roadmap.get("current_scene_template_count") or len(template_library.get("scene_templates") or []),
             "character_templates": compact_data(template_library.get("character_templates") or [], max_depth=2, max_items=8, text_limit=80),
             "flow_templates": compact_data(template_library.get("flow_templates") or [], max_depth=2, max_items=6, text_limit=80),
+            "payoff_cards": compact_data(template_library.get("payoff_cards") or [], max_depth=2, max_items=5, text_limit=80),
+            "scene_templates": compact_data(template_library.get("scene_templates") or [], max_depth=2, max_items=6, text_limit=80),
         }
     core_cast = bible.get("core_cast_state") or {}
     if core_cast:
@@ -231,7 +237,7 @@ def summarize_story_bible(story_bible: dict[str, Any] | None) -> dict[str, Any]:
             "planning_basis": compact_data(core_cast.get("planning_basis"), max_depth=1, max_items=4, text_limit=60),
             "slots": slots,
         }
-    latest_stage_review = (((bible.get("control_console") or {}).get("latest_stage_character_review")) or ((bible.get("retrospective_state") or {}).get("latest_stage_character_review")) or {})
+    latest_stage_review = (((bible.get("story_workspace") or {}).get("latest_stage_character_review")) or ((bible.get("retrospective_state") or {}).get("latest_stage_character_review")) or {})
     if latest_stage_review:
         summary["latest_stage_character_review"] = pick_nonempty(
             latest_stage_review,
@@ -308,6 +314,11 @@ def summarize_chapter_plan(plan: dict[str, Any] | None, *, include_packet: bool 
             "main_scene",
             "proactive_move",
             "payoff_or_pressure",
+            "payoff_mode",
+            "payoff_level",
+            "payoff_visibility",
+            "reader_payoff",
+            "new_pressure",
             "ending_hook",
             "hook_style",
             "hook_kind",
@@ -340,7 +351,7 @@ def summarize_novel_context(novel_context: dict[str, Any] | None) -> dict[str, A
         [
             "project_card",
             "current_volume_card",
-            "protagonist_state",
+            "protagonist_profile",
             "execution_brief",
             "hard_fact_guard",
             "workflow_runtime",
@@ -354,7 +365,7 @@ def summarize_novel_context(novel_context: dict[str, Any] | None) -> dict[str, A
             [
                 "project_card",
                 "current_volume_card",
-                "protagonist_state",
+                "protagonist_profile",
                 "execution_brief",
                 "recent_retrospectives",
                 "character_roster",

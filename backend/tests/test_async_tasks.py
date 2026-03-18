@@ -117,7 +117,7 @@ def test_workspace_and_task_list_include_active_tasks(monkeypatch) -> None:
     assert enqueue.status_code == 202
     task_id = enqueue.json()["id"]
 
-    workspace = client.get(f"/api/v1/novels/{novel_id}/workspace")
+    workspace = client.get(f"/api/v1/novels/{novel_id}/story-studio")
     assert workspace.status_code == 200
     active_tasks = workspace.json()["active_tasks"]
     assert len(active_tasks) == 1
@@ -328,7 +328,7 @@ def test_workspace_includes_recent_tasks(monkeypatch) -> None:
     enqueue = client.post(f"/api/v1/novels/{novel_id}/tasks/next-chapter")
     assert enqueue.status_code == 202
 
-    workspace = client.get(f"/api/v1/novels/{novel_id}/workspace")
+    workspace = client.get(f"/api/v1/novels/{novel_id}/story-studio")
     assert workspace.status_code == 200
     payload = workspace.json()
     assert len(payload["recent_tasks"]) >= 1
@@ -517,7 +517,7 @@ def test_enqueue_bootstrap_task_runs_to_completion(monkeypatch) -> None:
     assert payload["progress_payload"]["stage_label"] == "全书总纲"
 
     novel_id = payload["novel_id"]
-    workspace = client.get(f"/api/v1/novels/{novel_id}/workspace")
+    workspace = client.get(f"/api/v1/novels/{novel_id}/story-studio")
     assert workspace.status_code == 200
     assert workspace.json()["novel"]["title"] == "任务化创建成功"
 

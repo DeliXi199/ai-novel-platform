@@ -56,7 +56,7 @@ def test_auto_prepare_future_planning_prefetch_path(monkeypatch: pytest.MonkeyPa
         protagonist_name="主角",
         story_bible={
             "active_arc": {"end_chapter": 2},
-            "control_console": {"chapter_card_queue": []},
+            "story_workspace": {"chapter_card_queue": []},
         },
         current_chapter_no=1,
     )

@@ -56,7 +56,7 @@ AI_EVAL_STAGE = "importance_evaluation"
 
 def build_importance_state() -> dict[str, Any]:
     return {
-        "version": 3,
+        "version": 4,
         "status": "foundation_ready",
         "unified_dimensions": list(DIMENSION_KEYS),
         "last_scope": None,
@@ -64,6 +64,7 @@ def build_importance_state() -> dict[str, Any]:
         "last_run_used_ai": False,
         "last_ai_eval_by_scope": {},
         "evaluation_history": [],
+        "next_chapter_handoff": {},
         "entity_index": {
             "character": {},
             "resource": {},
@@ -1250,8 +1251,8 @@ def _apply_ai_review(entity_type: str, evaluations: list[dict[str, Any]], *, con
                 summary_cards=summary_cards,
                 detail_limit=detail_limit,
             )
+            used_ai = True
             shortlist_names = _shortlist_names_from_payload(shortlist_payload, evaluations, detail_limit)
-            used_ai = bool(shortlist_names)
         except GenerationError:
             raise
         except Exception as exc:
@@ -1277,6 +1278,7 @@ def _apply_ai_review(entity_type: str, evaluations: list[dict[str, Any]], *, con
             recent_summaries=recent_summaries,
             candidates=detail_candidates,
         )
+        used_ai = True
     except GenerationError:
         raise
     except Exception as exc:
@@ -1379,6 +1381,160 @@ def _write_entity_card(card: dict[str, Any], evaluation: dict[str, Any], *, enti
         card["relation_importance_tier"] = evaluation["importance_tier"]
     if entity_type == "faction":
         card["faction_importance_tier"] = evaluation["importance_tier"]
+
+
+def _unique_names(values: list[str] | None, *, limit: int) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        name = _text(value)
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        result.append(name)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _rank_entity_names(entity_result: dict[str, Any], names: list[str], *, key: str) -> list[str]:
+    allowed = [name for name in names if name in entity_result]
+    return sorted(
+        allowed,
+        key=lambda item: (
+            -float((entity_result.get(item) or {}).get(key, 0.0) or 0.0),
+            -float((entity_result.get(item) or {}).get("soft_rank_score", 0.0) or 0.0),
+            -int((entity_result.get(item) or {}).get("score", 0) or 0),
+            item,
+        ),
+    )
+
+
+def _top_names_for_handoff(entity_result: dict[str, Any], names: list[str], *, key: str, predicate, limit: int) -> list[str]:
+    ranked = _rank_entity_names(entity_result, names, key=key)
+    picked: list[str] = []
+    for name in ranked:
+        item = entity_result.get(name) or {}
+        if not predicate(item):
+            continue
+        picked.append(name)
+        if len(picked) >= limit:
+            break
+    return picked
+
+
+def _fallback_handoff_names(entity_result: dict[str, Any], names: list[str], *, key: str, limit: int, exclude: set[str] | None = None) -> list[str]:
+    ranked = _rank_entity_names(entity_result, names, key=key)
+    result: list[str] = []
+    blocked = set(exclude or set())
+    for name in ranked:
+        if name in blocked:
+            continue
+        result.append(name)
+        blocked.add(name)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _handoff_reason_line(prefix: str, values: list[str]) -> str:
+    if not values:
+        return ""
+    return f"{prefix}{'、'.join(values[:3])}"
+
+
+def _build_next_chapter_handoff(
+    *,
+    evaluation_bundle: dict[str, dict[str, Any]],
+    chapter_no: int,
+    touched_entities: dict[str, list[str]] | None,
+    recent_summaries: list[dict[str, Any]] | None,
+    used_ai: bool,
+) -> dict[str, Any]:
+    confidence = 0.78 if used_ai else 0.58
+    handoff: dict[str, Any] = {
+        "source_chapter": int(chapter_no or 0),
+        "confidence": confidence,
+        "must_carry": {"character": [], "resource": [], "relation": [], "faction": []},
+        "warm": {"character": [], "resource": [], "relation": [], "faction": []},
+        "cooldown": {"character": [], "resource": [], "relation": [], "faction": []},
+        "defer": {"character": [], "resource": [], "relation": [], "faction": []},
+        "reason_summary": "",
+    }
+    type_limits = {
+        "character": {"must": 2, "warm": 2, "cooldown": 1, "defer": 1},
+        "resource": {"must": 1, "warm": 1, "cooldown": 1, "defer": 1},
+        "relation": {"must": 1, "warm": 1, "cooldown": 1, "defer": 1},
+        "faction": {"must": 1, "warm": 1, "cooldown": 1, "defer": 1},
+    }
+    for entity_type, entity_result in evaluation_bundle.items():
+        if not isinstance(entity_result, dict) or entity_type not in type_limits:
+            continue
+        touched = _unique_names((touched_entities or {}).get(entity_type) or [], limit=8)
+        all_names = _unique_names(list(entity_result.keys()), limit=max(len(entity_result), 1))
+        limits = type_limits[entity_type]
+        must_names = _top_names_for_handoff(
+            entity_result,
+            touched,
+            key="mainline_rank_score",
+            predicate=lambda item: (
+                _text(item.get("tier")) in {"核心级", "重要级"}
+                or int(item.get("score") or 0) >= 68
+                or float(item.get("mainline_rank_score") or 0.0) >= 78.0
+            ),
+            limit=limits["must"],
+        )
+        if not must_names and touched:
+            must_names = _fallback_handoff_names(entity_result, touched, key="mainline_rank_score", limit=min(1, limits["must"]))
+        warm_names = _top_names_for_handoff(
+            entity_result,
+            [name for name in touched if name not in must_names],
+            key="activation_rank_score",
+            predicate=lambda item: (
+                int(item.get("score") or 0) >= 46
+                or float(item.get("activation_rank_score") or 0.0) >= 48.0
+                or bool(item.get("exploration_candidate"))
+            ),
+            limit=limits["warm"],
+        )
+        cooldown_names = _top_names_for_handoff(
+            entity_result,
+            [name for name in all_names if name not in must_names and name not in warm_names],
+            key="soft_rank_score",
+            predicate=lambda item: int(item.get("selection_streak") or 0) >= 2,
+            limit=limits["cooldown"],
+        )
+        defer_names = _top_names_for_handoff(
+            entity_result,
+            [name for name in touched if name not in must_names and name not in warm_names],
+            key="soft_rank_score",
+            predicate=lambda item: int(item.get("score") or 0) <= 52 or float(item.get("mainline_rank_score") or 0.0) <= 58.0,
+            limit=limits["defer"],
+        )
+        if not warm_names:
+            warm_names = _fallback_handoff_names(
+                entity_result,
+                [name for name in touched if name not in must_names],
+                key="activation_rank_score",
+                limit=min(1, limits["warm"]),
+                exclude=set(must_names),
+            )
+        handoff["must_carry"][entity_type] = must_names
+        handoff["warm"][entity_type] = [name for name in warm_names if name not in must_names][: limits["warm"]]
+        handoff["cooldown"][entity_type] = [name for name in cooldown_names if name not in must_names and name not in handoff["warm"][entity_type]][: limits["cooldown"]]
+        handoff["defer"][entity_type] = [name for name in defer_names if name not in must_names and name not in handoff["warm"][entity_type]][: limits["defer"]]
+
+    latest_summary = (recent_summaries or [])[-1] if recent_summaries else {}
+    reason_lines = [
+        _handoff_reason_line("下章优先续上：", handoff["must_carry"].get("character") or handoff["must_carry"].get("relation") or handoff["must_carry"].get("resource")),
+        _handoff_reason_line("可继续升温：", handoff["warm"].get("character") or handoff["warm"].get("relation") or handoff["warm"].get("resource")),
+        _handoff_reason_line("可适度降温：", handoff["cooldown"].get("character") or handoff["cooldown"].get("resource") or handoff["cooldown"].get("faction")),
+    ]
+    latest_event = _text((latest_summary or {}).get("event_summary"))
+    if latest_event:
+        reason_lines.insert(0, f"本章结果：{latest_event[:72]}")
+    handoff["reason_summary"] = "；".join([line for line in reason_lines if line])[:220]
+    return handoff
 
 
 def _choose_names(container: dict[str, Any], names: list[str] | None) -> list[str]:
@@ -1514,11 +1670,22 @@ def evaluate_story_elements_importance(
         }
     )
     state["evaluation_history"] = history[-20:]
+    next_chapter_handoff: dict[str, Any] = {}
+    if scope == "post_chapter" and bool(getattr(settings, "importance_handoff_enabled", True)) and int(chapter_no or 0) > 0:
+        next_chapter_handoff = _build_next_chapter_handoff(
+            evaluation_bundle=evaluation_bundle,
+            chapter_no=int(chapter_no or 0),
+            touched_entities=touched_entities,
+            recent_summaries=recent_summaries,
+            used_ai=bool(used_ai_any),
+        )
+        state["next_chapter_handoff"] = deepcopy(next_chapter_handoff)
     return {
         "scope": scope,
         "chapter_no": int(chapter_no or 0),
         "used_ai": bool(used_ai_any),
         "evaluations": evaluation_bundle,
+        "next_chapter_handoff": next_chapter_handoff,
     }
 
 

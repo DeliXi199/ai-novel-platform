@@ -3,6 +3,8 @@ import {
   isReaderMode,
   state,
   refs,
+  escapeHtml,
+  fmtDate,
   normalizeChapterPayload,
   getCurrentChapterIndex,
   apiFetch,
@@ -11,15 +13,13 @@ import {
   renderActivity,
   hasLiveBusyTask,
   mergeNovelIntoShelf,
-  escapeHtml,
-  fmtDate,
-} from "/app/assets/app/core.js?v=20260316c";
+} from "/app/assets/app/core.js?v=20260317d";
 import {
   showConfirm,
   closeConfirm,
   collectStylePreferences,
   formatQualityFeedback,
-} from "/app/assets/app/ui_helpers.js?v=20260316c";
+} from "/app/assets/app/ui_helpers.js?v=20260317d";
 import {
   setTopbar,
   renderBookshelf,
@@ -32,7 +32,7 @@ import {
   renderReaderAudio,
   renderTaskCenter,
   syncReaderUrl,
-} from "/app/assets/app/renderers.js?v=20260316c";
+} from "/app/assets/app/renderers.js?v=20260317d";
 
 function applyLiveRuntimePayload(payload) {
   if (!payload?.novel || !state.selectedNovelId || payload.novel.id !== state.selectedNovelId) return;
@@ -43,14 +43,19 @@ function applyLiveRuntimePayload(payload) {
   if (!state.planningData.planning_state || typeof state.planningData.planning_state !== "object") state.planningData.planning_state = {};
   state.planningData.planning_state.live_runtime = payload.live_runtime || {};
   state.planningData.planning_state.current_pipeline = payload.current_pipeline || {};
+  state.planningData.scene_debug = payload.scene_debug || state.planningData.scene_debug || {};
+  state.planningData.generation_report = payload.generation_report || state.planningData.generation_report || {};
+  state.planningData.ai_policy_audit = payload.ai_policy_audit || state.planningData.ai_policy_audit || {};
   state.planningData.planning_status = { ...(state.planningData.planning_status || {}), ...(payload.planning_status || {}) };
   if (!Array.isArray(state.planningData.chapter_card_queue) || !state.planningData.chapter_card_queue.length) {
     state.planningData.chapter_card_queue = payload.queue_preview || [];
   }
 
-  if (!state.consoleData || typeof state.consoleData !== "object") state.consoleData = {};
-  if (!state.consoleData.control_console || typeof state.consoleData.control_console !== "object") state.consoleData.control_console = {};
-  state.consoleData.control_console.planning_status = { ...(state.consoleData.control_console.planning_status || {}), ...(payload.planning_status || {}) };
+  if (!state.storyStudioData || typeof state.storyStudioData !== "object") state.storyStudioData = {};
+  if (!state.storyStudioData.story_workspace || typeof state.storyStudioData.story_workspace !== "object") state.storyStudioData.story_workspace = {};
+  state.storyStudioData.story_workspace.planning_status = { ...(state.storyStudioData.story_workspace.planning_status || {}), ...(payload.planning_status || {}) };
+  state.storyStudioData.story_workspace.scene_debug = payload.scene_debug || state.storyStudioData.story_workspace.scene_debug || {};
+  state.storyStudioData.story_workspace.generation_report = payload.generation_report || state.storyStudioData.story_workspace.generation_report || {};
 
   const live = payload.live_runtime || {};
   const snapshotKey = [live.stage || "", live.note || "", live.updated_at || "", live.target_chapter_no || "", state.selectedNovel.current_chapter_no || 0].join("|");
@@ -58,6 +63,13 @@ function applyLiveRuntimePayload(payload) {
     state.lastLiveSnapshotKey = snapshotKey;
     if (live.stage !== state.lastLiveStage) state.lastLiveStage = live.stage || null;
     pushActivity("流程推进", live.note || live.stage || "生成进度已更新", "info");
+  }
+
+  const continuity = payload.scene_debug?.continuity_diagnostic || {};
+  const continuityKey = [continuity.issue || "", continuity.updated_at || "", continuity.message || ""].join("|");
+  if (continuity.issue && continuityKey && continuityKey !== state.lastSceneContinuityIssueKey) {
+    state.lastSceneContinuityIssueKey = continuityKey;
+    pushActivity("场景连续性质检", continuity.message || continuity.issue, "error");
   }
 
   renderBookshelf({ onSelectNovel: selectNovel });
@@ -72,7 +84,7 @@ async function silentRefreshSelectedNovel({ chapterNo = null } = {}) {
   state.liveRefreshInFlight = true;
   try {
     const now = Date.now();
-    const needFullBundle = !state.selectedNovel || !state.planningData || !state.consoleData || now - (state.lastBundleRefreshAt || 0) > 15000;
+    const needFullBundle = !state.selectedNovel || !state.planningData || !state.storyStudioData || now - (state.lastBundleRefreshAt || 0) > 15000;
     if (needFullBundle) {
       await loadNovelBundle(state.selectedNovelId, { desiredChapterNo: chapterNo || state.selectedChapterNo, updateReaderUrl: isReaderMode });
       return;
@@ -96,7 +108,7 @@ function syncStudioUrl({ replace = true } = {}) {
   const url = new URL(window.location.href);
   const basePath = state.viewMode === "create" ? "/app/create" : "/app";
   url.pathname = basePath;
-  if (state.viewMode === "workspace" && state.selectedNovelId) {
+  if (state.viewMode === "studio" && state.selectedNovelId) {
     url.searchParams.set("novelId", String(state.selectedNovelId));
     if (state.selectedChapterNo) url.searchParams.set("chapterNo", String(state.selectedChapterNo));
     else url.searchParams.delete("chapterNo");
@@ -122,6 +134,57 @@ function createTaskStepText(task) {
   const stepTotal = Number(progress.step_total || 0);
   if (!stepTotal) return "等待阶段信息";
   return `阶段 ${stepIndex} / ${stepTotal}`;
+}
+
+function upsertRecentTask(task) {
+  if (!task?.id) return;
+  const current = Array.isArray(state.recentTasks) ? state.recentTasks.slice() : [];
+  const next = [task, ...current.filter((item) => item?.id !== task.id)];
+  state.recentTasks = next.slice(0, 20);
+}
+
+function renderCreateTaskHistory() {
+  if (!refs.createTaskHistoryPanel || !refs.createTaskHistoryList || !refs.createTaskHistoryMeta) return;
+  const selectedNovelMatchesPending = state.pendingCreateTask?.novel_id && state.selectedNovelId === state.pendingCreateTask.novel_id;
+  const items = (Array.isArray(state.recentTasks) ? state.recentTasks : [])
+    .filter((task) => task?.task_type === 'bootstrap_novel')
+    .slice(0, 8);
+  const fallbackTask = state.pendingCreateTask && !items.some((task) => task.id === state.pendingCreateTask.id)
+    ? [state.pendingCreateTask]
+    : [];
+  const visibleItems = [...fallbackTask, ...items].slice(0, 8);
+  const activeNovelId = state.pendingCreateTask?.novel_id || state.selectedNovelId || null;
+  refs.createTaskHistoryPanel.classList.toggle('hidden', !visibleItems.length && !activeNovelId);
+  refs.createTaskHistoryList.innerHTML = '';
+  if (!visibleItems.length) {
+    refs.createTaskHistoryMeta.textContent = activeNovelId
+      ? `小说 #${activeNovelId} 的创建任务会显示在这里。`
+      : '创建小说会像生成下一章一样产生日志化任务，失败后也会保留记录。';
+    refs.createTaskHistoryList.innerHTML = '<div class="panel-muted subtle-text">还没有创建任务记录。</div>';
+    return;
+  }
+  const metaBits = [];
+  if (activeNovelId) metaBits.push(`小说 #${activeNovelId}`);
+  if (selectedNovelMatchesPending) metaBits.push('已绑定到当前小说上下文');
+  metaBits.push('创建任务也会进入统一任务体系');
+  refs.createTaskHistoryMeta.textContent = metaBits.join(' · ');
+  refs.createTaskHistoryList.innerHTML = visibleItems
+    .map((task) => {
+      const stage = createTaskStageLabel(task);
+      const details = task.progress_message || task.error_payload?.message || task.result_payload?.title || '暂无详细信息';
+      const taskNo = task.id ? `#${task.id}` : '—';
+      return `
+        <div class="activity-item ${task.status === 'failed' ? 'error' : task.status === 'succeeded' ? 'success' : 'info'} task-item">
+          <div class="task-item-top">
+            <strong>创建小说任务 ${escapeHtml(taskNo)}</strong>
+            <span class="task-status-chip ${escapeHtml(task.status || '')}">${escapeHtml(stage)}</span>
+          </div>
+          <div>${escapeHtml(details)}</div>
+          <div class="subtle-text">创建于 ${escapeHtml(fmtDate(task.created_at))}${task.finished_at ? ` · 结束于 ${escapeHtml(fmtDate(task.finished_at))}` : ''}</div>
+        </div>
+      `;
+    })
+    .join('');
 }
 
 function createTaskPercent(task) {
@@ -154,6 +217,7 @@ function renderCreateTaskPanel(task = state.pendingCreateTask) {
     if (refs.createTaskProgressBar) refs.createTaskProgressBar.style.width = "0%";
     refs.createTaskMeta.textContent = "创建成功后会自动进入小说管理页；失败时会保留失败现场和任务记录。";
     if (refs.createTaskEventList) refs.createTaskEventList.innerHTML = '<div class="panel-muted">这里会显示初始化阶段日志，告诉你它到底在忙哪一步。</div>';
+    renderCreateTaskHistory();
     return;
   }
   refs.createTaskPanel.classList.remove("hidden");
@@ -170,6 +234,7 @@ function renderCreateTaskPanel(task = state.pendingCreateTask) {
     current.novel_id ? `小说 ID：${current.novel_id}` : null,
     current.updated_at ? `更新时间：${fmtDate(current.updated_at)}` : null,
   ].filter(Boolean);
+  if (current.id) bits.unshift(`任务 #${current.id}`);
   refs.createTaskMeta.textContent = bits.join(" · ") || "创建任务已启动。";
   if (refs.createTaskEventList) {
     const events = Array.isArray(state.taskEventCache?.[current.id]) ? state.taskEventCache[current.id].slice(0, 6) : [];
@@ -181,6 +246,7 @@ function renderCreateTaskPanel(task = state.pendingCreateTask) {
         .join("");
     }
   }
+  renderCreateTaskHistory();
 }
 
 function syncRenameControls() {
@@ -191,15 +257,16 @@ function syncRenameControls() {
 }
 
 function switchStudioView(mode, { replaceUrl = false } = {}) {
-  state.viewMode = mode === "create" ? "create" : "workspace";
+  state.viewMode = mode === "create" ? "create" : "studio";
   refs.createView?.classList.toggle("hidden", state.viewMode !== "create");
-  refs.workspaceView?.classList.toggle("hidden", state.viewMode !== "workspace");
+  refs.studioView?.classList.toggle("hidden", state.viewMode !== "studio");
   refs.backToWorkspaceBtn?.classList.toggle("hidden", state.viewMode !== "create");
   if (refs.openCreatePanelBtn) {
     refs.openCreatePanelBtn.textContent = state.viewMode === "create" ? "正在创建页" : "进入创建页";
     refs.openCreatePanelBtn.disabled = state.viewMode === "create";
   }
   renderCreateTaskPanel();
+  renderCreateTaskHistory();
   syncRenameControls();
   setTopbar();
   syncStudioUrl({ replace: replaceUrl });
@@ -222,13 +289,77 @@ function sleep(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function isTaskPollingTimeoutError(error) {
+  const code = error?.payload?.code || "";
+  const message = String(error?.message || "").toLowerCase();
+  return code === "REQUEST_TIMEOUT" || code === "TASK_POLL_TIMEOUT" || message.includes("超时") || message.includes("timeout");
+}
+
+function isActiveTaskStatus(task) {
+  return task?.status === "queued" || task?.status === "running";
+}
+
+let bootstrapResumeTimer = null;
+
+function scheduleBootstrapWatcherResume(task, { delayMs = 2500, silent = true } = {}) {
+  if (!task?.id || !task?.novel_id) return;
+  if (bootstrapResumeTimer) window.clearTimeout(bootstrapResumeTimer);
+  bootstrapResumeTimer = window.setTimeout(() => {
+    bootstrapResumeTimer = null;
+    ensureTaskWatcher(task, { silent }).catch((error) => {
+      if (isTaskPollingTimeoutError(error)) {
+        scheduleBootstrapWatcherResume(task, { delayMs: Math.min(delayMs + 1500, 12000), silent });
+        return;
+      }
+      pushActivity("创建任务恢复失败", error.message || "后台创建任务状态恢复失败。", "error");
+    });
+  }, delayMs);
+}
+
+async function tryResumeLatestBootstrapTask({ silent = true } = {}) {
+  if (!Array.isArray(state.novels) || !state.novels.length) return null;
+  const candidate = state.novels.find((item) => item.status === "bootstrapping" || item.status === "bootstrap_failed");
+  if (!candidate) return null;
+  try {
+    const payload = await apiFetch(`/novels/${candidate.id}/tasks?status=active&limit=12`, { timeoutMs: 12000 });
+    const task = (payload.items || []).find((item) => item.task_type === "bootstrap_novel");
+    if (!task) return null;
+    state.pendingCreateTask = task;
+    upsertRecentTask(task);
+    if (state.selectedNovelId !== task.novel_id) {
+      await selectNovel(task.novel_id, { suppressNotFoundFlash: true, preserveView: true }).catch(() => {});
+      switchStudioView("create", { replaceUrl: true });
+    }
+    renderCreateTaskPanel(task);
+    ensureTaskWatcher(task, { silent }).catch((error) => {
+      if (isTaskPollingTimeoutError(error)) scheduleBootstrapWatcherResume(task, { silent: true });
+    });
+    return task;
+  } catch {
+    return null;
+  }
+}
+
 const taskWatchers = new Map();
 
-async function pollTaskUntilTerminal(novelId, taskId, { intervalMs = 1200, timeoutMs = 20 * 60 * 1000, onProgress = null } = {}) {
+async function pollTaskUntilTerminal(novelId, taskId, { intervalMs = 1200, timeoutMs = 20 * 60 * 1000, requestTimeoutMs = null, onProgress = null, onTransientError = null } = {}) {
   const startedAt = Date.now();
   let lastProgressKey = null;
+  const effectiveRequestTimeoutMs = Number.isFinite(Number(requestTimeoutMs)) && Number(requestTimeoutMs) > 0
+    ? Number(requestTimeoutMs)
+    : Math.max(Math.min(intervalMs, 5000) + 5000, 12000);
   while (Date.now() - startedAt < timeoutMs) {
-    const task = await apiFetch(`/novels/${novelId}/tasks/${taskId}`, { timeoutMs: Math.min(intervalMs, 5000) + 5000 });
+    let task;
+    try {
+      task = await apiFetch(`/novels/${novelId}/tasks/${taskId}`, { timeoutMs: effectiveRequestTimeoutMs });
+    } catch (error) {
+      if (isTaskPollingTimeoutError(error) || error?.status === 0) {
+        if (onTransientError) onTransientError(error);
+        await sleep(Math.max(1200, Math.min(intervalMs + 400, 3000)));
+        continue;
+      }
+      throw error;
+    }
     const progressKey = [task.status || "", task.progress_message || "", task.updated_at || ""].join("|");
     if (onProgress && progressKey !== lastProgressKey) {
       lastProgressKey = progressKey;
@@ -267,6 +398,7 @@ function buildTaskError(finalTask, fallbackMessage) {
 
 async function watchNextChapterTask(task, { silent = false } = {}) {
   bindActiveTask(task);
+  upsertRecentTask(task);
   const finalTask = await pollTaskUntilTerminal(task.novel_id, task.id, {
     intervalMs: 1500,
     onProgress: (snapshot) => {
@@ -348,6 +480,7 @@ async function watchBatchGenerationTask(task, { silent = false } = {}) {
 
 async function watchTtsTask(task, { autoplay = false, silent = false } = {}) {
   bindActiveTask(task);
+  upsertRecentTask(task);
   const targetVoice = task.request_payload?.voice || getSelectedVoice();
   if (task.reused_existing && task.progress_message && !silent) {
     setTtsStatus(task.progress_message, "generating");
@@ -391,12 +524,20 @@ async function watchTtsTask(task, { autoplay = false, silent = false } = {}) {
 async function watchBootstrapTask(task, { silent = false } = {}) {
   bindActiveTask(task);
   state.pendingCreateTask = task;
+  upsertRecentTask(task);
   await syncTaskEvents(task, { limit: 8 }).catch(() => {});
   renderCreateTaskPanel(task);
   const finalTask = await pollTaskUntilTerminal(task.novel_id, task.id, {
     intervalMs: 1400,
+    timeoutMs: 45 * 60 * 1000,
+    requestTimeoutMs: 15000,
+    onTransientError: () => {
+      if (!state.pendingCreateTask) state.pendingCreateTask = task;
+      renderCreateTaskPanel(state.pendingCreateTask);
+    },
     onProgress: (snapshot) => {
       state.pendingCreateTask = snapshot;
+      upsertRecentTask(snapshot);
       syncTaskEvents(snapshot, { limit: 8, force: true }).then(() => renderCreateTaskPanel(snapshot)).catch(() => renderCreateTaskPanel(snapshot));
       if (!snapshot.progress_message || silent) return;
       const tone = snapshot.status === "failed" ? "error" : snapshot.status === "cancelled" ? "info" : "info";
@@ -405,13 +546,14 @@ async function watchBootstrapTask(task, { silent = false } = {}) {
   });
   clearActiveTask(finalTask);
   state.pendingCreateTask = finalTask;
+  upsertRecentTask(finalTask);
   await syncTaskEvents(finalTask, { limit: 8, force: true }).catch(() => {});
   renderCreateTaskPanel(finalTask);
   await loadShelf({ preferredNovelId: finalTask.novel_id, autoSelectFirst: false });
   const targetNovelId = finalTask.result_payload?.novel_id || finalTask.novel_id;
   if (finalTask.status === "succeeded" && targetNovelId) {
     await selectNovel(targetNovelId, { suppressNotFoundFlash: true });
-    switchStudioView("workspace");
+    switchStudioView("studio");
   }
   if (finalTask.status === "cancelled") {
     if (!silent) showFlash(finalTask.progress_message || "创建任务已取消。", "info");
@@ -473,6 +615,7 @@ function resumeWorkspaceTasks(activeTasks) {
     }
     if (task.task_type === "bootstrap_novel") {
       state.pendingCreateTask = task;
+      upsertRecentTask(task);
       syncTaskEvents(task, { limit: 8 }).then(() => renderCreateTaskPanel(task)).catch(() => renderCreateTaskPanel(task));
       ensureTaskWatcher(task, { silent: true }).catch((error) => {
         pushActivity("创建任务失败", error.message, "error");
@@ -702,19 +845,19 @@ async function loadShelf({ preferredNovelId = null, autoSelectFirst = true } = {
 
 async function loadNovelBundle(novelId, { desiredChapterNo = null, updateReaderUrl = false } = {}) {
   const query = desiredChapterNo ? `?desired_chapter_no=${encodeURIComponent(desiredChapterNo)}` : "";
-  const workspace = await apiFetch(`/novels/${novelId}/workspace${query}`, { timeoutMs: 12000 });
+  const storyStudio = await apiFetch(`/novels/${novelId}/story-studio${query}`, { timeoutMs: 12000 });
 
   state.selectedNovelId = novelId;
-  state.selectedNovel = workspace.novel || null;
-  state.chapters = workspace.chapters?.items || [];
-  state.consoleData = workspace.console_data || null;
-  state.planningData = workspace.planning_data || null;
-  state.interventions = workspace.interventions?.items || [];
-  state.recentTasks = workspace.recent_tasks || [];
+  state.selectedNovel = storyStudio.novel || null;
+  state.chapters = storyStudio.chapters?.items || [];
+  state.storyStudioData = storyStudio.story_workspace || null;
+  state.planningData = storyStudio.planning_data || null;
+  state.interventions = storyStudio.interventions?.items || [];
+  state.recentTasks = storyStudio.recent_tasks || [];
   state.taskEventCache = {};
   state.expandedTaskId = null;
-  state.selectedChapterNo = workspace.selected_chapter_no || null;
-  state.selectedChapter = normalizeChapterPayload(workspace.selected_chapter);
+  state.selectedChapterNo = storyStudio.selected_chapter_no || null;
+  state.selectedChapter = normalizeChapterPayload(storyStudio.selected_chapter);
   state.tts.status = null;
   state.tts.selectedVoice = "zh-CN-YunxiNeural";
   state.tts.playbackVoice = null;
@@ -728,8 +871,9 @@ async function loadNovelBundle(novelId, { desiredChapterNo = null, updateReaderU
   renderCatalog({ onSelectChapter: selectChapter, onOpenReader: openReader, onDeleteTailFrom: handleDeleteTailFrom });
   renderPreview();
   renderReaderMode({ onSelectChapter: selectChapter });
+  renderCreateTaskHistory();
   await refreshChapterTtsState({ suppressErrors: true });
-  resumeWorkspaceTasks(workspace.active_tasks || []);
+  resumeWorkspaceTasks(storyStudio.active_tasks || []);
   setBusy("generating", state.busy.generating);
 
   const chapterNoField = refs.interventionForm?.elements?.namedItem("chapter_no");
@@ -738,11 +882,11 @@ async function loadNovelBundle(novelId, { desiredChapterNo = null, updateReaderU
 }
 
 async function selectNovel(novelId, options = {}) {
-  const { suppressNotFoundFlash = false, ...loadOptions } = options;
+  const { suppressNotFoundFlash = false, preserveView = false, ...loadOptions } = options;
   pushActivity("切换小说", `载入小说 #${novelId}`);
   try {
     await loadNovelBundle(novelId, loadOptions);
-    if (!isReaderMode) switchStudioView("workspace");
+    if (!isReaderMode && !preserveView) switchStudioView("studio");
     return true;
   } catch (error) {
     const notFound = error?.status === 404 || /novel not found/i.test(error?.message || "");
@@ -750,7 +894,7 @@ async function selectNovel(novelId, options = {}) {
       state.selectedNovelId = null;
       state.selectedNovel = null;
       state.chapters = [];
-      state.consoleData = null;
+      state.storyStudioData = null;
       state.planningData = null;
       state.interventions = [];
       state.recentTasks = [];
@@ -832,22 +976,40 @@ async function handleCreateNovel(event) {
       body: JSON.stringify(payload),
     });
     state.pendingCreateTask = task;
+    upsertRecentTask(task);
     renderCreateTaskPanel(task);
     await loadShelf({ preferredNovelId: task.novel_id, autoSelectFirst: false });
+    await selectNovel(task.novel_id, { suppressNotFoundFlash: true, preserveView: true });
+    switchStudioView("create", { replaceUrl: true });
+    renderCreateTaskPanel(task);
     pushActivity("创建任务已提交", task.progress_message || `小说 #${task.novel_id} 已进入初始化队列`, "info");
+    await refreshTaskHistory({ silent: true }).catch(() => {});
     await ensureTaskWatcher(task);
     form.reset();
   } catch (error) {
     const failedNovelId = error?.payload?.novel?.id || error?.payload?.novel_id || state.pendingCreateTask?.novel_id;
-    if (failedNovelId) {
-      await loadShelf({ preferredNovelId: failedNovelId, autoSelectFirst: false });
-      await selectNovel(failedNovelId, { suppressNotFoundFlash: true });
-      switchStudioView("workspace");
+    if (isTaskPollingTimeoutError(error) && state.pendingCreateTask?.id) {
+      await loadShelf({ preferredNovelId: state.pendingCreateTask.novel_id, autoSelectFirst: false }).catch(() => {});
+      state.viewMode = "create";
+      renderCreateTaskPanel(state.pendingCreateTask);
+      await refreshTaskHistory({ silent: true }).catch(() => {});
+      switchStudioView("create", { replaceUrl: true });
+      scheduleBootstrapWatcherResume(state.pendingCreateTask, { silent: true });
+      showFlash(`创建状态同步超时：${error.message}。后台任务可能仍在继续，已自动重试轮询。`, "info");
+      pushActivity("创建任务仍在后台运行", `小说 #${state.pendingCreateTask.novel_id} 的初始化状态暂时失联，系统会继续自动重连。`, "info");
+      return;
     }
+    if (failedNovelId) {
+      await loadShelf({ preferredNovelId: failedNovelId, autoSelectFirst: false }).catch(() => {});
+    }
+    state.viewMode = "create";
+    renderCreateTaskPanel(state.pendingCreateTask);
+    await refreshTaskHistory({ silent: true }).catch(() => {});
+    switchStudioView("create", { replaceUrl: true });
     showFlash(`创建失败：${error.message}`, "error");
     pushActivity(
       "创建失败",
-      failedNovelId ? `${error.message}（已保留失败现场，可直接在任务中心重试）` : error.message,
+      failedNovelId ? `${error.message}（已保留失败现场，可直接在创建页查看失败阶段，也可在任务中心重试）` : error.message,
       "error",
     );
   } finally {
@@ -915,6 +1077,8 @@ async function handleGenerateNext() {
     setBusy("generating", true);
     pushActivity("开始生成", `小说 #${state.selectedNovelId} 的下一章已加入任务队列，主控台会自动刷新`, "info");
     const task = await apiFetch(`/novels/${state.selectedNovelId}/tasks/next-chapter`, { method: "POST" });
+    upsertRecentTask(task);
+    await refreshTaskHistory({ silent: true }).catch(() => {});
     await ensureTaskWatcher(task);
   } catch (error) {
     const payload = error.payload || {};
@@ -938,6 +1102,8 @@ async function handleGenerateBatch() {
       method: "POST",
       body: JSON.stringify({ count }),
     });
+    upsertRecentTask(task);
+    await refreshTaskHistory({ silent: true }).catch(() => {});
     await ensureTaskWatcher(task);
   } catch (error) {
     showFlash(`批量生成失败：${error.message}`, "error");
@@ -1042,7 +1208,7 @@ async function handleDeleteNovel() {
     state.selectedChapterNo = null;
     state.selectedChapter = null;
     state.chapters = [];
-    state.consoleData = null;
+    state.storyStudioData = null;
     state.planningData = null;
     state.interventions = [];
     state.recentTasks = [];
@@ -1121,8 +1287,8 @@ function attachStudioEvents() {
   refs.refreshChapterBtn?.addEventListener("click", () => state.selectedChapterNo && selectChapter(state.selectedChapterNo));
   refs.openReaderBtn?.addEventListener("click", () => openReader());
   refs.openCreatePanelBtn?.addEventListener("click", () => switchStudioView("create"));
-  refs.closeCreatePanelBtn?.addEventListener("click", () => switchStudioView("workspace"));
-  refs.backToWorkspaceBtn?.addEventListener("click", () => switchStudioView("workspace"));
+  refs.closeCreatePanelBtn?.addEventListener("click", () => switchStudioView("studio"));
+  refs.backToWorkspaceBtn?.addEventListener("click", () => switchStudioView("studio"));
   refs.createNovelForm?.addEventListener("submit", handleCreateNovel);
   refs.prepareWindowBtn?.addEventListener("click", handlePrepareWindow);
   refs.generateNextBtn?.addEventListener("click", handleGenerateNext);
@@ -1235,6 +1401,7 @@ async function bootStudio() {
   const chapterNo = Number(url.searchParams.get("chapterNo") || 0);
   const shouldAutoSelectFirst = state.viewMode !== "create" && !novelId;
   await loadShelf({ preferredNovelId: novelId || null, autoSelectFirst: shouldAutoSelectFirst });
+  if (state.viewMode === "create") await tryResumeLatestBootstrapTask({ silent: true });
   if (novelId) {
     const loaded = await selectNovel(novelId, { desiredChapterNo: chapterNo || null, suppressNotFoundFlash: true });
     if (!loaded && state.novels.length) {
@@ -1247,6 +1414,7 @@ async function bootStudio() {
   }
   syncRenameControls();
   renderCreateTaskPanel();
+  renderCreateTaskHistory();
 }
 
 async function bootReader() {

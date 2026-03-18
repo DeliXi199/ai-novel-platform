@@ -4,10 +4,11 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.schemas.task import AsyncTaskCleanupResponse, AsyncTaskEventListResponse, AsyncTaskListResponse, AsyncTaskResponse
 from app.schemas.chapter import SerialModeResponse, SerialModeUpdateRequest
-from app.schemas.control_console import ControlConsoleResponse
-from app.schemas.workspace import WorkspaceResponse
+from app.schemas.story_workspace import StoryWorkspaceResponse
+from app.schemas.story_studio import StoryStudioResponse
 from app.services.async_tasks import cleanup_terminal_tasks, get_task, list_task_events, list_tasks, request_task_cancel, retry_task, serialize_task
 from app.services.chapter_generation import prepare_next_planning_window
+from app.services.story_workspace_archive import archive_story_workspace_snapshot, list_story_workspace_archives, read_story_workspace_archive
 from app.services.generation_exceptions import GenerationError
 from app.services.story_architecture import ensure_story_architecture, set_delivery_mode, sync_long_term_state
 from app.services.story_state import ensure_serial_runtime
@@ -15,7 +16,7 @@ from app.services.story_state import ensure_serial_runtime
 from .novel_common import (
     build_fresh_snapshot,
     build_live_runtime_payload,
-    build_workspace_payload,
+    build_story_studio_payload,
     ensure_bootstrap_not_running,
     raise_http_from_generation_error,
     require_novel,
@@ -88,10 +89,10 @@ def cleanup_async_tasks(
     return cleanup_terminal_tasks(db, novel_id=novel_id, keep_latest=keep_latest, older_than_days=older_than_days)
 
 
-@router.get("/{novel_id}/workspace", response_model=WorkspaceResponse)
-def get_workspace(novel_id: int, desired_chapter_no: int | None = Query(None, ge=1), db: Session = Depends(get_db)):
+@router.get("/{novel_id}/story-studio", response_model=StoryStudioResponse)
+def get_story_studio(novel_id: int, desired_chapter_no: int | None = Query(None, ge=1), db: Session = Depends(get_db)):
     novel = require_novel(db, novel_id)
-    return build_workspace_payload(db, novel, desired_chapter_no=desired_chapter_no)
+    return build_story_studio_payload(db, novel, desired_chapter_no=desired_chapter_no)
 
 
 @router.get("/{novel_id}/planning-state")
@@ -103,8 +104,8 @@ def get_planning_state(novel_id: int, db: Session = Depends(get_db)):
         "current_chapter_no": novel.current_chapter_no,
         "planning_layers": snapshot.get("planning_layers", {}),
         "planning_state": snapshot.get("planning_state", {}),
-        "planning_status": snapshot.get("control_console", {}).get("planning_status", {}),
-        "chapter_card_queue": snapshot.get("control_console", {}).get("chapter_card_queue", []),
+        "planning_status": snapshot.get("story_workspace", {}).get("planning_status", {}),
+        "chapter_card_queue": snapshot.get("story_workspace", {}).get("chapter_card_queue", []),
     }
 
 
@@ -135,11 +136,57 @@ def get_live_runtime(novel_id: int, db: Session = Depends(get_db)):
     return build_live_runtime_payload(db, novel)
 
 
-@router.get("/{novel_id}/control-console", response_model=ControlConsoleResponse)
-def get_control_console(novel_id: int, db: Session = Depends(get_db)):
+@router.get("/{novel_id}/story-workspace", response_model=StoryWorkspaceResponse)
+def get_story_workspace(novel_id: int, db: Session = Depends(get_db)):
     novel = require_novel(db, novel_id)
     _, snapshot = build_fresh_snapshot(db, novel)
     return snapshot
+
+
+@router.get("/{novel_id}/story-workspace-archives")
+def get_story_workspace_archives(
+    novel_id: int,
+    chapter_no: int | None = Query(None, ge=1),
+    limit: int = Query(40, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    require_novel(db, novel_id)
+    return list_story_workspace_archives(novel_id=novel_id, chapter_no=chapter_no, limit=limit)
+
+
+@router.get("/{novel_id}/story-workspace-archives/content")
+def get_story_workspace_archive_content(
+    novel_id: int,
+    relative_path: str = Query(..., min_length=1),
+    db: Session = Depends(get_db),
+):
+    require_novel(db, novel_id)
+    try:
+        payload = read_story_workspace_archive(novel_id=novel_id, relative_path=relative_path)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Archive file not found")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid archive path")
+    return payload
+
+
+@router.post("/{novel_id}/story-workspace-archives/snapshot")
+def create_manual_story_workspace_archive(novel_id: int, db: Session = Depends(get_db)):
+    novel = require_novel(db, novel_id)
+    next_chapter_no = int(novel.current_chapter_no or 0) + 1
+    path = archive_story_workspace_snapshot(
+        novel,
+        chapter_no=next_chapter_no,
+        phase="manual",
+        stage="manual_snapshot",
+        note="手动导出的 Story Workspace 快照。",
+    )
+    return {
+        "novel_id": novel.id,
+        "chapter_no": next_chapter_no,
+        "saved": bool(path),
+        "path": path,
+    }
 
 
 @router.get("/{novel_id}/serial-state")

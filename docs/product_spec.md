@@ -11,8 +11,8 @@
 同时只针对 API 连接链路做了修正与增强：
 
 1. 对 provider / api key / base_url / model 做统一清洗：去掉首尾空格、单双引号、末尾多余斜杠。
-2. DeepSeek 的 `https://api.deepseek.com/v1` 会自动归一化为 `https://api.deepseek.com`，避免 OpenAI SDK 拼接路径时出现兼容问题。
-3. 在优先读取 `.env` 配置的同时，也兼容读取以下环境变量：
+2. DeepSeek 的 `https://api.deepseek.com/v1` 会自动归一化为 `https://api.deepseek.com`，避免 OpenAI SDK 拼接路径时出现路径问题。
+3. 在优先读取 `.env` 配置的同时，也会读取以下环境变量：
    - DeepSeek: `DEEPSEEK_API_KEY` / `LLM_API_KEY` / `API_KEY`
    - DeepSeek Base URL: `DEEPSEEK_BASE_URL` / `LLM_BASE_URL` / `BASE_URL`
 4. 新增 `GET /api/v1/health/llm`：

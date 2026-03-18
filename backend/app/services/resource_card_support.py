@@ -711,7 +711,7 @@ def build_resource_capability_plan(
         hard_constraints=hard_constraints,
         soft_goals=soft_goals,
         output_contract=output_contract,
-        fallback_builder=_fallback_builder,
+        baseline_builder=_fallback_builder,
     )
     result = reasoning.get("result") if isinstance(reasoning, dict) else {}
     if not isinstance(result, dict):

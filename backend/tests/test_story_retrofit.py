@@ -1,5 +1,5 @@
 from app.schemas.novel import NovelCreate
-from app.services.story_architecture import build_control_console, build_execution_brief
+from app.services.story_architecture import build_story_workspace, build_execution_brief
 def _payload() -> NovelCreate:
     return NovelCreate(
         genre="金手指修仙",
@@ -9,8 +9,8 @@ def _payload() -> NovelCreate:
     )
 def test_execution_brief_includes_character_voice_pack_and_retrospective_feedback() -> None:
     payload = _payload()
-    console = build_control_console(payload)
-    console["character_cards"]["陈掌柜"] = {
+    console = build_story_workspace(payload)
+    console["cast_cards"]["陈掌柜"] = {
         "name": "陈掌柜",
         "role_type": "supporting",
         "role_archetype": "表面温和型",
@@ -33,7 +33,7 @@ def test_execution_brief_includes_character_voice_pack_and_retrospective_feedbac
     story_bible = {
         "project_card": {"genre_positioning": payload.genre},
         "volume_cards": [{"volume_no": 1, "start_chapter": 1, "end_chapter": 20, "main_conflict": "立足与藏锋", "cool_point": "第一次真正反制"}],
-        "control_console": console,
+        "story_workspace": console,
         "serial_rules": {"fact_priority": ["已发布正文", "长期状态"]},
         "long_term_state": {"chapter_release_state": {"delivery_mode": "stockpile", "published_through": 3, "latest_available_chapter": 5}},
         "continuity_rules": ["不能重复同类桥段。"],
@@ -58,11 +58,11 @@ def test_execution_brief_includes_character_voice_pack_and_retrospective_feedbac
     assert brief["chapter_retrospective_feedback"][0]["correction"].startswith("下一章")
 def test_execution_brief_exposes_stage_casting_runtime_when_action_was_moved() -> None:
     payload = _payload()
-    console = build_control_console(payload)
+    console = build_story_workspace(payload)
     story_bible = {
         "project_card": {"genre_positioning": payload.genre},
         "volume_cards": [{"volume_no": 1, "start_chapter": 1, "end_chapter": 20, "main_conflict": "立足与藏锋", "cool_point": "第一次真正反制"}],
-        "control_console": console,
+        "story_workspace": console,
         "serial_rules": {"fact_priority": ["已发布正文", "长期状态"]},
         "long_term_state": {"chapter_release_state": {"delivery_mode": "stockpile", "published_through": 3, "latest_available_chapter": 5}},
         "continuity_rules": ["不能重复同类桥段。"],
@@ -110,3 +110,96 @@ def test_execution_brief_exposes_stage_casting_runtime_when_action_was_moved() -
     assert runtime["moved_from_chapter"] == 6
     assert "本章承接被挪来的补新人" in runtime["runtime_note"]
     assert "第6章→第7章" in "\n".join(brief["daily_workbench"]["chapter_stage_casting_runtime"]["display_lines"])
+
+
+def test_execution_brief_exposes_payoff_diagnostics_from_planning_packet() -> None:
+    payload = _payload()
+    console = build_story_workspace(payload)
+    story_bible = {
+        "project_card": {"genre_positioning": payload.genre},
+        "volume_cards": [{"volume_no": 1, "start_chapter": 1, "end_chapter": 20, "main_conflict": "立足与藏锋", "cool_point": "第一次真正反制"}],
+        "story_workspace": console,
+        "serial_rules": {"fact_priority": ["已发布正文", "长期状态"]},
+        "long_term_state": {"chapter_release_state": {"delivery_mode": "stockpile", "published_through": 3, "latest_available_chapter": 5}},
+        "continuity_rules": ["不能重复同类桥段。"],
+    }
+    plan = {
+        "goal": "让方尘在药铺试探里先拿到一口便宜",
+        "event_type": "交易类",
+        "progress_kind": "资源推进",
+        "payoff_or_pressure": "换到一味关键药材，同时被掌柜记住",
+        "planning_packet": {
+            "selected_payoff_card": {
+                "card_id": "payoff_trade_crush",
+                "payoff_mode": "压价反杀",
+                "payoff_level": "medium",
+                "payoff_visibility": "public",
+                "reader_payoff": "主角把关键药材压价换到手。",
+                "new_pressure": "掌柜开始重新评估主角。",
+                "aftershock": "这条交易线会更戒备。",
+                "external_reaction": "旁人明显改了口风。",
+            },
+            "payoff_runtime": {
+                "payoff_diagnostics": {
+                    "pressure_debt_score": 4,
+                    "pressure_debt_level": "medium",
+                    "repeat_risk": "low",
+                    "recommended_level": "medium",
+                    "summary_lines": [
+                        "最近爽点欠账：medium（分值 4）。",
+                        "重复风险：low；入选卡：压价反杀。",
+                        "最近节奏略欠回报，这章至少要有一手可感兑现。",
+                    ],
+                }
+            },
+        },
+    }
+    brief = build_execution_brief(
+        story_bible=story_bible,
+        next_chapter_no=6,
+        plan=plan,
+        last_chapter_tail="柜台上的灯芯噼啪响了一声。",
+    )
+    diag = brief["chapter_execution_card"]["payoff_diagnostics"]
+    assert diag["pressure_debt_level"] == "medium"
+    assert brief["chapter_execution_card"]["payoff_card_id"] == "payoff_trade_crush"
+    assert brief["daily_workbench"]["payoff_runtime_note"].startswith("最近节奏略欠回报")
+
+
+
+def test_execution_brief_exposes_pending_payoff_compensation() -> None:
+    payload = _payload()
+    console = build_story_workspace(payload)
+    story_bible = {
+        "project_card": {"genre_positioning": payload.genre},
+        "volume_cards": [{"volume_no": 1, "start_chapter": 1, "end_chapter": 20, "main_conflict": "立足与藏锋", "cool_point": "第一次真正反制"}],
+        "story_workspace": console,
+        "retrospective_state": {
+            "pending_payoff_compensation": {
+                "enabled": True,
+                "source_chapter_no": 5,
+                "target_chapter_no": 6,
+                "priority": "high",
+                "note": "上一章兑现偏虚，这章优先补一次明确落袋。",
+                "should_reduce_pressure": True,
+            }
+        },
+        "serial_rules": {"fact_priority": ["已发布正文", "长期状态"]},
+        "long_term_state": {"chapter_release_state": {"delivery_mode": "stockpile", "published_through": 3, "latest_available_chapter": 5}},
+        "continuity_rules": ["不能重复同类桥段。"],
+    }
+    plan = {
+        "goal": "方尘在药铺里追回一口真正可感的便宜",
+        "event_type": "交易类",
+        "progress_kind": "资源推进",
+        "payoff_or_pressure": "拿到药材，同时把后患抬高",
+    }
+    brief = build_execution_brief(
+        story_bible=story_bible,
+        next_chapter_no=6,
+        plan=plan,
+        last_chapter_tail="灯芯噼啪一跳。",
+    )
+    assert brief["chapter_execution_card"]["payoff_compensation_priority"] == "high"
+    assert brief["chapter_execution_card"]["payoff_compensation_note"].startswith("上一章兑现偏虚")
+    assert brief["daily_workbench"]["payoff_compensation_note"].startswith("上一章兑现偏虚")

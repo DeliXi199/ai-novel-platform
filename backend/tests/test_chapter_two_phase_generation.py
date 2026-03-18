@@ -95,6 +95,7 @@ def test_generate_chapter_from_plan_uses_body_and_closing_phases(monkeypatch) ->
     assert [item["stage"] for item in calls] == ["chapter_generation_body", "chapter_generation_closing"]
     assert "这面古镜并不是死物" in draft.content
     assert draft.title == "废料区试手"
+    assert draft.closing_reason == "below_target_min"
 
 
 
@@ -297,6 +298,7 @@ def test_generate_chapter_falls_back_to_closing_after_continuation_timeout(monke
 
     assert stages == ["chapter_generation_body", "chapter_generation_continue", "chapter_generation_closing"]
     assert draft.body_stop_reason == "continuation_timeout_fallback_to_closing"
+    assert draft.closing_reason == "continuation_timeout_fallback_to_closing"
     assert "决定先离开废料区再慢慢拆这道反应" in draft.content
 
 

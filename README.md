@@ -31,7 +31,7 @@
 - `GET /api/v1/novels`：书架列表
 - `GET /api/v1/novels/{id}/chapters`：章节目录
 - `GET /api/v1/novels/{id}/interventions`：人工干预列表
-- `GET /api/v1/novels/{id}/workspace`：工作台聚合数据（减少前端碎请求）
+- `GET /api/v1/novels/{id}/story-studio`：Story Studio 聚合数据（减少前端碎请求）
 
 同时保留已有能力：
 
@@ -39,7 +39,7 @@
 - `POST /api/v1/novels/{id}/next-chapter`
 - `POST /api/v1/novels/{id}/next-chapters/stream`
 - `POST /api/v1/novels/{id}/prepare-next-window`
-- `GET /api/v1/novels/{id}/control-console`
+- `GET /api/v1/novels/{id}/story-studio`
 - `GET /api/v1/novels/{id}/export?format=pdf`
 
 ### 稳定性
@@ -48,7 +48,7 @@
 - 仍保留 CORS 中间件，方便你以后拆分前端独立开发
 - `/health/llm?ping=true` 失败时返回真实 HTTP 错误码
 - 新增 `/health/llm?ping=true&stage=bootstrap`，可直接模拟“创建小说/初始化大纲”阶段的模型连通性
-- DeepSeek 连接失败时会自动在 `https://api.deepseek.com` 与 `https://api.deepseek.com/v1` 两种兼容地址间重试一次
+- DeepSeek 连接失败时会自动在 `https://api.deepseek.com` 与 `https://api.deepseek.com/v1` 两种地址间重试一次
 - 初始化阶段支持单独指定 `BOOTSTRAP_MODEL`，默认建议用 `deepseek-chat` 而不是 reasoning 模型
 - 测试已覆盖健康检查、轻量列表接口、前端入口页
 - `backend/app/api/routes/novels.py` 已改为聚合入口，具体职责拆到 `novel_management.py / novel_runtime.py / novel_chapters.py / novel_interventions.py`

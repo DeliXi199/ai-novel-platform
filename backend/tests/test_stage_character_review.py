@@ -1,3 +1,5 @@
+import pytest
+
 from app.services.openai_story_engine import review_stage_characters
 from app.services.prompt_templates import arc_outline_user_prompt, chapter_draft_user_prompt, stage_character_review_user_prompt
 from app.services.stage_review_support import (
@@ -15,7 +17,7 @@ from app.services.stage_review_support import (
 def _story_bible() -> dict:
     return {
         "retrospective_state": {"scheduled_review_interval": 5, "last_stage_review_chapter": 0},
-        "control_console": {
+        "story_workspace": {
             "chapter_retrospectives": [
                 {"chapter_no": 1, "title": "起手", "core_problem": "配角戏份偏薄", "next_chapter_correction": "把关键配角私心写实"},
                 {"chapter_no": 2, "title": "试探", "core_problem": "关系推进偏慢", "next_chapter_correction": "把合作关系再推一格"},
@@ -142,7 +144,7 @@ def test_stage_review_prefers_refresh_over_new_when_cast_is_crowded() -> None:
 
 def test_stage_review_can_prefer_one_new_slot_when_refresh_pressure_is_low() -> None:
     story_bible = _story_bible()
-    story_bible["control_console"]["chapter_retrospectives"] = [
+    story_bible["story_workspace"]["chapter_retrospectives"] = [
         {"chapter_no": 1, "title": "起手", "core_problem": "世界格局刚展开", "next_chapter_correction": "准备接新线"},
         {"chapter_no": 2, "title": "试探", "core_problem": "需要扩势力触角", "next_chapter_correction": "给新关系留入口"},
         {"chapter_no": 3, "title": "换路", "core_problem": "中前期缺新接口", "next_chapter_correction": "安排新势力接口"},
@@ -210,7 +212,7 @@ def test_apply_role_refresh_execution_records_history() -> None:
     )
 
     assert applied and applied["character"] == "林秋雨"
-    assert story_bible["control_console"]["role_refresh_history"][-1]["suggested_function"] == "行动搭档"
+    assert story_bible["story_workspace"]["role_refresh_history"][-1]["suggested_function"] == "行动搭档"
     assert story_bible["story_domains"]["characters"]["林秋雨"]["current_plot_function"] == "行动搭档"
 
 
@@ -561,3 +563,74 @@ def test_stage_review_prompt_reads_casting_defer_diagnostics() -> None:
     assert "casting_defer_diagnostics" in prompt
     assert "窗口太满 / 章法不顺 / 投放节奏安排不对" in prompt
     assert "recent_resolution_history" in prompt
+
+
+
+
+def test_stage_review_uses_single_fixed_timeout_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
+    snapshot = build_stage_character_review_snapshot(_story_bible(), current_chapter_no=5)
+    calls: list[dict[str, int]] = []
+
+    monkeypatch.setattr("app.services.openai_story_engine_review.is_openai_enabled", lambda: True)
+
+    def _fake_call_json_response(**kwargs):
+        calls.append({
+            "timeout_seconds": int(kwargs.get("timeout_seconds") or 0),
+            "max_output_tokens": int(kwargs.get("max_output_tokens") or 0),
+        })
+        return {
+            "focus_characters": ["林秋雨"],
+            "casting_strategy": "prefer_refresh_existing",
+            "max_new_core_entries": 0,
+            "max_role_refreshes": 1,
+            "should_introduce_character": False,
+            "candidate_slot_ids": [],
+            "should_refresh_role_functions": True,
+            "role_refresh_targets": ["林秋雨"],
+            "role_refresh_suggestions": [{"character": "林秋雨", "suggested_function": "行动搭档", "reason": "别再只做提醒位"}],
+            "next_window_tasks": ["抬旧人顶功能"],
+            "watchouts": ["别把人物池塞太满"],
+            "review_note": "下一窗口先抬旧人。",
+        }
+
+    monkeypatch.setattr("app.services.openai_story_engine_review.call_json_response", _fake_call_json_response)
+
+    payload = review_stage_characters(snapshot=snapshot)
+
+    assert payload.focus_characters == ["林秋雨"]
+    assert len(calls) == 1
+    assert calls[0]["timeout_seconds"] == 60
+    assert calls[0]["max_output_tokens"] == 520
+
+
+def test_stage_review_raises_after_single_timeout_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.generation_exceptions import ErrorCodes, GenerationError
+
+    snapshot = build_stage_character_review_snapshot(_story_bible(), current_chapter_no=5)
+    calls = {"count": 0}
+
+    monkeypatch.setattr("app.services.openai_story_engine_review.is_openai_enabled", lambda: True)
+
+    def _always_timeout(**kwargs):
+        calls["count"] += 1
+        raise GenerationError(
+            code=ErrorCodes.API_TIMEOUT,
+            message="timeout",
+            stage="stage_character_review",
+            retryable=True,
+            http_status=503,
+            provider="deepseek",
+        )
+
+    monkeypatch.setattr("app.services.openai_story_engine_review.call_json_response", _always_timeout)
+
+    with pytest.raises(GenerationError) as exc_info:
+        review_stage_characters(snapshot=snapshot)
+
+    assert exc_info.value.code == ErrorCodes.API_TIMEOUT
+    assert calls["count"] == 1
+
+@pytest.fixture(autouse=True)
+def _mock_stage_review_ai(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.services.openai_story_engine.is_openai_enabled", lambda: True)
+    monkeypatch.setattr("app.services.openai_story_engine.call_json_response", lambda **kwargs: {})

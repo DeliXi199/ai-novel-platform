@@ -96,6 +96,9 @@ class Settings(BaseSettings):
     chapter_extension_soft_min_timeout_seconds: int = 14
     chapter_tail_fix_delay_ms: int = 600
     chapter_weak_ending_retry_attempts: int = 1
+    chapter_scene_continuity_check_enabled: bool = True
+    chapter_scene_continuity_retry_attempts: int = 1
+    chapter_scene_continuity_retry_delay_ms: int = 800
     chapter_too_messy_retry_attempts: int = 1
     chapter_too_messy_retry_delay_ms: int = 900
     chapter_messy_ai_review_enabled: bool = True
@@ -110,13 +113,28 @@ class Settings(BaseSettings):
     chapter_retry_compact_prompt_after_attempt: int = 2
     chapter_summary_force_heuristic_below_seconds: int = 30
     chapter_summary_max_output_tokens: int = 320
-    chapter_summary_mode: str = "auto"
+    chapter_summary_mode: str = "llm"
+    chapter_summary_title_package_enabled: bool = True
+    chapter_summary_title_package_timeout_seconds: int = 24
+    chapter_summary_title_package_max_output_tokens: int = 1200
+    stage_character_review_timeout_seconds: int = 60
+    stage_character_review_max_output_tokens: int = 520
+    stage_character_review_retry_attempts: int = 1
+    stage_character_review_retry_backoff_ms: int = 1200
+    stage_character_review_retry_timeout_increment_seconds: int = 0
     chapter_title_refinement_enabled: bool = True
     chapter_title_recent_window: int = 20
     chapter_title_similarity_threshold: float = 0.72
     chapter_title_refinement_candidate_count: int = 5
     chapter_title_timeout_seconds: int = 18
     chapter_title_max_output_tokens: int = 900
+    payoff_ai_selection_enabled: bool = True
+    payoff_ai_selection_timeout_seconds: int = 12
+    payoff_ai_selection_max_output_tokens: int = 420
+    payoff_ai_selection_score_gap_threshold: float = 4.0
+    payoff_ai_delivery_review_enabled: bool = True
+    payoff_ai_delivery_review_timeout_seconds: int = 14
+    payoff_ai_delivery_review_max_output_tokens: int = 520
     hard_fact_llm_review_enabled: bool = True
     hard_fact_llm_timeout_seconds: int = 25
     hard_fact_llm_max_output_tokens: int = 700
@@ -138,6 +156,18 @@ class Settings(BaseSettings):
     importance_eval_detail_max_output_tokens: int = 480
     importance_eval_planning_ai_interval_chapters: int = 2
     importance_eval_post_chapter_ai_interval_chapters: int = 3
+    importance_eval_bootstrap_ai_enabled: bool = True
+    importance_handoff_enabled: bool = True
+    importance_handoff_decay_chapters: int = 2
+    importance_handoff_min_confidence: float = 0.55
+    importance_handoff_must_carry_bonus: float = 20.0
+    importance_handoff_warm_bonus: float = 10.0
+    importance_handoff_cooldown_penalty: float = 8.0
+    importance_handoff_defer_penalty: float = 5.0
+
+    resource_capability_plan_cache_enabled: bool = True
+    resource_capability_plan_force_refresh_interval_chapters: int = 4
+    resource_capability_plan_recent_trigger_window: int = 1
     importance_eval_shortlist_retry_attempts: int = 2
     importance_eval_shortlist_retry_backoff_ms: int = 500
     importance_eval_detail_retry_attempts: int = 2
@@ -154,6 +184,19 @@ class Settings(BaseSettings):
     local_constraint_reasoning_retry_attempts: int = 2
     local_constraint_reasoning_retry_backoff_ms: int = 600
     local_constraint_reasoning_retry_timeout_increment_seconds: int = 10
+
+    chapter_frontload_decision_timeout_seconds: int = 22
+    chapter_frontload_decision_retry_attempts: int = 2
+    chapter_frontload_decision_retry_backoff_ms: int = 800
+    chapter_frontload_decision_retry_timeout_increment_seconds: int = 10
+    chapter_frontload_decision_prompt_compact_after_attempt: int = 2
+    chapter_frontload_decision_compact_prompt_threshold_chars: int = 7000
+    chapter_frontload_decision_max_timeout_seconds: int = 42
+    chapter_preparation_parallel_selection_enabled: bool = True
+    chapter_preparation_parallel_max_workers: int = 4
+    chapter_preparation_merge_timeout_seconds: int = 24
+    chapter_preparation_merge_max_timeout_seconds: int = 46
+    chapter_preparation_merge_max_output_tokens: int = 720
 
     # Dynamic length targets
     chapter_probe_target_min_visible_chars: int = 1000
@@ -185,6 +228,12 @@ class Settings(BaseSettings):
 
     async_task_max_workers: int = 2
     async_task_recover_orphaned_on_startup: bool = True
+
+    story_workspace_archive_enabled: bool = True
+    story_workspace_archive_root: str | None = None
+    story_workspace_archive_pretty_json: bool = True
+    story_workspace_archive_include_story_bible: bool = False
+    story_workspace_archive_keep_files_per_novel: int = 240
 
     @field_validator(
         "llm_provider",
@@ -232,6 +281,12 @@ class Settings(BaseSettings):
         if self.media_root:
             return Path(self.media_root).expanduser().resolve()
         return BACKEND_DIR / "data" / "media"
+
+    @property
+    def story_workspace_archive_root_path(self) -> Path:
+        if self.story_workspace_archive_root:
+            return Path(self.story_workspace_archive_root).expanduser().resolve()
+        return BACKEND_DIR / "data" / "story_workspace_snapshots"
 
     @property
     def expose_diagnostic_runtime(self) -> bool:

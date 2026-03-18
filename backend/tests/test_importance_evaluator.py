@@ -294,3 +294,75 @@ def test_build_chapter_plan_packet_exposes_importance_lanes(monkeypatch: pytest.
     assert lanes.get("selected_by_lane")
     assert "importance_mainline_characters" in (packet.get("selected_elements") or {})
     assert packet["selected_elements"]["characters"]
+
+
+
+def test_post_chapter_importance_generates_next_chapter_handoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_ai_reasoning(monkeypatch)
+    novel = _build_novel()
+    result = evaluate_story_elements_importance(
+        story_bible=novel.story_bible,
+        protagonist_name=novel.protagonist_name,
+        scope="post_chapter",
+        chapter_no=3,
+        plan={"goal": "林凡借古镜和顾青河继续试探。", "supporting_character_focus": "顾青河"},
+        recent_summaries=[{"chapter_no": 3, "event_summary": "林凡确认顾青河暂时不会翻脸。", "open_hooks": ["顾青河真正想换什么"]}],
+        touched_entities={
+            "character": ["林凡", "顾青河"],
+            "resource": ["残缺古镜"],
+            "relation": ["林凡::顾青河"],
+            "faction": ["青岚宗"],
+        },
+        allow_ai=True,
+    )
+
+    handoff = result.get("next_chapter_handoff") or {}
+    assert handoff.get("source_chapter") == 3
+    assert (handoff.get("must_carry") or {}).get("character")
+    assert (novel.story_bible.get("importance_state") or {}).get("next_chapter_handoff", {}).get("source_chapter") == 3
+
+
+
+def test_build_chapter_plan_packet_uses_handoff_and_skips_regular_planning_ai(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_ai_reasoning(monkeypatch)
+    novel = _build_novel()
+    captured_allow_ai: list[bool] = []
+
+    from app.services import chapter_context_support as chapter_context_module
+    from app.services.importance_evaluator import evaluate_story_elements_importance as original_importance_eval
+
+    def _wrapped_importance_eval(**kwargs):
+        if kwargs.get("scope") == "planning":
+            captured_allow_ai.append(bool(kwargs.get("allow_ai")))
+        return original_importance_eval(**kwargs)
+
+    monkeypatch.setattr(chapter_context_module, "evaluate_story_elements_importance", _wrapped_importance_eval)
+    novel.story_bible.setdefault("importance_state", {})["next_chapter_handoff"] = {
+        "source_chapter": 2,
+        "confidence": 0.82,
+        "must_carry": {"character": ["顾青河"], "resource": ["残缺古镜"], "relation": ["林凡::顾青河"], "faction": []},
+        "warm": {"character": [], "resource": [], "relation": [], "faction": []},
+        "cooldown": {"character": [], "resource": [], "relation": [], "faction": []},
+        "defer": {"character": [], "resource": [], "relation": [], "faction": []},
+        "reason_summary": "下章优先续上顾青河与古镜这条线。",
+    }
+
+    packet = build_chapter_plan_packet(
+        story_bible=novel.story_bible,
+        protagonist_name=novel.protagonist_name,
+        plan={
+            "chapter_no": 3,
+            "title": "夜市试探",
+            "goal": "林凡带着残缺古镜进黑市，同时试探顾青河的真实态度。",
+            "conflict": "顾青河和黑市都在盯着古镜。",
+            "main_scene": "边城黑市",
+            "supporting_character_focus": "顾青河",
+        },
+        serialized_last={"tail_excerpt": "林凡把古镜按回袖口。", "continuity_bridge": {"onstage_characters": ["林凡", "顾青河"]}},
+        recent_summaries=[{"chapter_no": 2, "event_summary": "顾青河开始追问古镜。", "open_hooks": ["古镜到底是什么"]}],
+    )
+
+    assert captured_allow_ai and captured_allow_ai[-1] is True
+    assert (packet.get("importance_handoff") or {}).get("source_chapter") == 2
+    runtime = packet.get("importance_runtime") or {}
+    assert ((runtime.get("selection_lanes") or {}).get("characters") or {}).get("handoff_applied") is True

@@ -2,10 +2,26 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from difflib import SequenceMatcher
 from typing import Any, Iterable
 
+from app.core.config import settings
 from app.services.generation_exceptions import ErrorCodes, GenerationError
+from app.services.llm_runtime import call_json_response, is_openai_enabled, provider_name
 from app.services.prompt_support import compact_json
+from app.services.prompt_templates import payoff_delivery_review_system_prompt, payoff_delivery_review_user_prompt
+
+
+def _raise_ai_required_error(*, stage: str, message: str, detail_reason: str = "", retryable: bool = True) -> None:
+    raise GenerationError(
+        code=ErrorCodes.AI_REQUIRED_UNAVAILABLE,
+        message=f"{message}{('：' + detail_reason) if detail_reason else ''}",
+        stage=stage,
+        retryable=retryable,
+        http_status=503,
+        provider=provider_name(),
+        details={"reason": detail_reason} if detail_reason else None,
+    )
 
 
 FORBIDDEN_REGEX_RULES: list[tuple[str, str]] = [
@@ -91,6 +107,20 @@ PROACTIVE_MARKERS = (
     "压价",
 )
 
+TIME_SKIP_STRONG_MARKERS: tuple[str, ...] = (
+    "次日", "翌日", "第二天", "隔日", "天亮后", "清晨", "入夜后", "午后", "傍晚", "当夜", "一夜后",
+    "半日后", "数日后", "三日后", "回到住处后", "回去后",
+)
+SCENE_TRANSITION_PATTERNS: tuple[str, ...] = (
+    r"次日", r"翌日", r"第二天", r"隔日", r"天亮后", r"清晨", r"入夜后", r"午后", r"傍晚",
+    r"片刻后", r"不多时", r"过了一阵", r"等到", r"随后", r"回到", r"回去", r"出了", r"离开",
+    r"转到", r"赶到", r"折回", r"一路", r"来到", r"进了", r"出了门", r"走出", r"转身去了",
+)
+SCENE_HINT_STOPWORDS: set[str] = {
+    "主角", "对方", "事情", "时候", "地方", "有人", "这个", "那个", "这里", "那里", "然后", "继续", "上一章",
+    "本章", "场景", "动作", "结果", "问题", "局势", "后续", "东西", "东西还", "之后", "之前", "门外的人",
+}
+
 AGENCY_MODE_MARKERS: dict[str, tuple[str, ...]] = {
     "aggressive_probe": ("试探", "逼", "抢先", "追问", "压前", "拦住", "探口风"),
     "strategic_setup": ("故意", "装作", "借着", "顺势", "留半句", "误导", "设局", "不动声色"),
@@ -151,6 +181,18 @@ PROGRESS_KIND_PATTERNS: dict[str, tuple[str, ...]] = {
         r"(?:到了|踏入|转进|摸到)[^。！？!?]{0,18}(?:新地方|内院|后巷|山道|坊市|门内)",
     ),
 }
+PAYOFF_DIRECT_MARKERS: tuple[str, ...] = (
+    "拿到", "换到", "确认", "得手", "到手", "保住", "压回", "压住", "松口", "答应", "翻盘", "坐实", "落袋", "逼退", "稳住",
+)
+PAYOFF_REACTION_MARKERS: tuple[str, ...] = (
+    "变脸", "改口", "迟疑", "愣", "沉默", "安静", "看了", "盯着", "不敢再", "起身", "后退", "收声", "松口", "皱眉", "眼神变了",
+)
+PAYOFF_PUBLIC_SUBJECTS: tuple[str, ...] = (
+    "众人", "旁人", "掌柜", "对方", "围观", "伙计", "同门", "守卫", "人群", "那人", "顾青河", "师兄", "摊主",
+)
+PAYOFF_PRESSURE_MARKERS: tuple[str, ...] = (
+    "盯上", "追查", "起疑", "记住", "后患", "代价", "退路", "麻烦", "风头", "暴露", "更紧", "更高", "留意", "盯梢",
+)
 PROGRESS_KIND_RESULT_GUIDANCE: dict[str, str] = {
     "信息推进": "至少落下一条能复述的新信息：谁说漏嘴了、哪条线索被坐实、哪个判断被主角亲手验证。",
     "关系推进": "至少落下一项关系变化：有人松口、表态、翻脸、默认站队，或双方的条件被改写。",
@@ -301,10 +343,13 @@ def _messy_ai_review(title: str, text: str, metrics: dict[str, Any]) -> dict[str
 
     if not bool(getattr(settings, "chapter_messy_ai_review_enabled", True)):
         return None
-    try:
-        from app.services.llm_runtime import call_json_response
-    except Exception:
-        return None
+    if not is_openai_enabled():
+        _raise_ai_required_error(
+            stage="chapter_style_review",
+            message="章节结构复核需要可用的 AI，当前已停止生成",
+            detail_reason="当前没有可用的 AI 配置或密钥。",
+            retryable=False,
+        )
 
     system_prompt = (
         "你是一名中文网文质检编辑，专门判断正文是否因为句式/结构重复而显得机械。"
@@ -348,8 +393,15 @@ def _messy_ai_review(title: str, text: str, metrics: dict[str, Any]) -> dict[str
             max_output_tokens=int(getattr(settings, "chapter_messy_ai_max_output_tokens", 700) or 700),
             timeout_seconds=int(getattr(settings, "chapter_messy_ai_timeout_seconds", 18) or 18),
         )
-    except Exception:
-        return None
+    except GenerationError:
+        raise
+    except Exception as exc:
+        _raise_ai_required_error(
+            stage="chapter_style_review",
+            message="章节结构复核失败，已停止生成",
+            detail_reason=str(exc),
+            retryable=True,
+        )
     if not isinstance(data, dict):
         return None
     verdict = str(data.get("verdict") or "").strip().lower()
@@ -515,6 +567,399 @@ def _progress_result_is_clear(text: str, progress_kind: str | None, chapter_plan
     return clear, metrics
 
 
+
+def _dedupe_texts(values: Iterable[Any], *, limit: int = 8) -> list[str]:
+    seen: set[str] = set()
+    items: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        norm = re.sub(r"\s+", "", text)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        items.append(text)
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _payoff_plan_token_hints(chapter_plan: dict[str, Any] | None) -> dict[str, list[str]]:
+    if not isinstance(chapter_plan, dict):
+        return {"reward": [], "reaction": [], "pressure": []}
+    planning_packet = (chapter_plan.get("planning_packet") or {}) if isinstance(chapter_plan.get("planning_packet"), dict) else {}
+    selected_card = (planning_packet.get("selected_payoff_card") or {}) if isinstance(planning_packet, dict) else {}
+    reward_source = [
+        chapter_plan.get("reader_payoff"),
+        chapter_plan.get("payoff_or_pressure"),
+        selected_card.get("reader_payoff"),
+    ]
+    reaction_source = [
+        selected_card.get("external_reaction"),
+        chapter_plan.get("payoff_external_reaction"),
+        chapter_plan.get("payoff_or_pressure"),
+    ]
+    pressure_source = [
+        chapter_plan.get("new_pressure"),
+        selected_card.get("new_pressure"),
+        selected_card.get("aftershock"),
+        chapter_plan.get("payoff_or_pressure"),
+    ]
+
+    def collect(source_values: list[Any], marker_pool: tuple[str, ...], *, extra_hint_keys: tuple[str, ...] = ()) -> list[str]:
+        source_text = " ".join(str(item or "") for item in source_values if str(item or "").strip())
+        items: list[str] = [token for token in marker_pool if token in source_text]
+        for token in re.findall(r"[一-鿿]{2,6}", source_text):
+            if token in items:
+                continue
+            if any(key in token for key in extra_hint_keys):
+                items.append(token)
+        return _dedupe_texts(items, limit=8)
+
+    return {
+        "reward": collect(reward_source, PAYOFF_DIRECT_MARKERS, extra_hint_keys=("拿", "换", "得", "保", "确认", "坐实", "翻")),
+        "reaction": collect(reaction_source, PAYOFF_REACTION_MARKERS + PAYOFF_PUBLIC_SUBJECTS, extra_hint_keys=("变脸", "改口", "迟疑", "安静", "眼神", "盯")),
+        "pressure": collect(pressure_source, PAYOFF_PRESSURE_MARKERS, extra_hint_keys=("盯", "查", "疑", "记住", "后患", "代价", "暴露", "风头")),
+    }
+
+
+def assess_payoff_delivery(
+    *,
+    title: str,
+    content: str,
+    chapter_plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    text = (content or "").strip()
+    progress_kind = str((chapter_plan or {}).get("progress_kind") or "").strip() or None
+    progress_clear, progress_metrics = _progress_result_is_clear(text, progress_kind, chapter_plan=chapter_plan)
+    hints = _payoff_plan_token_hints(chapter_plan)
+    reward_hits = sum(text.count(token) for token in hints["reward"] or PAYOFF_DIRECT_MARKERS)
+    reaction_hits = sum(text.count(token) for token in hints["reaction"] or PAYOFF_REACTION_MARKERS)
+    pressure_hits = sum(text.count(token) for token in hints["pressure"] or PAYOFF_PRESSURE_MARKERS)
+    public_subject_hits = sum(text.count(token) for token in PAYOFF_PUBLIC_SUBJECTS)
+    visibility = str((chapter_plan or {}).get("payoff_visibility") or "").strip()
+    selected_level = str((chapter_plan or {}).get("payoff_level") or "").strip().lower() or "medium"
+    visibility_fit = False
+    if visibility == "public":
+        visibility_fit = reaction_hits >= 1 and public_subject_hits >= 1
+    elif visibility == "semi_public":
+        visibility_fit = reaction_hits >= 1 or public_subject_hits >= 1
+    elif visibility == "private":
+        visibility_fit = reward_hits >= 1
+    else:
+        visibility_fit = reward_hits >= 1 and (reaction_hits >= 1 or pressure_hits >= 1)
+
+    score = 0
+    score += 2 if reward_hits >= 2 else (1 if reward_hits >= 1 else 0)
+    score += 1 if reaction_hits >= 1 else 0
+    score += 1 if pressure_hits >= 1 else 0
+    score += 1 if public_subject_hits >= 1 else 0
+    score += 1 if progress_clear else 0
+    score += 1 if visibility_fit else 0
+
+    if selected_level == "strong":
+        level = "high" if score >= 6 else ("medium" if score >= 4 else "low")
+    else:
+        level = "high" if score >= 5 else ("medium" if score >= 3 else "low")
+
+    missed_targets: list[str] = []
+    if reward_hits < 1:
+        missed_targets.append("回报落袋不够明确")
+    if visibility in {"public", "semi_public"} and reaction_hits < 1:
+        missed_targets.append("外部反应显影不足")
+    if pressure_hits < 1:
+        missed_targets.append("后续压力偏弱")
+    if not progress_clear:
+        missed_targets.append("结果句不够清晰")
+
+    if level == "high":
+        verdict = "兑现扎实"
+        runtime_note = "这章爽点已经落地，读者能看到主角拿回了什么，也能看到后续麻烦。"
+    elif level == "medium":
+        verdict = "兑现到位但还可更狠"
+        runtime_note = "这章已经有回报，但外部显影或后续压力还可以再压实一格。"
+    else:
+        verdict = "兑现偏虚"
+        runtime_note = "这章计划里说要爽，但正文里的回报、显影或后患还不够硬。"
+
+    summary_lines = [
+        f"兑现判断：{verdict}（score={score}，reward={reward_hits}，reaction={reaction_hits}，pressure={pressure_hits}）。",
+        f"显影要求：{visibility or 'auto'}；公开反应命中 {public_subject_hits} 处；结果证据 {int(progress_metrics.get('progress_sentence_hits') or 0)} 句。",
+        runtime_note,
+    ]
+    if missed_targets:
+        summary_lines.append("待补点：" + "、".join(missed_targets[:3]) + "。")
+
+    return {
+        "title": title,
+        "selected_level": selected_level,
+        "selected_visibility": visibility or None,
+        "delivery_score": score,
+        "delivery_level": level,
+        "verdict": verdict,
+        "reward_hits": reward_hits,
+        "reaction_hits": reaction_hits,
+        "pressure_hits": pressure_hits,
+        "public_subject_hits": public_subject_hits,
+        "visibility_fit": visibility_fit,
+        "progress_clear": progress_clear,
+        "progress_metrics": progress_metrics,
+        "reward_hints": hints["reward"],
+        "reaction_hints": hints["reaction"],
+        "pressure_hints": hints["pressure"],
+        "missed_targets": missed_targets,
+        "runtime_note": runtime_note,
+        "summary_lines": summary_lines,
+    }
+
+
+def _default_payoff_compensation(local_review: dict[str, Any], chapter_plan: dict[str, Any] | None = None) -> dict[str, Any]:
+    review = local_review or {}
+    selected_level = str(review.get("selected_level") or (chapter_plan or {}).get("payoff_level") or "medium").strip().lower()
+    delivery_level = str(review.get("delivery_level") or "medium").strip().lower()
+    should_compensate = delivery_level == "low" or (delivery_level == "medium" and selected_level == "strong")
+    if delivery_level == "low":
+        priority = "high"
+        note = "上一章兑现偏虚，下一章优先补一次明确落袋与外部显影，不要继续只蓄压。"
+    elif should_compensate:
+        priority = "medium"
+        note = "上一章有回报但还不够扎实，下一章最好再补一次可感兑现。"
+    else:
+        priority = "low"
+        note = "当前兑现不需要额外追账，下一章按正常节奏推进即可。"
+    return {
+        "should_compensate_next_chapter": should_compensate,
+        "compensation_priority": priority,
+        "compensation_note": note,
+    }
+
+
+
+def _payoff_ai_review_trigger_reasons(local_review: dict[str, Any], chapter_plan: dict[str, Any] | None = None) -> list[str]:
+    if not bool(getattr(settings, "payoff_ai_delivery_review_enabled", True)):
+        return []
+    review = local_review or {}
+    reasons: list[str] = []
+    delivery_level = str(review.get("delivery_level") or "").strip().lower()
+    selected_level = str(review.get("selected_level") or (chapter_plan or {}).get("payoff_level") or "").strip().lower()
+    if delivery_level == "low":
+        reasons.append("delivery_low")
+    if delivery_level == "medium" and selected_level == "strong":
+        reasons.append("strong_plan_but_medium_delivery")
+    if not bool(review.get("visibility_fit", True)):
+        reasons.append("visibility_mismatch")
+    if len(review.get("missed_targets") or []) >= 2:
+        reasons.append("multiple_missed_targets")
+    return reasons
+
+
+
+def _normalize_payoff_delivery_ai_payload(data: dict[str, Any] | None, *, local_review: dict[str, Any], chapter_plan: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = data or {}
+    merged = dict(local_review or {})
+    level = str(payload.get("delivery_level") or merged.get("delivery_level") or "medium").strip().lower()
+    if level not in {"low", "medium", "high"}:
+        level = str(merged.get("delivery_level") or "medium").strip().lower() or "medium"
+    merged["delivery_level"] = level
+    merged["verdict"] = str(payload.get("verdict") or merged.get("verdict") or "兑现到位但还可更狠").strip()
+    merged["runtime_note"] = str(payload.get("runtime_note") or merged.get("runtime_note") or "").strip()
+    ai_missed = [str(item).strip() for item in (payload.get("missed_targets") or []) if str(item).strip()]
+    if ai_missed:
+        merged["missed_targets"] = ai_missed[:4]
+    summary_lines = [str(item).strip() for item in (payload.get("summary_lines") or []) if str(item).strip()]
+    if summary_lines:
+        merged["summary_lines"] = summary_lines[:5]
+    comp = _default_payoff_compensation(merged, chapter_plan=chapter_plan)
+    should_compensate = payload.get("should_compensate_next_chapter")
+    if should_compensate is None:
+        should_compensate = comp["should_compensate_next_chapter"]
+    merged["should_compensate_next_chapter"] = bool(should_compensate)
+    priority = str(payload.get("compensation_priority") or comp["compensation_priority"] or "low").strip().lower()
+    if priority not in {"high", "medium", "low"}:
+        priority = comp["compensation_priority"]
+    merged["compensation_priority"] = priority
+    merged["compensation_note"] = str(payload.get("compensation_note") or comp["compensation_note"] or "").strip()
+    return merged
+
+
+
+def review_payoff_delivery_with_ai(
+    *,
+    title: str,
+    content: str,
+    chapter_plan: dict[str, Any] | None,
+    local_review: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(local_review or {})
+    triggers = _payoff_ai_review_trigger_reasons(merged, chapter_plan=chapter_plan)
+    defaults = _default_payoff_compensation(merged, chapter_plan=chapter_plan)
+    merged.update(defaults)
+    merged["review_source"] = "local"
+    merged["ai_review_used"] = False
+    merged["ai_review_trigger_reasons"] = triggers
+    if not triggers:
+        return merged
+    if not is_openai_enabled():
+        _raise_ai_required_error(
+            stage="payoff_delivery_review",
+            message="爽点兑现复核需要可用的 AI，当前已停止生成",
+            detail_reason="当前没有可用的 AI 配置或密钥。",
+            retryable=False,
+        )
+    try:
+        data = call_json_response(
+            stage="payoff_delivery_review",
+            system_prompt=payoff_delivery_review_system_prompt(),
+            user_prompt=payoff_delivery_review_user_prompt(
+                title=title,
+                content=content,
+                chapter_plan=chapter_plan or {},
+                local_review=merged,
+            ),
+            max_output_tokens=max(int(getattr(settings, "payoff_ai_delivery_review_max_output_tokens", 520) or 520), 260),
+            timeout_seconds=max(int(getattr(settings, "payoff_ai_delivery_review_timeout_seconds", 14) or 14), 8),
+        )
+        merged = _normalize_payoff_delivery_ai_payload(data if isinstance(data, dict) else {}, local_review=merged, chapter_plan=chapter_plan)
+        merged["review_source"] = "ai_rechecked"
+        merged["ai_review_used"] = True
+        merged["ai_review_trigger_reasons"] = triggers
+        return merged
+    except GenerationError:
+        raise
+    except Exception as exc:
+        _raise_ai_required_error(
+            stage="payoff_delivery_review",
+            message="爽点兑现复核失败，已停止生成",
+            detail_reason=str(exc),
+            retryable=True,
+        )
+
+
+
+def _paragraph_window(text: str, *, limit: int = 2) -> str:
+    paragraphs = _non_empty_paragraphs(text)
+    return "\n".join(paragraphs[: max(limit, 1)]).strip()
+
+
+def _scene_hint_candidates(values: Iterable[Any]) -> list[str]:
+    seen: set[str] = set()
+    hints: list[str] = []
+    for value in values:
+        raw = str(value or "").strip()
+        if not raw:
+            continue
+        if len(raw) <= 18 and raw not in seen:
+            seen.add(raw)
+            hints.append(raw)
+        for token in re.findall(r"[一-鿿A-Za-z0-9]{2,8}", raw):
+            token = token.strip()
+            if len(token) < 2 or token in SCENE_HINT_STOPWORDS:
+                continue
+            if token not in seen:
+                seen.add(token)
+                hints.append(token)
+            if len(hints) >= 16:
+                return hints
+    return hints[:16]
+
+
+def _scene_overlap_hits(text: str, hints: Iterable[str]) -> list[str]:
+    source = str(text or "")
+    hits: list[str] = []
+    seen: set[str] = set()
+    for hint in hints:
+        token = str(hint or "").strip()
+        if len(token) < 2 or token in seen:
+            continue
+        if token in source:
+            seen.add(token)
+            hits.append(token)
+        if len(hits) >= 6:
+            break
+    return hits
+
+
+def _contains_time_skip_anchor(text: str) -> bool:
+    source = str(text or "")
+    return any(marker in source for marker in TIME_SKIP_STRONG_MARKERS)
+
+
+def _count_scene_transition_cues(text: str) -> tuple[int, list[str]]:
+    paragraphs = _non_empty_paragraphs(text)
+    hits: list[str] = []
+    for paragraph in paragraphs[1:]:
+        if any(re.search(pattern, paragraph) for pattern in SCENE_TRANSITION_PATTERNS):
+            hits.append((paragraph[:41] + "…") if len(paragraph) > 42 else paragraph)
+        if len(hits) >= 4:
+            break
+    return len(hits), hits
+
+
+def assess_scene_continuity(
+    *,
+    content: str,
+    serialized_last: dict[str, Any] | None = None,
+    execution_brief: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    bridge = ((serialized_last or {}).get("continuity_bridge") or {}) if isinstance((serialized_last or {}).get("continuity_bridge"), dict) else {}
+    handoff = (bridge.get("scene_handoff_card") or {}) if isinstance(bridge.get("scene_handoff_card"), dict) else {}
+    scene_card = ((execution_brief or {}).get("scene_execution_card") or {}) if isinstance((execution_brief or {}).get("scene_execution_card"), dict) else {}
+    scene_plan = ((execution_brief or {}).get("scene_sequence_plan") or []) if isinstance((execution_brief or {}).get("scene_sequence_plan"), list) else []
+    scene_count = max(int(scene_card.get("scene_count") or len(scene_plan) or 0), 0)
+    transition_mode = str(scene_card.get("transition_mode") or "").strip()
+    opening = _paragraph_window(content, limit=2)
+    opening_anchor = str(handoff.get("next_opening_anchor") or bridge.get("opening_anchor") or "").strip()
+    unresolved = [str(item).strip() for item in (bridge.get("unresolved_action_chain") or []) if str(item).strip()]
+    carry_over = [str(item).strip() for item in (handoff.get("carry_over_items") or bridge.get("carry_over_clues") or []) if str(item).strip()]
+    onstage = [str(item).strip() for item in (bridge.get("onstage_characters") or []) if str(item).strip()]
+    last_scene = (bridge.get("last_scene_card") or {}) if isinstance(bridge.get("last_scene_card"), dict) else {}
+    hint_tokens = _scene_hint_candidates(unresolved + carry_over + onstage + [last_scene.get("main_scene")])
+    opening_overlap_hits = _scene_overlap_hits(opening, hint_tokens)
+    opening_anchor_similarity = 0.0
+    if opening_anchor and opening:
+        opening_anchor_similarity = round(SequenceMatcher(None, _normalize_line(opening)[:180], _normalize_line(opening_anchor)[:180]).ratio(), 4)
+    must_continue_same_scene = bool(scene_card.get("must_continue_same_scene")) or bool(handoff.get("must_continue_same_scene")) or str(handoff.get("scene_status_at_end") or "").strip() in {"open", "interrupted"}
+    time_skip_allowed = str(handoff.get("allowed_transition") or scene_card.get("allowed_transition") or "").strip() in {"time_skip", "time_skip_allowed"}
+    time_anchor_present = _contains_time_skip_anchor(opening)
+    transition_cue_count, transition_cues = _count_scene_transition_cues(content)
+    expected_transition_count = max(scene_count - 1, 0)
+
+    payload = {
+        "scene_count": scene_count,
+        "scene_transition_mode": transition_mode or None,
+        "scene_opening_anchor": opening_anchor or None,
+        "scene_opening_anchor_similarity": opening_anchor_similarity,
+        "scene_opening_overlap_tokens": opening_overlap_hits,
+        "scene_opening_overlap_hits": len(opening_overlap_hits),
+        "scene_time_anchor_present": time_anchor_present,
+        "scene_transition_cue_count": transition_cue_count,
+        "scene_expected_transition_count": expected_transition_count,
+        "scene_transition_cues": transition_cues,
+        "must_continue_same_scene": must_continue_same_scene,
+    }
+
+    if not bridge and not scene_card:
+        return {"ok": True, **payload}
+
+    issue = None
+    message = ""
+    if must_continue_same_scene and time_anchor_present:
+        issue = "abrupt_scene_cut"
+        message = "上一章场景还没收住，这一章却在开头直接跳时段/跳场，承接断了。"
+    elif must_continue_same_scene and opening_anchor_similarity < 0.12 and not opening_overlap_hits:
+        issue = "missing_opening_continuation"
+        message = "上一章明明还挂着旧场景，这一章开头却没有先吃掉旧场景的动作后果或关键承接物。"
+    elif time_skip_allowed and not time_anchor_present:
+        issue = "time_skip_without_anchor"
+        message = "这章允许时间跳转，但开头没有写出明确时间锚点，场景切换像偷偷滑过去了。"
+    elif scene_count >= 3 and transition_mode in {"soft_cut", "multi_scene_chain", "time_skip_allowed"} and transition_cue_count < 1:
+        issue = "scene_transition_not_visible"
+        message = "本章有多段场景链，但正文里几乎看不见切场过渡，场景像被直接传送。"
+
+    if issue:
+        return {"ok": False, "scene_continuity_issue": issue, "message": message, **payload}
+    return {"ok": True, **payload}
+
+
 def _plan_event_repeated(chapter_plan: dict[str, Any] | None, recent_plan_meta: Iterable[dict[str, Any]] | None) -> str | None:
     current = str((chapter_plan or {}).get("event_type") or "").strip()
     if not current:
@@ -555,7 +1000,10 @@ def build_quality_feedback(exc: GenerationError) -> dict[str, Any]:
         "similarity", "ending_issue", "event_type", "progress_kind", "agency_mode", "agency_mode_label",
         "repeated_sentence_ratio", "repeated_opening_groups", "repeated_opening_hits", "repeated_openings",
         "repeated_ending_groups", "repeated_ending_hits", "repeated_endings", "style_clue_hits",
-        "style_clue_total", "style_clue_kinds", "messy_score",
+        "style_clue_total", "style_clue_kinds", "messy_score", "scene_count", "scene_transition_mode",
+        "scene_continuity_issue", "scene_opening_anchor", "scene_opening_anchor_similarity",
+        "scene_opening_overlap_hits", "scene_opening_overlap_tokens", "scene_time_anchor_present",
+        "scene_transition_cue_count", "scene_expected_transition_count", "scene_transition_cues",
     )
     for key in metrics_keys:
         if key in details and details.get(key) is not None:
@@ -605,6 +1053,17 @@ def build_quality_feedback(exc: GenerationError) -> dict[str, Any]:
         add_check("与近章过于相似")
         add_suggestion("更换开场动作、核心矛盾或收尾方式，避免重复最近章节的桥段和句式。")
     elif exc.code == ErrorCodes.CHAPTER_PROGRESS_TOO_WEAK:
+        if details.get("scene_continuity_issue"):
+            issue = str(details.get("scene_continuity_issue") or "").strip()
+            add_check("场景承接/切换不稳")
+            if issue == "abrupt_scene_cut":
+                add_suggestion("上一章旧场景还没收住时，下一章开头先续接原场景，别直接跳到次日或新地点。")
+            elif issue == "missing_opening_continuation":
+                add_suggestion("开头两段先吃掉上一章的动作后果、关键人物或携带物，再决定是否切场。")
+            elif issue == "time_skip_without_anchor":
+                add_suggestion("允许时间跳转时，前两段要明写时间锚点，并带上上一章留下的关键物或结果。")
+            else:
+                add_suggestion("一章内多场景切换时，把过渡写成可见动作链或时间/地点变化，别让场景像被传送。")
         if details.get("proactive_move") is not None or details.get("agency_mode") is not None:
             add_check("主角主动性不足")
             add_suggestion("前两段先让主角做可见动作、试探、验证、改条件或留后手，不要先站着看。")
@@ -638,6 +1097,8 @@ def validate_chapter_content(
     hook_style: str | None = None,
     chapter_plan: dict[str, Any] | None = None,
     recent_plan_meta: Iterable[dict[str, Any]] | None = None,
+    serialized_last: dict[str, Any] | None = None,
+    execution_brief: dict[str, Any] | None = None,
 ) -> None:
     text = (content or "").strip()
     visible_chars = visible_length(text)
@@ -763,6 +1224,22 @@ def validate_chapter_content(
             http_status=422,
             details={"title": title, "event_type": repeated_event_type},
         )
+
+    if bool(getattr(settings, "chapter_scene_continuity_check_enabled", True)):
+        scene_continuity = assess_scene_continuity(
+            content=text,
+            serialized_last=serialized_last,
+            execution_brief=execution_brief,
+        )
+        if not bool(scene_continuity.get("ok", True)):
+            raise GenerationError(
+                code=ErrorCodes.CHAPTER_PROGRESS_TOO_WEAK,
+                message=str(scene_continuity.get("message") or "本章场景承接或切换不稳，读感发断。"),
+                stage="chapter_quality",
+                retryable=True,
+                http_status=422,
+                details={"title": title, **scene_continuity},
+            )
 
     progress = _progress_signals(text)
     progress_kind = str((chapter_plan or {}).get("progress_kind") or "").strip() or None

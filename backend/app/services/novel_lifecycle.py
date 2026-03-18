@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.models.novel import Novel
 from app.schemas.novel import NovelCreate
 from app.services.generation_exceptions import GenerationError
+from app.services.story_workspace_archive import archive_story_workspace_snapshot
 from app.services.novel_bootstrap import (
     build_base_story_bible,
     build_story_bible,
@@ -64,7 +65,7 @@ BOOTSTRAP_STAGE_DEFINITIONS: list[dict[str, Any]] = [
     {
         "stage": "story_bible_finalize",
         "label": "Story Bible 收口",
-        "description": "整理 Story Bible、长期状态、模板与控制台快照。",
+        "description": "整理 Story Bible、长期状态、模板与 Story Workspace 快照。",
         "step_index": 6,
         "step_total": 6,
     },
@@ -227,6 +228,14 @@ def mark_bootstrap_success(db: Session, *, novel: Novel, story_bible: dict[str, 
     db.add(novel)
     db.commit()
     db.refresh(novel)
+    archive_story_workspace_snapshot(
+        novel,
+        chapter_no=1,
+        phase="after",
+        stage="bootstrap_completed",
+        note="小说初始化完成后的 Story Workspace 快照。",
+        extra={"bootstrap": True},
+    )
     return novel
 
 
@@ -259,6 +268,14 @@ def mark_bootstrap_failure(db: Session, *, novel: Novel, exc: GenerationError) -
     db.add(novel)
     db.commit()
     db.refresh(novel)
+    archive_story_workspace_snapshot(
+        novel,
+        chapter_no=1,
+        phase="failed",
+        stage=exc.stage,
+        note=exc.message,
+        extra={"bootstrap": True, "error": error_payload},
+    )
     return novel
 
 
@@ -287,6 +304,14 @@ def run_bootstrap_pipeline(
     payload: NovelCreate,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> Novel:
+    archive_story_workspace_snapshot(
+        novel,
+        chapter_no=1,
+        phase="before",
+        stage="bootstrap_started",
+        note="小说初始化开始前的 Story Workspace 快照。",
+        extra={"bootstrap": True},
+    )
     _emit_bootstrap_progress(
         progress_callback,
         stage="initial_story_seed",

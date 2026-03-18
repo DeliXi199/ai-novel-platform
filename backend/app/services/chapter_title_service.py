@@ -7,8 +7,8 @@ from difflib import SequenceMatcher
 from typing import Any
 
 from app.core.config import settings
-from app.services.generation_exceptions import GenerationError
-from app.services.openai_story_engine import generate_chapter_title_candidates
+from app.services.generation_exceptions import ErrorCodes, GenerationError
+from app.services.openai_story_engine_summary import generate_chapter_title_candidates
 
 _GENERIC_TITLE_TERMS = {
     "微光", "暗流", "夜半", "余波", "回响", "试探", "旧纸", "旧巷", "旧街", "坊市",
@@ -204,58 +204,6 @@ def _plan_keywords(plan: dict[str, Any] | None, summary: dict[str, Any] | None =
 
 
 
-def _fallback_candidates(
-    *,
-    chapter_no: int,
-    original_title: str,
-    plan: dict[str, Any],
-    summary: dict[str, Any] | None,
-) -> list[dict[str, Any]]:
-    seeds = [
-        summary.get("event_summary") if summary else None,
-        plan.get("goal"),
-        plan.get("conflict"),
-        plan.get("ending_hook"),
-        plan.get("main_scene"),
-        plan.get("proactive_move"),
-    ]
-    candidates: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for seed in seeds:
-        for phrase in _extract_phrases(str(seed or ""), max_count=10):
-            normalized = normalize_title(phrase, chapter_no)
-            if len(normalized) < 2 or normalized in _BAD_TITLE_FRAGMENTS:
-                continue
-            if normalized in seen:
-                continue
-            seen.add(normalized)
-            candidates.append(
-                {
-                    "title": normalized,
-                    "title_type": "结果型",
-                    "angle": "本地回退",
-                    "reason": "从本章推进结果与场景信息中抽取短标题。",
-                    "source": "local_fallback",
-                }
-            )
-            if len(candidates) >= 5:
-                return candidates
-    normalized_original = normalize_title(original_title, chapter_no)
-    if normalized_original not in seen:
-        candidates.insert(
-            0,
-            {
-                "title": normalized_original,
-                "title_type": "原规划标题",
-                "angle": "保底",
-                "reason": "保留章节规划阶段的工作标题。",
-                "source": "original",
-            },
-        )
-    return candidates[:5]
-
-
-
 def score_title_candidate(
     *,
     title: str,
@@ -356,64 +304,60 @@ def score_title_candidate(
 
 
 
-def refine_generated_chapter_title(
+def refine_generated_chapter_title_from_candidates(
     *,
     chapter_no: int,
     original_title: str,
-    content: str,
     plan: dict[str, Any],
     recent_titles: list[str],
     summary: dict[str, Any] | None = None,
-    timeout_seconds: int | None = None,
+    raw_candidates: list[dict[str, Any]] | None = None,
+    ai_attempted: bool = True,
+    ai_succeeded: bool | None = None,
+    ai_error: dict[str, Any] | None = None,
 ) -> TitleRefinementResult:
     recent_clean = [normalize_title(item) for item in recent_titles if normalize_title(item)]
     recent_window = max(int(getattr(settings, "chapter_title_recent_window", 20) or 20), 5)
     recent_window_titles = recent_clean[-recent_window:]
     cooled_terms = build_cooled_terms(recent_window_titles)
 
-    ai_attempted = bool(getattr(settings, "chapter_title_refinement_enabled", True))
-    ai_succeeded = False
-    ai_error: dict[str, Any] | None = None
-    raw_candidates: list[dict[str, Any]] = []
+    raw_candidates = list(raw_candidates or [])
+    if ai_succeeded is None:
+        ai_succeeded = bool(raw_candidates)
 
-    if ai_attempted:
-        try:
-            raw_candidates = generate_chapter_title_candidates(
-                chapter_no=chapter_no,
-                original_title=original_title,
-                chapter_plan=plan,
-                chapter_content=content,
-                recent_titles=recent_window_titles,
-                cooled_terms=cooled_terms,
-                summary=summary or {},
-                candidate_count=max(int(getattr(settings, "chapter_title_refinement_candidate_count", 5) or 5), 3),
-                request_timeout_seconds=timeout_seconds,
-            )
-            ai_succeeded = bool(raw_candidates)
-        except GenerationError as exc:
-            ai_error = {
-                "code": exc.code,
-                "stage": exc.stage,
-                "message": exc.message,
-                "details": exc.details or {},
-            }
-        except Exception as exc:  # pragma: no cover
-            ai_error = {
-                "code": "TITLE_REFINEMENT_UNKNOWN",
-                "stage": "chapter_title_refinement",
-                "message": str(exc),
-                "details": {"error_type": type(exc).__name__},
-            }
+    if not ai_attempted:
+        raise GenerationError(
+            code=ErrorCodes.AI_REQUIRED_UNAVAILABLE,
+            message="章节标题精修必须依赖 AI 候选，当前调用未真正执行 AI。",
+            stage="chapter_title_refinement",
+            retryable=False,
+            http_status=503,
+        )
+
+    if not ai_succeeded:
+        error_message = str((ai_error or {}).get("message") or "AI 标题候选生成未成功完成。")
+        raise GenerationError(
+            code=ErrorCodes.AI_REQUIRED_UNAVAILABLE,
+            message=f"章节标题精修失败：{error_message}",
+            stage="chapter_title_refinement",
+            retryable=bool((ai_error or {}).get("retryable", True)),
+            http_status=int((ai_error or {}).get("http_status", 503) or 503),
+            details=dict(ai_error or {}),
+        )
+
+    if not raw_candidates:
+        raise GenerationError(
+            code=ErrorCodes.MODEL_RESPONSE_INVALID,
+            message="章节标题精修失败：AI 未返回任何可评分候选。",
+            stage="chapter_title_refinement",
+            retryable=True,
+            http_status=422,
+            details={"candidate_count": 0},
+        )
 
     merged_candidates: list[dict[str, Any]] = []
     seen_keys: set[str] = set()
-    fallback_candidates = _fallback_candidates(
-        chapter_no=chapter_no,
-        original_title=original_title,
-        plan=plan,
-        summary=summary,
-    ) if (not ai_succeeded or len(raw_candidates) < 2) else []
-    for item in raw_candidates + fallback_candidates:
+    for item in raw_candidates:
         title = normalize_title(str(item.get("title") or ""), chapter_no)
         key = _title_key(title)
         if not key or key in seen_keys:
@@ -455,8 +399,67 @@ def refine_generated_chapter_title(
         original_title=normalize_title(original_title, chapter_no),
         candidates=scored,
         ai_attempted=ai_attempted,
-        ai_succeeded=ai_succeeded,
+        ai_succeeded=bool(ai_succeeded),
         ai_error=ai_error,
         cooled_terms=cooled_terms,
         recent_titles=recent_window_titles,
+    )
+
+
+
+def refine_generated_chapter_title(
+    *,
+    chapter_no: int,
+    original_title: str,
+    content: str,
+    plan: dict[str, Any],
+    recent_titles: list[str],
+    summary: dict[str, Any] | None = None,
+    timeout_seconds: int | None = None,
+) -> TitleRefinementResult:
+    recent_clean = [normalize_title(item) for item in recent_titles if normalize_title(item)]
+    recent_window = max(int(getattr(settings, "chapter_title_recent_window", 20) or 20), 5)
+    recent_window_titles = recent_clean[-recent_window:]
+    cooled_terms = build_cooled_terms(recent_window_titles)
+
+    ai_attempted = bool(getattr(settings, "chapter_title_refinement_enabled", True))
+    if not ai_attempted:
+        raise GenerationError(
+            code=ErrorCodes.AI_REQUIRED_UNAVAILABLE,
+            message="章节标题精修已配置为 AI 模式，当前未允许关闭后回退到本地候选。",
+            stage="chapter_title_refinement",
+            retryable=False,
+            http_status=503,
+        )
+
+    raw_candidates = generate_chapter_title_candidates(
+        chapter_no=chapter_no,
+        original_title=original_title,
+        chapter_plan=plan,
+        chapter_content=content,
+        recent_titles=recent_window_titles,
+        cooled_terms=cooled_terms,
+        summary=summary or {},
+        candidate_count=max(int(getattr(settings, "chapter_title_refinement_candidate_count", 5) or 5), 3),
+        request_timeout_seconds=timeout_seconds,
+    )
+    if not raw_candidates:
+        raise GenerationError(
+            code=ErrorCodes.MODEL_RESPONSE_INVALID,
+            message="chapter_title_refinement 失败：AI 未返回有效的标题候选。",
+            stage="chapter_title_refinement",
+            retryable=True,
+            http_status=422,
+        )
+
+    return refine_generated_chapter_title_from_candidates(
+        chapter_no=chapter_no,
+        original_title=original_title,
+        plan=plan,
+        recent_titles=recent_titles,
+        summary=summary,
+        raw_candidates=raw_candidates,
+        ai_attempted=True,
+        ai_succeeded=True,
+        ai_error=None,
     )

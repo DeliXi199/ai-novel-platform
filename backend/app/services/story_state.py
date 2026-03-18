@@ -36,7 +36,7 @@ def ensure_story_state_domains(
     active_arc: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = ensure_story_bible_v2_structure(story_bible if isinstance(story_bible, dict) else {})
-    payload.setdefault("control_console", {})
+    payload.setdefault("story_workspace", {})
     payload.setdefault("planning_layers", {})
     payload.setdefault("story_state", {})
     runtime = _ensure_serial_runtime(payload)
@@ -65,9 +65,9 @@ def ensure_workflow_state(
 
 
 
-def ensure_control_console(story_bible: dict[str, Any]) -> dict[str, Any]:
+def ensure_story_workspace(story_bible: dict[str, Any]) -> dict[str, Any]:
     payload = ensure_story_state_domains(story_bible)
-    return payload.setdefault("control_console", {})
+    return payload.setdefault("story_workspace", {})
 
 
 
@@ -107,6 +107,15 @@ def set_live_runtime(story_bible: dict[str, Any], value: dict[str, Any] | None) 
     return story_bible
 
 
+def get_live_runtime_events(story_bible: dict[str, Any] | None, *, limit: int | None = None) -> list[dict[str, Any]]:
+    workflow_state = (story_bible or {}).get("workflow_state") or {}
+    events = workflow_state.get("live_runtime_events") or []
+    events = [item for item in events if isinstance(item, dict)]
+    if isinstance(limit, int) and limit >= 0:
+        return events[-limit:]
+    return events
+
+
 
 def get_current_pipeline(story_bible: dict[str, Any] | None) -> dict[str, Any]:
     workflow_state = (story_bible or {}).get("workflow_state") or {}
@@ -115,14 +124,14 @@ def get_current_pipeline(story_bible: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def get_planning_status(story_bible: dict[str, Any] | None) -> dict[str, Any]:
-    console = (story_bible or {}).get("control_console") or {}
-    return console.get("planning_status") or {}
+    workspace_state = (story_bible or {}).get("story_workspace") or {}
+    return workspace_state.get("planning_status") or {}
 
 
 
 def get_chapter_card_queue(story_bible: dict[str, Any] | None, *, limit: int | None = None) -> list[dict[str, Any]]:
-    console = (story_bible or {}).get("control_console") or {}
-    queue = console.get("chapter_card_queue") or []
+    workspace_state = (story_bible or {}).get("story_workspace") or {}
+    queue = workspace_state.get("chapter_card_queue") or []
     queue = [item for item in queue if isinstance(item, dict)]
     return queue[:limit] if isinstance(limit, int) and limit >= 0 else queue
 

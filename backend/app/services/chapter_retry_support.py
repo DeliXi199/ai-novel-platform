@@ -219,6 +219,8 @@ def _validate_candidate_content(
     recent_full_texts: list[str],
     attempt_plan: dict[str, Any],
     recent_plan_meta: list[dict[str, Any]] | None,
+    serialized_last: dict[str, Any] | None = None,
+    execution_brief: dict[str, Any] | None = None,
 ) -> None:
     validate_chapter_content(
         title=title,
@@ -232,6 +234,8 @@ def _validate_candidate_content(
         hook_style=str(attempt_plan.get("hook_style") or ""),
         chapter_plan=attempt_plan,
         recent_plan_meta=recent_plan_meta,
+        serialized_last=serialized_last,
+        execution_brief=execution_brief,
     )
 
 
@@ -260,6 +264,34 @@ def _record_quality_rejection(
 
 
 
+def _annotate_retry_plan(
+    retry_plan: dict[str, Any],
+    *,
+    repair_type: str,
+    strategy_id: str,
+    source_attempt_no: int,
+    reason: str,
+) -> dict[str, Any]:
+    updated = dict(retry_plan or {})
+    retry_meta = {
+        "reason": repair_type,
+        "strategy_id": strategy_id,
+        "source_attempt_no": int(source_attempt_no or 0),
+        "note": reason,
+    }
+    history = list(updated.get("retry_plan_history") or [])
+    history.append({
+        "repair_type": repair_type,
+        "strategy_id": strategy_id,
+        "source_attempt_no": int(source_attempt_no or 0),
+    })
+    updated["retry_plan_history"] = history[-4:]
+    updated["repair_retry"] = retry_meta
+    if repair_type == "weak_ending":
+        updated["ending_retry"] = retry_meta
+    return updated
+
+
 def _make_success_payload(
     *,
     content: str,
@@ -286,6 +318,7 @@ def _attempt_generate_validated_chapter(
     serialized_active: list[dict[str, Any]],
     recent_full_texts: list[str],
     recent_plan_meta: list[dict[str, Any]] | None = None,
+    execution_brief: dict[str, Any] | None = None,
     chapter_no: int,
     started_at: float,
     novel_ref: Novel | None = None,
@@ -299,6 +332,7 @@ def _attempt_generate_validated_chapter(
         "too_short": max(int(getattr(settings, "chapter_too_short_retry_attempts", 0) or 0), 0),
         "ending_incomplete": max(int(getattr(settings, "chapter_tail_fix_attempts", 0) or 0), 0),
         "weak_ending": max(int(getattr(settings, "chapter_weak_ending_retry_attempts", 0) or 0), 0),
+        "scene_continuity": max(int(getattr(settings, "chapter_scene_continuity_retry_attempts", 0) or 0), 0),
         "too_messy": max(int(getattr(settings, "chapter_too_messy_retry_attempts", 0) or 0), 0),
     }
     idx = 0
@@ -342,6 +376,8 @@ def _attempt_generate_validated_chapter(
                 recent_full_texts=recent_full_texts,
                 attempt_plan=attempt_plan,
                 recent_plan_meta=recent_plan_meta,
+                serialized_last=serialized_last,
+                execution_brief=execution_brief,
             )
             return title, content, draft.model_dump(mode="python"), attempt_plan, targets, {
                 "total_llm_attempts": llm_attempt_count,
@@ -397,6 +433,8 @@ def _attempt_generate_validated_chapter(
                                 recent_full_texts=recent_full_texts,
                                 attempt_plan=attempt_plan,
                                 recent_plan_meta=recent_plan_meta,
+                                serialized_last=serialized_last,
+                                execution_brief=execution_brief,
                             )
                             repair_trace[-1]["status"] = "applied"
                             return title, repaired_result.content, _make_success_payload(
@@ -434,13 +472,19 @@ def _attempt_generate_validated_chapter(
                     break
                 elif repair_action.execution_mode == "insert_retry_attempt" and repair_action.retry_plan:
                     repair_budgets[repair_action.repair_type] -= 1
-                    attempts.insert(idx + 1, repair_action.retry_plan)
+                    retry_plan = _annotate_retry_plan(
+                        repair_action.retry_plan,
+                        repair_type=repair_action.repair_type,
+                        strategy_id=repair_action.strategy_id,
+                        source_attempt_no=attempt_no,
+                        reason=repair_action.reason,
+                    )
+                    attempts.insert(idx + 1, retry_plan)
                     repair_trace[-1]["status"] = "inserted_retry"
                     delay_ms = max(int(repair_action.delay_ms or 0), 0)
                     if delay_ms:
                         time.sleep(delay_ms / 1000.0)
-                    idx += 1
-                    continue
+                    break
                 break
             if idx >= len(attempts) - 1:
                 break

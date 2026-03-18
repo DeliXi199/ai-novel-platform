@@ -45,7 +45,7 @@ def test_bind_character_to_core_slot_sets_long_term_plan_on_card() -> None:
                 "陈掌柜": {"name": "陈掌柜", "role_type": "supporting", "importance_tier": "重要配角", "narrative_priority": 72},
             }
         },
-        "control_console": {"character_cards": {"陈掌柜": {"name": "陈掌柜", "role_type": "supporting"}}},
+        "story_workspace": {"cast_cards": {"陈掌柜": {"name": "陈掌柜", "role_type": "supporting"}}},
     }
 
     slot_id = bind_character_to_core_slot(
@@ -76,7 +76,7 @@ def test_core_cast_guidance_tracks_due_slots_and_active_characters() -> None:
     story_bible = {
         "core_cast_state": state,
         "story_domains": {"characters": {"柳七": {"name": "柳七", "role_type": "supporting", "narrative_priority": 72}}},
-        "control_console": {"character_cards": {"柳七": {"name": "柳七", "role_type": "supporting"}}},
+        "story_workspace": {"cast_cards": {"柳七": {"name": "柳七", "role_type": "supporting"}}},
     }
     bind_character_to_core_slot(story_bible, character_name="柳七", chapter_no=2, protagonist_name="方尘")
     update_core_cast_after_chapter(story_bible, chapter_no=3, onstage_characters=["方尘", "柳七"])
@@ -103,7 +103,7 @@ def test_materialized_anchored_core_cast_prefers_reserved_slot_when_bound() -> N
     story_bible = {
         "core_cast_state": state,
         "story_domains": {"characters": {"陆沉": {"name": "陆沉", "role_type": "protagonist"}}},
-        "control_console": {"character_cards": {"陆沉": {"name": "陆沉", "role_type": "protagonist"}}},
+        "story_workspace": {"cast_cards": {"陆沉": {"name": "陆沉", "role_type": "protagonist"}}},
         "template_library": {"character_templates": []},
     }
 

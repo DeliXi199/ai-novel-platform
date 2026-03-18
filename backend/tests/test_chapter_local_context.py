@@ -93,6 +93,12 @@ def test_build_chapter_plan_packet_selects_local_story_elements(monkeypatch: pyt
     assert packet["character_template_guidance"]["characters"]
     assert packet["recent_continuity_plan"]["current_chapter_bridge"]["must_continue"]
     assert packet["recent_continuity_plan"]["lookahead_handoff"]["handoff_rule"]
+    assert packet["selected_payoff_card"]["card_id"]
+    assert packet["selected_payoff_card"]["reader_payoff"]
+    assert packet["payoff_runtime"]["payoff_card_candidates"]
+    assert packet["payoff_runtime"]["payoff_diagnostics"]["pressure_debt_level"] in {"low", "medium", "high"}
+    assert packet["payoff_runtime"]["payoff_diagnostics"]["summary_lines"]
+    assert packet["selected_elements"]["payoff_mode"] == packet["selected_payoff_card"]["payoff_mode"]
     assert "顾青河" in packet["new_cards_created"]["characters"]
     assert novel.story_bible["planner_state"]["selected_entities_by_chapter"]["3"]["characters"][0] == "林凡"
     assert novel.story_bible["planner_state"]["continuity_packet_cache"]["3"]["carry_in"]["focus_targets"][0] == "林凡"
@@ -148,6 +154,7 @@ def test_chapter_prompt_mentions_planning_packet_and_local_continuity_order() ->
             "planning_packet": {
                 "recent_continuity_plan": {"current_chapter_bridge": {"must_continue": ["门外的人是谁"]}},
                 "selected_elements": {"characters": ["林凡", "顾青河"]},
+                "selected_payoff_card": {"card_id": "payoff_hidden_snatch", "reader_payoff": "主角低成本拿到关键消息", "external_reaction": "顾青河眼神变了", "new_pressure": "有人开始盯上主角"},
                 "continuity_window": {"last_chapter_tail_excerpt": "林凡把古镜按回袖中。"},
             },
         },
@@ -163,5 +170,58 @@ def test_chapter_prompt_mentions_planning_packet_and_local_continuity_order() ->
     assert "正文输入顺序固定为：本章拍表 -> 近章承接规划 -> 本章规划包 -> 最近几章摘要 -> 上一章末尾正文片段" in prompt
     assert "opening_reveal_guidance" in prompt
     assert "recent_continuity_plan 负责把最近两三章接成一条连续线" in prompt
+    assert "【本章爽点执行卡】" in prompt
+    assert "reader_payoff -> external_reaction -> new_pressure/aftershock" in prompt
     assert "selected_elements / relevant_cards 之外的角色、资源、势力" in prompt
     assert "character_template_guidance" in prompt
+
+
+
+def test_build_chapter_plan_packet_uses_ai_payoff_selector_only_on_shortlist(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_ai_reasoning(monkeypatch)
+    monkeypatch.setattr("app.services.payoff_cards.is_openai_enabled", lambda: True)
+    monkeypatch.setattr(
+        "app.services.payoff_cards.call_json_response",
+        lambda **kwargs: {
+            "selected_card_id": "payoff_small_win_mine",
+            "backup_card_id": "payoff_hidden_snatch",
+            "reason": "上一章兑现偏虚，这章更适合先追回一手明确回报。",
+            "execution_hint": "先让林凡拿到可感信息，再让顾青河立刻起疑。",
+        },
+    )
+    novel = _build_novel()
+    novel.story_bible.setdefault("retrospective_state", {})["pending_payoff_compensation"] = {
+        "enabled": True,
+        "source_chapter_no": 2,
+        "target_chapter_no": 3,
+        "priority": "high",
+        "note": "上一章兑现偏虚，这章优先追账。",
+        "should_reduce_pressure": True,
+    }
+    plan = {
+        "chapter_no": 3,
+        "title": "夜市追账",
+        "goal": "林凡借夜市试探追回一口消息与资源上的便宜。",
+        "conflict": "黑市里有人盯上古镜，顾青河也在观察林凡的反应。",
+        "ending_hook": "顾青河忽然意识到林凡已经先拿到了一条关键消息。",
+        "main_scene": "边城黑市",
+        "event_type": "交易类",
+        "progress_kind": "资源推进",
+        "flow_template_id": "small_win_trap",
+        "supporting_character_focus": "顾青河",
+        "payoff_or_pressure": "先拿到一手好处，再把后患抬起来。",
+    }
+    packet = build_chapter_plan_packet(
+        story_bible=novel.story_bible,
+        protagonist_name=novel.protagonist_name,
+        plan=plan,
+        serialized_last={"continuity_bridge": {"onstage_characters": ["林凡", "顾青河"]}},
+        recent_summaries=[
+            {"chapter_no": 1, "event_summary": "林凡确认古镜异动。", "open_hooks": ["古镜为何发热"]},
+            {"chapter_no": 2, "event_summary": "林凡被人压了一手，没有真正回收局面。", "open_hooks": ["黑市有人也在查古镜"]},
+        ],
+    )
+    assert packet["payoff_runtime"]["selector_mode"] == "ai_reviewed"
+    assert packet["selected_payoff_card"]["card_id"] == "payoff_small_win_mine"
+    assert packet["selected_payoff_card"]["ai_execution_hint"].startswith("先让林凡拿到可感信息")
+    assert packet["payoff_compensation"]["priority"] == "high"

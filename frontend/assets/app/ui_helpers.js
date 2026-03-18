@@ -3,7 +3,7 @@ import {
   refs,
   fmtDate,
   cloneTemplateFirstElement,
-} from "/app/assets/app/core.js?v=20260316c";
+} from "/app/assets/app/core.js?v=20260314h";
 
 export function buildChapterCardNode(chapter, lastChapterNo, { onSelectChapter, onOpenReader, onDeleteTailFrom }) {
   const node = cloneTemplateFirstElement(refs.chapterCardTemplate) || document.createElement("article");

@@ -199,9 +199,9 @@ def _character_voice_pack(card: dict[str, Any] | None) -> dict[str, Any]:
     return {key: value for key, value in pack.items() if value not in ("", [], {}, None)}
 
 
-def _recent_retrospective_feedback(console: dict[str, Any]) -> list[dict[str, Any]]:
+def _recent_retrospective_feedback(workspace_state: dict[str, Any]) -> list[dict[str, Any]]:
     feedback: list[dict[str, Any]] = []
-    for item in (console.get("chapter_retrospectives") or [])[-2:]:
+    for item in (workspace_state.get("chapter_retrospectives") or [])[-2:]:
         if not isinstance(item, dict):
             continue
         feedback.append(
@@ -222,8 +222,11 @@ def _build_chapter_retrospective(
     chapter_title: str,
     plan: dict[str, Any],
     summary: Any,
-    console: dict[str, Any],
+    workspace_state: dict[str, Any] | None = None,
+    console: dict[str, Any] | None = None,
+    payoff_delivery: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    workspace_state = workspace_state or console or {}
     event_type = _text(plan.get("event_type"), "试探类")
     progress_kind = _text(plan.get("progress_kind"), "信息推进")
     proactive_move = _text(plan.get("proactive_move"), "")
@@ -233,7 +236,7 @@ def _build_chapter_retrospective(
     support_note = _text(plan.get("supporting_character_note"), "")
     recent_events = [
         _text(item.get("event_type"))
-        for item in (console.get("chapter_retrospectives") or [])[-2:]
+        for item in (workspace_state.get("chapter_retrospectives") or [])[-2:]
         if isinstance(item, dict)
     ]
     repetition_risk = "low"
@@ -276,6 +279,16 @@ def _build_chapter_retrospective(
         corrections.append("下一章把关键配角写出私心、说话习惯和忌讳，不能只留功能。")
     if hook_status == "soft":
         corrections.append("下一章的结尾拉力要更具体，最好落在新威胁、新发现或关键人物动作上。")
+
+    payoff_delivery = payoff_delivery or {}
+    delivery_level = _text(payoff_delivery.get("delivery_level"), "")
+    compensation_note = _text(payoff_delivery.get("compensation_note"))
+    should_compensate = bool(payoff_delivery.get("should_compensate_next_chapter"))
+    compensation_priority = _text(payoff_delivery.get("compensation_priority"), "low")
+    if should_compensate or delivery_level == "low":
+        corrections.insert(0, compensation_note or "上一章兑现偏虚，下一章优先补一次明确落袋与外部显影，不要继续只蓄压。")
+    elif delivery_level == "medium" and compensation_note:
+        corrections.append(compensation_note)
     if not corrections:
         corrections.append("下一章在保持承接的同时，把兑现和人物差异再往前推半步。")
 
@@ -292,6 +305,11 @@ def _build_chapter_retrospective(
         "hook_status": hook_status,
         "repetition_risk": repetition_risk,
         "character_flatness_risk": character_flatness_risk,
+        "payoff_delivery_level": delivery_level,
+        "payoff_delivery_verdict": _text(payoff_delivery.get("verdict")),
+        "should_compensate_next_chapter": should_compensate,
+        "compensation_priority": compensation_priority,
+        "payoff_compensation_note": compensation_note,
         "core_problem": core_problem,
         "next_chapter_correction": " ".join(corrections[:2]),
         "summary": summary_text,

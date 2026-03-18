@@ -1,14 +1,28 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
 from app.core.config import settings
 from app.services.hard_fact_guard_utils import _clean_text
-from app.services.llm_runtime import call_json_response, provider_name
+from app.services.generation_exceptions import ErrorCodes, GenerationError
+from app.services.llm_runtime import call_json_response, is_openai_enabled, provider_name
 from app.services.prompt_support import compact_json, middle_excerpt
 
 logger = logging.getLogger(__name__)
+
+
+def _raise_ai_required_error(*, stage: str, message: str, detail_reason: str = "", retryable: bool = True) -> None:
+    raise GenerationError(
+        code=ErrorCodes.AI_REQUIRED_UNAVAILABLE,
+        message=f"{message}{('：' + detail_reason) if detail_reason else ''}",
+        stage=stage,
+        retryable=retryable,
+        http_status=503,
+        provider=provider_name(),
+        details={"reason": detail_reason} if detail_reason else None,
+    )
 
 
 def _compact_state_for_review(reference_state: dict[str, Any], conflicts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -81,6 +95,8 @@ def _review_hard_fact_conflicts_with_llm(
 ) -> dict[str, Any] | None:
     if not conflicts or not _should_use_llm_hard_fact_review():
         return None
+    if not is_openai_enabled():
+        return None
 
     limited = conflicts[: max(int(getattr(settings, "hard_fact_llm_max_conflicts_per_review", 4) or 4), 1)]
     try:
@@ -101,9 +117,24 @@ def _review_hard_fact_conflicts_with_llm(
         )
         if isinstance(data, dict):
             return data
+        raise GenerationError(
+            code=ErrorCodes.MODEL_RESPONSE_INVALID,
+            message="hard_fact_llm_review 失败：AI 未返回有效的冲突复核结果。",
+            stage="hard_fact_llm_review",
+            retryable=True,
+            http_status=422,
+            provider=provider_name(),
+        )
+    except GenerationError:
+        raise
     except Exception as exc:  # pragma: no cover - network/provider instability
         logger.warning("hard_fact_llm_review failed provider=%s chapter=%s error=%s", provider_name(), chapter_no, exc)
-    return None
+        _raise_ai_required_error(
+            stage="hard_fact_llm_review",
+            message="硬事实冲突复核失败，已停止生成",
+            detail_reason=str(exc),
+            retryable=True,
+        )
 
 
 def _apply_llm_review_to_report(report: dict[str, Any], review: dict[str, Any] | None) -> dict[str, Any]:

@@ -23,14 +23,19 @@ async def lifespan(app: FastAPI):
     if settings.auto_init_db_on_startup:
         init_db()
     if settings.async_task_recover_orphaned_on_startup:
-        db = create_session()
+        db = None
         try:
+            db = create_session()
             recovery = recover_orphaned_tasks_on_startup(db)
             if recovery.get("recovered_count"):
                 logger.warning("Recovered %s orphaned async tasks on startup: %s", recovery.get("recovered_count"), recovery.get("task_ids"))
+        except Exception:
+            logger.warning("Skipping orphaned async task recovery during startup because the database is currently unavailable.", exc_info=True)
         finally:
-            db.close()
+            if db is not None:
+                db.close()
     settings.media_root_path.mkdir(parents=True, exist_ok=True)
+    settings.story_workspace_archive_root_path.mkdir(parents=True, exist_ok=True)
     yield
 
 

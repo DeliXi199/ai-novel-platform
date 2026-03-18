@@ -31,14 +31,14 @@ def test_generate_chapter_continues_body_before_closing(monkeypatch) -> None:
         if stage == "chapter_generation_body":
             return "方尘没有急着离开，而是把镜子按在掌心细看。第一次灌入灵力，镜面毫无反应。"
         if stage == "chapter_generation_continue":
-            return "他换了个角度，再把灵力压成更细的一线，镜面终于浮出一圈极浅的纹路。与此同时，废铁堆后传来一声压得很低的咳嗽。"
+            return "他换了个角度，再把灵力压成更细的一线，镜面终于浮出一圈极浅的纹路。与此同时，废铁堆后传来一声压得很低的咳嗽，他先把这股异动压下，打算明日再看。"
         if stage == "chapter_generation_closing":
             return "方尘指尖一顿，没有回头，只把镜子收入袖中，顺手踢乱脚边铁片，借着杂声慢慢退开。那道藏在暗处的呼吸，却始终没有散。"
         raise AssertionError(stage)
 
     monkeypatch.setattr(ose, "call_text_response", fake_call_text_response)
     monkeypatch.setattr(ose.settings, "chapter_dynamic_continuation_enabled", True, raising=False)
-    monkeypatch.setattr(ose.settings, "chapter_body_max_segments", 3, raising=False)
+    monkeypatch.setattr(ose.settings, "chapter_body_max_segments", 2, raising=False)
     monkeypatch.setattr(ose.settings, "chapter_body_continuation_min_growth_chars", 20, raising=False)
     monkeypatch.setattr(ose.settings, "chapter_body_total_visible_chars_cap", 800, raising=False)
     monkeypatch.setattr(ose.settings, "chapter_body_continuation_target_min_visible_chars", 120, raising=False)
@@ -58,6 +58,7 @@ def test_generate_chapter_continues_body_before_closing(monkeypatch) -> None:
     assert stages == ["chapter_generation_body", "chapter_generation_continue", "chapter_generation_closing"]
     assert draft.body_segments == 2
     assert draft.continuation_rounds == 1
+    assert draft.closing_reason == "ending_still_weak"
     assert "镜面终于浮出一圈极浅的纹路" in draft.content
     assert "那道藏在暗处的呼吸" in draft.content
 
@@ -98,3 +99,42 @@ def test_generate_chapter_stops_continuation_at_segment_cap(monkeypatch) -> None
     assert stages.count("chapter_generation_continue") == 1
     assert draft.body_segments == 2
     assert draft.body_stop_reason == "segment_cap_reached"
+
+
+def test_generate_chapter_skips_closing_when_body_is_ready(monkeypatch) -> None:
+    stages: list[str] = []
+
+    def fake_call_text_response(*, stage, system_prompt, user_prompt, max_output_tokens, timeout_seconds):
+        stages.append(stage)
+        if stage == "chapter_generation_body":
+            return "方尘没有急着离开，而是把镜子按在掌心细看。第一次灌入灵力，镜面毫无反应。"
+        if stage == "chapter_generation_continue":
+            return "他换了个角度，再把灵力压成更细的一线，镜面终于浮出一圈极浅的纹路。与此同时，废铁堆后传来一声压得很低的咳嗽。"
+        raise AssertionError(stage)
+
+    monkeypatch.setattr(ose, "call_text_response", fake_call_text_response)
+    monkeypatch.setattr(ose.settings, "chapter_dynamic_continuation_enabled", True, raising=False)
+    monkeypatch.setattr(ose.settings, "chapter_body_max_segments", 3, raising=False)
+    monkeypatch.setattr(ose.settings, "chapter_body_continuation_min_growth_chars", 20, raising=False)
+    monkeypatch.setattr(ose.settings, "chapter_body_total_visible_chars_cap", 800, raising=False)
+    monkeypatch.setattr(ose.settings, "chapter_body_continuation_target_min_visible_chars", 120, raising=False)
+
+    draft = generate_chapter_from_plan(
+        novel_context={},
+        chapter_plan=_base_plan(),
+        last_chapter={},
+        recent_summaries=[],
+        active_interventions=[],
+        target_words=120,
+        target_visible_chars_min=80,
+        target_visible_chars_max=160,
+        request_timeout_seconds=120,
+    )
+
+    assert stages == ["chapter_generation_body", "chapter_generation_continue"]
+    assert draft.body_segments == 2
+    assert draft.continuation_rounds == 1
+    assert draft.body_stop_reason == "ready_for_closing"
+    assert draft.closing_reason == "body_ready_skip_closing"
+    assert "镜面终于浮出一圈极浅的纹路" in draft.content
+    assert "那道藏在暗处的呼吸" not in draft.content

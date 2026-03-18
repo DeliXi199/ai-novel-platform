@@ -1,3 +1,5 @@
+import pytest
+
 from app.services.openai_story_engine import (
     ArcCastingLayoutReviewPayload,
     apply_arc_casting_layout_review,
@@ -8,10 +10,16 @@ from app.services.prompt_templates import arc_casting_layout_review_user_prompt
 from app.services.stage_review_support import build_stage_character_review_snapshot, store_stage_character_review, summarize_arc_casting_layout_review
 
 
+@pytest.fixture(autouse=True)
+def _mock_arc_review_ai(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.services.openai_story_engine.is_openai_enabled", lambda: True)
+    monkeypatch.setattr("app.services.openai_story_engine.call_json_response", lambda **kwargs: {})
+
+
 def _story_bible() -> dict:
     return {
         "retrospective_state": {"scheduled_review_interval": 5, "last_stage_review_chapter": 0},
-        "control_console": {
+        "story_workspace": {
             "chapter_retrospectives": [
                 {"chapter_no": 1, "title": "起手", "core_problem": "配角戏份偏薄", "next_chapter_correction": "把关键配角私心写实"},
                 {"chapter_no": 2, "title": "试探", "core_problem": "关系推进偏慢", "next_chapter_correction": "把合作关系再推一格"},

@@ -116,7 +116,7 @@ def _record_history(
 
 
 
-def _build_reasoning_prompts(*, packet: dict[str, Any], fallback: dict[str, Any], compact_mode: bool) -> tuple[str, str, dict[str, int]]:
+def _build_reasoning_prompts(*, packet: dict[str, Any], baseline_result: dict[str, Any], compact_mode: bool) -> tuple[str, str, dict[str, int]]:
     local_text_limit = 68 if compact_mode else 96
     local_max_items = 6 if compact_mode else 8
     fallback_text_limit = 56 if compact_mode else 80
@@ -125,14 +125,14 @@ def _build_reasoning_prompts(*, packet: dict[str, Any], fallback: dict[str, Any]
     compact_hard_constraints = compact_json(packet["hard_constraints"], max_depth=2, max_items=8, text_limit=72 if compact_mode else 96)
     compact_soft_goals = compact_json(packet["soft_goals"], max_depth=2, max_items=8, text_limit=72 if compact_mode else 96)
     compact_contract = compact_json(packet["output_contract"], max_depth=3, max_items=7, text_limit=64 if compact_mode else 88)
-    compact_fallback = compact_json(fallback, max_depth=2, max_items=fallback_max_items, text_limit=fallback_text_limit)
+    compact_baseline = compact_json(baseline_result, max_depth=2, max_items=fallback_max_items, text_limit=fallback_text_limit)
 
     system_prompt = (
         "你是一个只在局部约束包内思考的小说规划助手。"
         "只能依据给定 local_context / hard_constraints / soft_goals 输出结果，"
         "不得扩写全书设定，不得发明未被约束包支持的硬事实。"
         "输出必须是 JSON，对不确定处要保守，不得突破硬约束。"
-        "优先返回相对本地回退结果真正需要修改的字段，没必要把整份表重写一遍。"
+        "优先返回相对本地约束种子结果真正需要修改的字段，没必要把整份表重写一遍。"
     )
     user_prompt = (
         "请基于下面的局部约束包完成任务。\n\n"
@@ -142,7 +142,7 @@ def _build_reasoning_prompts(*, packet: dict[str, Any], fallback: dict[str, Any]
         f"【硬约束】\n{compact_hard_constraints}\n\n"
         f"【软目标】\n{compact_soft_goals}\n\n"
         f"【输出契约】\n{compact_contract}\n\n"
-        f"【本地回退结果】\n{compact_fallback}\n\n"
+        f"【本地约束种子结果】\n{compact_baseline}\n\n"
         "请输出 JSON，格式如下：\n"
         "{\n"
         '  "result": { ... },\n'
@@ -150,8 +150,8 @@ def _build_reasoning_prompts(*, packet: dict[str, Any], fallback: dict[str, Any]
         '  "confidence": "high|medium|low",\n'
         '  "constraint_checks": ["列出你遵守了哪些关键硬约束"]\n'
         "}\n"
-        "重要：result 只需要返回相对【本地回退结果】需要改动或补充的字段。"
-        "未写出的资源项与字段，系统会自动沿用本地回退结果。"
+        "重要：result 只需要返回相对【本地约束种子结果】需要改动或补充的字段。"
+        "未写出的资源项与字段，系统会自动沿用本地约束种子结果。"
         "若无需改动，可令 result 为 {}。"
     )
     prompt_stats = {
@@ -168,7 +168,7 @@ def _retryable_constraint_error(exc: GenerationError) -> bool:
 
 
 
-def _build_attempt_error_details(*, exc: GenerationError, attempt: int, attempts_total: int, compact_mode: bool, timeout_seconds: int, max_output_tokens: int, prompt_stats: dict[str, int], fallback: dict[str, Any]) -> dict[str, Any]:
+def _build_attempt_error_details(*, exc: GenerationError, attempt: int, attempts_total: int, compact_mode: bool, timeout_seconds: int, max_output_tokens: int, prompt_stats: dict[str, int], baseline_result: dict[str, Any]) -> dict[str, Any]:
     details = dict(exc.details or {})
     details.update(
         {
@@ -178,7 +178,7 @@ def _build_attempt_error_details(*, exc: GenerationError, attempt: int, attempts
             "reasoning_timeout_seconds": timeout_seconds,
             "reasoning_max_output_tokens": max_output_tokens,
             "reasoning_prompt_stats": prompt_stats,
-            "reasoning_fallback_keys": list((fallback or {}).keys())[:8],
+            "reasoning_seed_keys": list((baseline_result or {}).keys())[:8],
         }
     )
     return details
@@ -196,7 +196,7 @@ def run_local_constraint_reasoning(
     hard_constraints: list[str] | None = None,
     soft_goals: list[str] | None = None,
     output_contract: dict[str, Any] | None = None,
-    fallback_builder: Callable[[dict[str, Any]], dict[str, Any]],
+    baseline_builder: Callable[[dict[str, Any]], dict[str, Any]],
 ) -> dict[str, Any]:
     packet = {
         "task_type": _text(task_type),
@@ -207,7 +207,7 @@ def run_local_constraint_reasoning(
         "soft_goals": [item for item in _safe_list(soft_goals) if _text(item)],
         "output_contract": deepcopy(output_contract or {}),
     }
-    fallback = fallback_builder(packet) or {}
+    baseline_result = baseline_builder(packet) or {}
     if not allow_ai:
         _record_history(
             story_bible=story_bible,
@@ -215,18 +215,16 @@ def run_local_constraint_reasoning(
             scope=scope,
             chapter_no=chapter_no,
             used_ai=False,
-            result=fallback,
+            result={},
             note={"reason": "allow_ai_disabled"},
         )
-        return {
-            "task_type": _text(task_type),
-            "scope": _text(scope),
-            "chapter_no": int(chapter_no or 0),
-            "used_ai": False,
-            "result": fallback,
-            "reason": "本次任务未启用 AI，返回调用方显式允许的本地结果。",
-            "confidence": "local_only",
-        }
+        _raise_ai_required_error(
+            task_type=task_type,
+            scope=scope,
+            chapter_no=chapter_no,
+            detail_reason="调用方未允许本阶段使用 AI。新系统不再返回本地替代结果。",
+            retryable=False,
+        )
     if not _ai_enabled():
         _record_history(
             story_bible=story_bible,
@@ -260,7 +258,7 @@ def run_local_constraint_reasoning(
             max_output_tokens = max(320, min(base_max_output_tokens, 560))
         else:
             max_output_tokens = base_max_output_tokens
-        system_prompt, user_prompt, prompt_stats = _build_reasoning_prompts(packet=packet, fallback=fallback, compact_mode=compact_mode)
+        system_prompt, user_prompt, prompt_stats = _build_reasoning_prompts(packet=packet, baseline_result=baseline_result, compact_mode=compact_mode)
 
         try:
             data = call_json_response(
@@ -271,7 +269,7 @@ def run_local_constraint_reasoning(
                 timeout_seconds=timeout_seconds,
             )
             candidate = data.get("result") if isinstance(data, dict) else None
-            merged = _deep_merge(fallback, candidate if isinstance(candidate, dict) else {})
+            merged = _deep_merge(baseline_result, candidate if isinstance(candidate, dict) else {})
             reason = _text((data or {}).get("reason"), "AI 已在局部约束下生成结果。")
             confidence = _text((data or {}).get("confidence"), "medium")
             _record_history(
@@ -313,7 +311,7 @@ def run_local_constraint_reasoning(
                 timeout_seconds=timeout_seconds,
                 max_output_tokens=max_output_tokens,
                 prompt_stats=prompt_stats,
-                fallback=fallback,
+                baseline_result=baseline_result,
             )
             if attempt >= attempts_total or not _retryable_constraint_error(exc):
                 _record_history(

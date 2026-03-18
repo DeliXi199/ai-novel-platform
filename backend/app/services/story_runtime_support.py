@@ -12,7 +12,7 @@ from app.services.hard_fact_guard import (
 from app.services.story_fact_ledger import _ensure_fact_ledger, _empty_fact_ledger, rebuild_fact_ledger_from_chapters
 from app.services.core_cast_support import empty_core_cast_state, ensure_core_cast_state_shape, summarize_core_cast_state
 
-STORY_BIBLE_SCHEMA_VERSION = 8
+STORY_BIBLE_SCHEMA_VERSION = 9
 STORY_BIBLE_ARCHITECTURE = "story_bible_v2_foundation"
 DEFAULT_SERIAL_DELIVERY_MODE = "live_publish"
 
@@ -110,11 +110,17 @@ def _empty_template_library() -> dict[str, Any]:
     return {
         "character_templates": [],
         "flow_templates": [],
+        "payoff_cards": [],
+        "scene_templates": [],
         "roadmap": {
             "character_template_target_count": 40,
             "flow_template_target_count": 20,
+            "payoff_card_target_count": 20,
+            "scene_template_target_count": 20,
             "current_character_template_count": 0,
             "current_flow_template_count": 0,
+            "current_payoff_card_count": 0,
+            "current_scene_template_count": 0,
             "status": "foundation_ready",
             "note": "先把模板库仓位建出来，后续再扩充完整模板。",
         },
@@ -191,7 +197,7 @@ def _empty_entity_registry() -> dict[str, Any]:
 
 def _empty_importance_state() -> dict[str, Any]:
     return {
-        "version": 3,
+        "version": 4,
         "status": "foundation_ready",
         "unified_dimensions": [
             "binding_depth",
@@ -206,6 +212,7 @@ def _empty_importance_state() -> dict[str, Any]:
         "last_run_used_ai": False,
         "last_ai_eval_by_scope": {},
         "evaluation_history": [],
+        "next_chapter_handoff": {},
         "entity_index": {
             "character": {},
             "resource": {},
@@ -247,7 +254,7 @@ def _deep_fill_missing(target: dict[str, Any], defaults: dict[str, Any]) -> dict
 
 def _empty_long_term_state(delivery_mode: str = DEFAULT_SERIAL_DELIVERY_MODE) -> dict[str, Any]:
     return {
-        "protagonist_state": {},
+        "protagonist_profile": {},
         "character_states": {},
         "resource_states": {},
         "relation_states": {},
@@ -295,7 +302,7 @@ def _ensure_story_bible_meta(story_bible: dict[str, Any]) -> dict[str, Any]:
                 "to_version": STORY_BIBLE_SCHEMA_VERSION,
                 "from_architecture": previous_architecture or None,
                 "to_architecture": STORY_BIBLE_ARCHITECTURE,
-                "reason": "升级到 Story Bible V2 地基结构并保留旧档兼容。",
+                "reason": "升级到 Story Bible V2 正式结构。",
             }
         )
     meta["schema_version"] = STORY_BIBLE_SCHEMA_VERSION
@@ -304,18 +311,13 @@ def _ensure_story_bible_meta(story_bible: dict[str, Any]) -> dict[str, Any]:
         "migration_notes",
         [
             "Story Bible 已升级到统一的 V2 地基结构。",
-            "继续兼容 control_console / cultivation_system / world_bible 等旧字段。",
             "新增 story_domains、power_system、opening_constraints、template_library 等正式域。",
             "新增统一 importance_state，用同一流程跟踪角色/资源/关系/势力的重要性。",
             "新增 constraint_reasoning_state，用局部约束包统一承接判断/生成型推理。",
             "新增 core_cast_state，用名额制规划核心配角的人数、登场阶段与长期关系线。",
+            "story_workspace 运行态字段已统一改名为 protagonist_profile / cast_cards / relationship_journal，不再保留旧工作区字段口径。",
         ],
     )
-    compatibility = meta.setdefault("compatibility_flags", {})
-    compatibility.setdefault("legacy_console_character_cards_supported", True)
-    compatibility.setdefault("legacy_relation_tracks_supported", True)
-    compatibility.setdefault("legacy_world_bible_factions_supported", True)
-    compatibility.setdefault("legacy_cultivation_system_supported", True)
     return story_bible
 
 
@@ -369,13 +371,13 @@ def _current_volume_card(story_bible: dict[str, Any], chapter_no: int) -> dict[s
 
 def _build_initialization_packet(story_bible: dict[str, Any], current_chapter_no: int = 0) -> dict[str, Any]:
     current_volume = _current_volume_card(story_bible, max(current_chapter_no + 1, 1)) if story_bible.get("volume_cards") else {}
-    console = story_bible.get("control_console") or {}
+    workspace_state = story_bible.get("story_workspace") or {}
     opening_constraints = story_bible.get("opening_constraints") or {}
     return {
         "documents_only": True,
         "current_volume_card": current_volume,
-        "near_7_chapter_outline": (console.get("near_7_chapter_outline") or [])[:7],
-        "chapter_card_queue": (console.get("chapter_card_queue") or [])[:7],
+        "near_7_chapter_outline": (workspace_state.get("near_7_chapter_outline") or [])[:7],
+        "chapter_card_queue": (workspace_state.get("chapter_card_queue") or [])[:7],
         "opening_constraints_brief": {
             "chapter_range": opening_constraints.get("opening_phase_chapter_range") or [1, 20],
             "must_gradually_explain": (opening_constraints.get("must_gradually_explain") or [])[:5],
@@ -401,19 +403,19 @@ def _refresh_entity_registry(story_bible: dict[str, Any]) -> None:
 def sync_long_term_state(story_bible: dict[str, Any], novel: Novel, chapters: list[Any] | None = None) -> dict[str, Any]:
     story_bible = ensure_story_bible_v2_structure(deepcopy(story_bible or {}))
     runtime = _ensure_serial_runtime(story_bible)
-    console = story_bible.setdefault("control_console", {})
+    workspace_state = story_bible.setdefault("story_workspace", {})
     _ensure_fact_ledger(story_bible)
     ensure_hard_fact_guard(story_bible)
     domains = story_bible.get("story_domains") or {}
     _refresh_entity_registry(story_bible)
     state = story_bible.setdefault("long_term_state", _empty_long_term_state(runtime.get("delivery_mode", DEFAULT_SERIAL_DELIVERY_MODE)))
-    state["protagonist_state"] = deepcopy(console.get("protagonist_state") or {})
-    state["character_states"] = deepcopy((domains.get("characters") or {}) or (console.get("character_cards") or {}))
+    state["protagonist_profile"] = deepcopy(workspace_state.get("protagonist_profile") or {})
+    state["character_states"] = deepcopy((domains.get("characters") or {}) or (workspace_state.get("cast_cards") or {}))
     state["resource_states"] = deepcopy(domains.get("resources") or {})
     state["relation_states"] = deepcopy(domains.get("relations") or {})
     state["faction_states"] = deepcopy(domains.get("factions") or {})
-    state["foreshadowing_state"] = deepcopy(console.get("foreshadowing") or [])
-    state["history_summaries"] = deepcopy((console.get("recent_progress") or [])[-20:])
+    state["foreshadowing_state"] = deepcopy(workspace_state.get("foreshadowing") or [])
+    state["history_summaries"] = deepcopy((workspace_state.get("recent_progress") or [])[-20:])
     state["volume_progress"] = deepcopy(story_bible.get("volume_cards") or [])
     state["planner_state_snapshot"] = deepcopy(story_bible.get("planner_state") or {})
 

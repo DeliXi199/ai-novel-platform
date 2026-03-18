@@ -551,8 +551,8 @@ def materialize_anchored_core_cast(
     story_bible["core_cast_state"] = state
     domains = story_bible.setdefault("story_domains", {})
     characters = domains.setdefault("characters", {})
-    console = story_bible.setdefault("control_console", {})
-    cards = console.setdefault("character_cards", {})
+    workspace_state = story_bible.setdefault("story_workspace", {})
+    cards = workspace_state.setdefault("cast_cards", {})
     slot_index = {
         _text(slot.get("slot_id")): slot
         for slot in state.get("slots", [])
@@ -615,7 +615,7 @@ def materialize_anchored_core_cast(
             card.setdefault("tracking_level", "core_cast")
             characters[name] = apply_character_template_defaults(card, template)
 
-        legacy_base = {
+        workspace_base = {
             "name": name,
             "role_type": "supporting",
             "relationship_to_protagonist": _text(anchor.get("initial_relation"), "待观察"),
@@ -627,15 +627,15 @@ def materialize_anchored_core_cast(
             "core_cast_anchor_status": _text(anchor.get("anchor_status"), "reserved"),
         }
         if not isinstance(cards.get(name), dict):
-            cards[name] = apply_character_template_defaults(legacy_base, template)
+            cards[name] = apply_character_template_defaults(workspace_base, template)
         else:
-            legacy = cards[name]
-            legacy.setdefault("core_cast_slot_id", slot_id)
-            legacy.setdefault("core_cast_anchor", True)
-            legacy.setdefault("core_cast_anchor_status", _text(anchor.get("anchor_status"), "reserved"))
-            legacy.setdefault("current_plot_function", _text(anchor.get("first_entry_mission"), "作为长期关键配角推进关系线。"))
-            legacy.setdefault("possible_change", _text(anchor.get("long_term_relation_line"), "待后续发展"))
-            cards[name] = apply_character_template_defaults(legacy, template)
+            workspace_card = cards[name]
+            workspace_card.setdefault("core_cast_slot_id", slot_id)
+            workspace_card.setdefault("core_cast_anchor", True)
+            workspace_card.setdefault("core_cast_anchor_status", _text(anchor.get("anchor_status"), "reserved"))
+            workspace_card.setdefault("current_plot_function", _text(anchor.get("first_entry_mission"), "作为长期关键配角推进关系线。"))
+            workspace_card.setdefault("possible_change", _text(anchor.get("long_term_relation_line"), "待后续发展"))
+            cards[name] = apply_character_template_defaults(workspace_card, template)
 
         if isinstance(slot, dict):
             slot.setdefault("reserved_character", name)
@@ -709,16 +709,16 @@ def bind_character_to_core_slot(
         card["importance_tier"] = _text(chosen.get("importance_tier"), _text(card.get("importance_tier"), "重要配角"))
         card["narrative_priority"] = max(int(card.get("narrative_priority") or 0), 86 if card.get("importance_tier") == "核心配角" else 78)
         card["tracking_level"] = "core_cast"
-    console = story_bible.setdefault("control_console", {})
-    cards = console.setdefault("character_cards", {})
-    legacy = cards.get(clean_name)
-    if isinstance(legacy, dict):
-        legacy.setdefault("role_archetype", _text(chosen.get("binding_pattern"), "核心配角"))
-        legacy["core_cast_anchor"] = bool(_text(chosen.get("reserved_character")))
-        legacy["core_cast_anchor_status"] = _text(chosen.get("reservation_status"), "activated")
-        legacy["relationship_to_protagonist"] = _text(chosen.get("initial_relation"), _text(legacy.get("relationship_to_protagonist"), "待观察"))
-        legacy["current_plot_function"] = _text(chosen.get("first_entry_mission"), _text(legacy.get("current_plot_function"), "作为长期关键配角推进关系线。"))
-        legacy["possible_change"] = _text(chosen.get("long_term_relation_line"), _text(legacy.get("possible_change"), "待后续发展"))
+    workspace_state = story_bible.setdefault("story_workspace", {})
+    cards = workspace_state.setdefault("cast_cards", {})
+    workspace_card = cards.get(clean_name)
+    if isinstance(workspace_card, dict):
+        workspace_card.setdefault("role_archetype", _text(chosen.get("binding_pattern"), "核心配角"))
+        workspace_card["core_cast_anchor"] = bool(_text(chosen.get("reserved_character")))
+        workspace_card["core_cast_anchor_status"] = _text(chosen.get("reservation_status"), "activated")
+        workspace_card["relationship_to_protagonist"] = _text(chosen.get("initial_relation"), _text(workspace_card.get("relationship_to_protagonist"), "待观察"))
+        workspace_card["current_plot_function"] = _text(chosen.get("first_entry_mission"), _text(workspace_card.get("current_plot_function"), "作为长期关键配角推进关系线。"))
+        workspace_card["possible_change"] = _text(chosen.get("long_term_relation_line"), _text(workspace_card.get("possible_change"), "待后续发展"))
     return slot_id
 
 

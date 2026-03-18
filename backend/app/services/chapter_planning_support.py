@@ -9,12 +9,14 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.novel import Novel
 from app.schemas.novel import NovelCreate
-from app.services.chapter_context_support import _compact_value, _serialize_recent_summaries, _truncate_text
+from app.services.chapter_context_common import _compact_value, _truncate_text
+from app.services.chapter_context_serialization import _serialize_recent_summaries
 from app.services.chapter_runtime_support import _planning_runtime_meta, _set_live_runtime, _ensure_generation_runtime_budget
 from app.services.generation_exceptions import ErrorCodes, GenerationError
 from app.services.novel_bootstrap import generate_arc_outline_bundle
-from app.services.openai_story_engine import review_stage_characters
+from app.services.openai_story_engine_selection import review_stage_characters
 from app.services.story_character_support import _text
+from app.services.story_workspace_archive import archive_story_workspace_snapshot
 from app.services.stage_review_support import (
     build_stage_character_review_snapshot,
     should_run_stage_character_review,
@@ -124,6 +126,15 @@ def _persist_generation_failure_snapshot(
     novel.status = restore_status
     db.add(novel)
     db.commit()
+    db.refresh(novel)
+    archive_story_workspace_snapshot(
+        novel,
+        chapter_no=next_chapter_no,
+        phase="failed",
+        stage=stage,
+        note=message,
+        extra={"error_details": details or {}, "restore_status": restore_status},
+    )
 
 
 
@@ -211,7 +222,7 @@ def prepare_next_planning_window(db: Session, novel: Novel, *, force: bool = Fal
         _promote_pending_arc_if_needed(story_bible, next_no)
         locked_novel.story_bible = refresh_planning_views(story_bible, locked_novel.current_chapter_no)
 
-        queue = ((locked_novel.story_bible or {}).get("control_console") or {}).get("chapter_card_queue") or []
+        queue = ((locked_novel.story_bible or {}).get("story_workspace") or {}).get("chapter_card_queue") or []
         ready_for_next = bool(queue and int(queue[0].get("chapter_no", 0) or 0) == next_no)
         if force or not ready_for_next or len(queue) < settings.planning_window_size:
             _generate_and_store_pending_arc(
@@ -224,7 +235,7 @@ def prepare_next_planning_window(db: Session, novel: Novel, *, force: bool = Fal
             _promote_pending_arc_if_needed(story_bible, next_no)
             locked_novel.story_bible = refresh_planning_views(story_bible, locked_novel.current_chapter_no)
 
-        queue = ((locked_novel.story_bible or {}).get("control_console") or {}).get("chapter_card_queue") or []
+        queue = ((locked_novel.story_bible or {}).get("story_workspace") or {}).get("chapter_card_queue") or []
         if not queue or int(queue[0].get("chapter_no", 0) or 0) != next_no:
             raise GenerationError(
                 code=ErrorCodes.PLANNING_STAGE_NOT_READY,
@@ -244,8 +255,8 @@ def prepare_next_planning_window(db: Session, novel: Novel, *, force: bool = Fal
             "current_chapter_no": locked_novel.current_chapter_no,
             "next_chapter_no": next_no,
             "workflow_state": (locked_novel.story_bible or {}).get("workflow_state", {}),
-            "planning_status": ((locked_novel.story_bible or {}).get("control_console") or {}).get("planning_status", {}),
-            "chapter_card_queue": ((locked_novel.story_bible or {}).get("control_console") or {}).get("chapter_card_queue", []),
+            "planning_status": ((locked_novel.story_bible or {}).get("story_workspace") or {}).get("planning_status", {}),
+            "chapter_card_queue": ((locked_novel.story_bible or {}).get("story_workspace") or {}).get("chapter_card_queue", []),
         }
     except Exception:
         db.rollback()

@@ -1,119 +1,51 @@
 from __future__ import annotations
 
 from copy import deepcopy
-import json
-from difflib import SequenceMatcher
 from typing import Any
 
-from sqlalchemy.orm import Session
-
 from app.core.config import settings
-from app.models.chapter import Chapter
-from app.models.chapter_summary import ChapterSummary
-from app.models.intervention import Intervention
-from app.models.novel import Novel
-from app.services.hard_fact_guard import compact_hard_fact_guard
-from app.services.importance_evaluator import evaluate_story_elements_importance, sort_entities_by_importance
-from app.services.resource_card_support import build_resource_capability_plan, build_resource_card, ensure_resource_card_structure, infer_resource_plan_entry
-from app.services.story_architecture import ensure_story_architecture
-from app.services.core_cast_support import bind_character_to_core_slot, core_cast_guidance_for_chapter
-from app.services.character_schedule_support import (
-    build_character_relation_schedule_guidance,
-    sort_character_names_by_schedule,
-    sort_relation_names_by_schedule,
+from app.services.chapter_context_common import (
+    _collect_live_hooks,
+    _compact_arc,
+    _compact_scene_card,
+    _compact_scene_handoff_card,
+    _compact_value,
+    _json_size,
+    _normalize_hook,
+    _phase_rule,
+    _published_and_stock_facts,
+    _resolve_opening_reveal_guidance,
+    _select_outline_window,
+    _tail_paragraphs,
+    _truncate_list,
+    _truncate_text,
+    _unique_texts,
 )
+from app.services.chapter_context_serialization import (
+    _extract_continuity_bridge,
+    _load_recent_chapters,
+    _serialize_active_interventions,
+    _serialize_last_chapter,
+    _serialize_novel_context,
+    _serialize_recent_summaries,
+    _validate_fact_ledger_state,
+    serialize_local_novel_context,
+)
+from app.services.chapter_payload_budget import _fit_chapter_payload_budget, _similarity
+from app.services.importance_evaluator import _ai_enabled as _importance_ai_enabled, evaluate_story_elements_importance
+from app.services.constraint_reasoning import _ai_enabled as _constraint_ai_enabled
+from app.services.resource_card_support import build_resource_capability_plan, build_resource_card, ensure_resource_card_structure, infer_resource_plan_entry
+from app.services.core_cast_support import bind_character_to_core_slot, core_cast_guidance_for_chapter
+from app.services.character_schedule_support import build_character_relation_schedule_guidance
 from app.services.card_indexing import apply_card_selection_to_packet, build_card_index_payload, ensure_card_id
 from app.services.stage_review_support import build_chapter_stage_casting_hint
 from app.services.story_character_support import apply_character_template_defaults, character_template_prompt_brief, pick_character_template
+from app.services import payoff_cards as payoff_cards_module
+from app.services.payoff_cards import build_payoff_candidate_index, realize_payoff_selection_from_index
+from app.services.scene_templates import build_scene_template_index
+from app.services.prompt_strategy_library import build_prompt_bundle_index, build_prompt_strategy_index
 
 
-def _truncate_text(value: Any, limit: int) -> str:
-    text = str(value or "").strip()
-    if limit <= 0:
-        return ""
-    if len(text) <= limit:
-        return text
-    if limit == 1:
-        return text[:1]
-    return text[: limit - 1].rstrip() + "…"
-
-
-
-def _truncate_list(values: list[Any] | None, *, max_items: int, item_limit: int) -> list[str]:
-    result: list[str] = []
-    for item in values or []:
-        text = _truncate_text(item, item_limit)
-        if text:
-            result.append(text)
-        if len(result) >= max_items:
-            break
-    return result
-
-
-
-def _compact_value(value: Any, *, text_limit: int = 60) -> Any:
-    if isinstance(value, str):
-        return _truncate_text(value, text_limit)
-    if isinstance(value, (int, float, bool)) or value is None:
-        return value
-    if isinstance(value, list):
-        return [_compact_value(item, text_limit=text_limit) for item in value[:6]]
-    if isinstance(value, dict):
-        compact: dict[str, Any] = {}
-        for idx, (key, item) in enumerate(value.items()):
-            if idx >= 8:
-                break
-            compact[str(key)] = _compact_value(item, text_limit=text_limit)
-        return compact
-    return _truncate_text(value, text_limit)
-
-
-
-def _normalize_hook(hook: Any) -> str:
-    return "".join(str(hook or "").split())
-
-
-
-def _json_size(payload: Any) -> int:
-    return len(json.dumps(payload, ensure_ascii=False))
-
-
-def _resolve_opening_reveal_guidance(story_bible: dict[str, Any], *, chapter_no: int) -> dict[str, Any]:
-    opening_constraints = (story_bible or {}).get("opening_constraints") or {}
-    chapter_range = opening_constraints.get("opening_phase_chapter_range") or [1, 20]
-    if not isinstance(chapter_range, list) or len(chapter_range) < 2:
-        chapter_range = [1, 20]
-    start_no = int(chapter_range[0] or 1)
-    end_no = int(chapter_range[1] or 20)
-    foundation_schedule = opening_constraints.get("foundation_reveal_schedule") or []
-    power_schedule = opening_constraints.get("power_system_reveal_plan") or []
-
-    def _pick_window(items: list[Any]) -> dict[str, Any]:
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            window = item.get("window") or []
-            if isinstance(window, list) and len(window) >= 2:
-                left = int(window[0] or 0)
-                right = int(window[1] or 0)
-                if left <= chapter_no <= right:
-                    return item
-        return items[0] if items and isinstance(items[0], dict) else {}
-
-    foundation = _pick_window(foundation_schedule)
-    power = _pick_window(power_schedule)
-    in_opening = start_no <= int(chapter_no or 0) <= end_no
-    guidance = {
-        "in_opening_phase": in_opening,
-        "chapter_range": [start_no, end_no],
-        "current_window": foundation.get("window") or power.get("window") or [],
-        "must_gradually_explain": _truncate_list(opening_constraints.get("must_gradually_explain"), max_items=5, item_limit=36),
-        "foundation_focus": _truncate_list(foundation.get("focus"), max_items=4, item_limit=28),
-        "foundation_delivery_rule": _truncate_text(foundation.get("delivery_rule"), 88),
-        "power_system_focus": _truncate_list(power.get("reveal_topics") or foundation.get("power_system_focus"), max_items=4, item_limit=30),
-        "reader_visible_goal": _truncate_text(power.get("reader_visible_goal"), 88),
-    }
-    return {key: value for key, value in guidance.items() if value not in ("", [], {}, None)}
 
 
 
@@ -166,405 +98,89 @@ def _build_character_template_guidance(
 
 
 
-def _serialize_recent_summaries(db: Session, novel_id: int) -> list[dict]:
-    rows = (
-        db.query(Chapter, ChapterSummary)
-        .join(ChapterSummary, ChapterSummary.chapter_id == Chapter.id)
-        .filter(Chapter.novel_id == novel_id)
-        .order_by(Chapter.chapter_no.desc())
-        .limit(settings.chapter_recent_summary_limit)
-        .all()
-    )
-    serialized = []
-    for chapter, summary in reversed(rows):
-        serialized.append(
-            {
-                "chapter_no": chapter.chapter_no,
-                "chapter_title": _truncate_text(chapter.title, 30),
-                "event_summary": _truncate_text(summary.event_summary, settings.chapter_recent_summary_chars),
-                "open_hooks": _truncate_list(summary.open_hooks, max_items=3, item_limit=48),
-                "closed_hooks": _truncate_list(summary.closed_hooks, max_items=2, item_limit=48),
-            }
-        )
-    return serialized
 
 
+def _build_schedule_candidate_index(
+    guidance: dict[str, Any] | None,
+    *,
+    core_cast_guidance: dict[str, Any] | None,
+    stage_hint: dict[str, Any] | None,
+) -> dict[str, Any]:
+    payload = guidance or {}
+    appearance = (payload.get("appearance_schedule") or {}) if isinstance(payload, dict) else {}
+    relation = (payload.get("relationship_schedule") or {}) if isinstance(payload, dict) else {}
+    core_cast = core_cast_guidance or {}
+    hint = stage_hint or {}
 
-def _load_recent_chapters(db: Session, novel_id: int, limit: int = 3) -> list[Chapter]:
-    rows = (
-        db.query(Chapter)
-        .filter(Chapter.novel_id == novel_id)
-        .order_by(Chapter.chapter_no.desc())
-        .limit(limit)
-        .all()
-    )
-    return list(reversed(rows))
-
-
-
-def _serialize_active_interventions(active_interventions: list[Intervention]) -> list[dict]:
-    serialized: list[dict[str, Any]] = []
-    for item in active_interventions:
-        constraints = item.parsed_constraints or {}
-        compact: dict[str, Any] = {}
-        if constraints.get("character_focus"):
-            compact["character_focus"] = {
-                str(name): float(weight)
-                for name, weight in list((constraints.get("character_focus") or {}).items())[:4]
-            }
-        if constraints.get("tone"):
-            compact["tone"] = constraints["tone"]
-        if constraints.get("pace"):
-            compact["pace"] = constraints["pace"]
-        if constraints.get("protected_characters"):
-            compact["protected_characters"] = _truncate_list(
-                constraints.get("protected_characters"), max_items=4, item_limit=20
-            )
-        if constraints.get("relationship_direction"):
-            compact["relationship_direction"] = constraints["relationship_direction"]
-        if compact:
-            serialized.append(
-                {
-                    "id": item.id,
-                    "constraints": compact,
-                    "effective_chapter_span": item.effective_chapter_span,
-                }
-            )
-    return serialized
-
-
-
-def _tail_paragraphs(content: str, count: int = 2) -> list[str]:
-    normalized = str(content or "").replace("\r\n", "\n").replace("\r", "\n")
-    blocks = [block.strip() for block in normalized.split("\n\n") if block.strip()]
-    if not blocks:
-        lines = [line.strip() for line in normalized.splitlines() if line.strip()]
-        if lines:
-            blocks = [" ".join(lines)]
-    return [_truncate_text(block, 220) for block in blocks[-count:]]
-
-
-
-def _compact_scene_card(raw: dict[str, Any] | None) -> dict[str, Any]:
-    payload = raw or {}
-    card = {
-        "main_scene": _truncate_text(payload.get("main_scene"), 42),
-        "opening": _truncate_text(payload.get("opening") or payload.get("opening_beat"), 60),
-        "middle": _truncate_text(payload.get("middle") or payload.get("mid_turn"), 60),
-        "ending": _truncate_text(payload.get("ending") or payload.get("closing_image") or payload.get("ending_hook"), 60),
-        "chapter_hook": _truncate_text(payload.get("chapter_hook") or payload.get("ending_hook"), 60),
-        "supporting_character_focus": _truncate_text(payload.get("supporting_character_focus"), 24),
-    }
-    return {key: value for key, value in card.items() if value}
-
-
-
-def _extract_continuity_bridge(last_chapter: Chapter, protagonist_name: str | None = None) -> dict[str, Any]:
-    generation_meta = last_chapter.generation_meta or {}
-    existing = generation_meta.get("continuity_bridge") if isinstance(generation_meta, dict) else None
-    if isinstance(existing, dict) and existing.get("source_chapter_no") == last_chapter.chapter_no:
-        bridge = dict(existing)
-        bridge["source_chapter_no"] = int(last_chapter.chapter_no)
-        bridge["title"] = _truncate_text(last_chapter.title, 30)
-        bridge["tail_excerpt"] = _truncate_text(bridge.get("tail_excerpt") or last_chapter.content[-settings.chapter_last_excerpt_chars :], settings.chapter_last_excerpt_chars)
-        bridge["last_two_paragraphs"] = [_truncate_text(item, 220) for item in (bridge.get("last_two_paragraphs") or [])[:2]]
-        bridge["last_scene_card"] = _compact_scene_card(bridge.get("last_scene_card"))
-        bridge["unresolved_action_chain"] = _truncate_list(bridge.get("unresolved_action_chain"), max_items=3, item_limit=64)
-        bridge["carry_over_clues"] = _truncate_list(bridge.get("carry_over_clues"), max_items=3, item_limit=56)
-        bridge["onstage_characters"] = _truncate_list(bridge.get("onstage_characters"), max_items=5, item_limit=20)
-        bridge["next_opening_instruction"] = _truncate_text(bridge.get("next_opening_instruction"), 72)
-        bridge["opening_anchor"] = _truncate_text(bridge.get("opening_anchor"), 120)
-        return bridge
-
-    chapter_plan = generation_meta.get("chapter_plan") if isinstance(generation_meta, dict) else {}
-    summary = getattr(last_chapter, "summary", None)
-    tail_excerpt = _truncate_text(last_chapter.content[-settings.chapter_last_excerpt_chars :], settings.chapter_last_excerpt_chars)
-    last_two_paragraphs = _tail_paragraphs(last_chapter.content, count=2)
-    onstage_characters: list[str] = []
-    for candidate in [protagonist_name, chapter_plan.get("supporting_character_focus") if isinstance(chapter_plan, dict) else None]:
-        text_value = _truncate_text(candidate, 20)
-        if text_value and text_value not in onstage_characters:
-            onstage_characters.append(text_value)
-    if summary is not None:
-        character_updates = getattr(summary, "character_updates", None) or {}
-        if isinstance(character_updates, dict):
-            for name in list(character_updates.keys())[:4]:
-                if str(name).strip() == "notes":
-                    continue
-                text_value = _truncate_text(name, 20)
-                if text_value and text_value not in onstage_characters:
-                    onstage_characters.append(text_value)
-    unresolved = _truncate_list(getattr(summary, "open_hooks", []) if summary is not None else [], max_items=3, item_limit=64)
-    carry_over_clues = _truncate_list(getattr(summary, "new_clues", []) if summary is not None else [], max_items=3, item_limit=56)
-    opening_instruction = _truncate_text(
-        (chapter_plan.get("opening_beat") if isinstance(chapter_plan, dict) else None) or "下一章开头必须承接上一章最后动作、对话或局势变化。",
-        72,
-    )
-    return {
-        "source_chapter_no": int(last_chapter.chapter_no),
-        "title": _truncate_text(last_chapter.title, 30),
-        "tail_excerpt": tail_excerpt,
-        "last_two_paragraphs": last_two_paragraphs,
-        "last_scene_card": _compact_scene_card(chapter_plan if isinstance(chapter_plan, dict) else {}),
-        "unresolved_action_chain": unresolved,
-        "carry_over_clues": carry_over_clues,
-        "onstage_characters": onstage_characters[:5],
-        "next_opening_instruction": opening_instruction,
-        "opening_anchor": _truncate_text(last_two_paragraphs[-1] if last_two_paragraphs else tail_excerpt, 120),
-    }
-
-
-
-def _serialize_last_chapter(last_chapter: Chapter | None, protagonist_name: str | None = None) -> dict:
-    if not last_chapter:
-        return {}
-    continuity_bridge = _extract_continuity_bridge(last_chapter, protagonist_name=protagonist_name)
-    return {
-        "chapter_no": last_chapter.chapter_no,
-        "title": _truncate_text(last_chapter.title, 30),
-        "tail_excerpt": continuity_bridge.get("tail_excerpt") or _truncate_text(
-            last_chapter.content[-settings.chapter_last_excerpt_chars :],
-            settings.chapter_last_excerpt_chars,
-        ),
-        "continuity_bridge": continuity_bridge,
-        "last_two_paragraphs": continuity_bridge.get("last_two_paragraphs", []),
-        "last_scene_card": continuity_bridge.get("last_scene_card", {}),
-        "unresolved_action_chain": continuity_bridge.get("unresolved_action_chain", []),
-        "onstage_characters": continuity_bridge.get("onstage_characters", []),
-    }
-
-
-
-def _select_outline_window(global_outline: dict[str, Any], target_chapter_no: int) -> list[dict[str, Any]]:
-    acts = global_outline.get("acts", []) if isinstance(global_outline, dict) else []
-    if not acts:
-        return []
-    current_idx = len(acts) - 1
-    for idx, act in enumerate(acts):
-        target_end = int(act.get("target_chapter_end", 0) or 0)
-        if target_chapter_no <= target_end or target_end == 0:
-            current_idx = idx
-            break
-    selected = acts[current_idx : current_idx + 2]
-    compact: list[dict[str, Any]] = []
-    for act in selected:
-        compact.append(
-            {
-                "act_no": int(act.get("act_no", 0) or 0),
-                "title": _truncate_text(act.get("title"), 24),
-                "purpose": _truncate_text(act.get("purpose"), 60),
-                "summary": _truncate_text(act.get("summary"), 90),
-                "target_chapter_end": int(act.get("target_chapter_end", 0) or 0),
-            }
-        )
-    return compact
-
-
-
-def _compact_arc(arc: dict[str, Any] | None) -> dict[str, Any]:
-    if not arc:
-        return {}
-    return {
-        "arc_no": int(arc.get("arc_no", 0) or 0),
-        "start_chapter": int(arc.get("start_chapter", 0) or 0),
-        "end_chapter": int(arc.get("end_chapter", 0) or 0),
-        "focus": _truncate_text(arc.get("focus"), 70),
-        "bridge_note": _truncate_text(arc.get("bridge_note"), 90),
-    }
-
-
-
-def _phase_rule(story_bible: dict[str, Any], next_no: int) -> str:
-    pacing_rules = story_bible.get("pacing_rules", {}) if isinstance(story_bible, dict) else {}
-    if next_no <= 3 and pacing_rules.get("first_three_chapters"):
-        return _truncate_text(pacing_rules["first_three_chapters"], 80)
-    if next_no <= 12 and pacing_rules.get("first_twelve_chapters"):
-        return _truncate_text(pacing_rules["first_twelve_chapters"], 80)
-    return _truncate_text(pacing_rules.get("overall"), 80)
-
-
-
-def _collect_live_hooks(recent_summaries: list[dict[str, Any]]) -> list[str]:
-    closed = {
-        _normalize_hook(hook)
-        for summary in recent_summaries
-        for hook in summary.get("closed_hooks", [])
-        if _normalize_hook(hook)
-    }
-    live_hooks: list[str] = []
-    seen: set[str] = set()
-    for summary in reversed(recent_summaries):
-        for hook in summary.get("open_hooks", []):
-            norm = _normalize_hook(hook)
-            if not norm or norm in closed or norm in seen:
-                continue
-            seen.add(norm)
-            live_hooks.append(_truncate_text(hook, 48))
-            if len(live_hooks) >= settings.chapter_live_hook_limit:
-                return live_hooks
-    return live_hooks
-
-
-
-def _published_and_stock_facts(story_bible: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    ledger = (story_bible.get("fact_ledger") or {}) if isinstance(story_bible, dict) else {}
-    published = ledger.get("published_facts") if isinstance(ledger.get("published_facts"), list) else []
-    stock = ledger.get("stock_facts") if isinstance(ledger.get("stock_facts"), list) else []
-    return published[-8:], stock[-6:]
-
-
-
-def _validate_fact_ledger_state(story_bible: dict[str, Any], next_chapter_no: int) -> None:
-    from app.services.generation_exceptions import ErrorCodes, GenerationError
-
-    long_term_state = (story_bible.get("long_term_state") or {}) if isinstance(story_bible, dict) else {}
-    release_state = (long_term_state.get("chapter_release_state") or {}) if isinstance(long_term_state, dict) else {}
-    published_through = int(release_state.get("published_through", 0) or 0)
-    latest_generated = int(release_state.get("latest_generated_chapter", 0) or 0)
-    ledger = (story_bible.get("fact_ledger") or {}) if isinstance(story_bible, dict) else {}
-    published_facts = ledger.get("published_facts") if isinstance(ledger.get("published_facts"), list) else []
-    if published_facts:
-        published_max = max(int(item.get("chapter_no", 0) or 0) for item in published_facts)
-        if published_max < published_through:
-            raise GenerationError(
-                code=ErrorCodes.PLANNING_DOC_MISSING,
-                message=f"第 {next_chapter_no} 章生成前，已发布事实索引未覆盖到第 {published_through} 章。",
-                stage="fact_ledger_validation",
-                retryable=True,
-                http_status=409,
-                details={"chapter_no": next_chapter_no, "published_through": published_through, "published_fact_max": published_max},
-            )
-    if latest_generated and latest_generated < published_through:
-        raise GenerationError(
-            code=ErrorCodes.PLANNING_DOC_MISSING,
-            message=f"第 {next_chapter_no} 章生成前，发布状态层与已生成章节号不一致。",
-            stage="fact_ledger_validation",
-            retryable=False,
-            http_status=409,
-            details={"chapter_no": next_chapter_no, "latest_generated": latest_generated, "published_through": published_through},
-        )
-
-
-
-def _serialize_novel_context(novel: Novel, next_no: int, recent_summaries: list[dict[str, Any]]) -> dict:
-    story_bible = ensure_story_architecture(novel.story_bible or {}, novel)
-    if settings.chapter_context_mode.lower() != "light":
+    def _compact_character_row(row: dict[str, Any]) -> dict[str, Any]:
+        summary = _truncate_text(row.get("summary") or row.get("reason"), 72)
+        push_direction = _truncate_text(row.get("push_direction"), 24)
         return {
-            "context_mode": "full",
-            "novel_id": novel.id,
-            "title": novel.title,
-            "genre": novel.genre,
-            "premise": novel.premise,
-            "protagonist_name": novel.protagonist_name,
-            "style_preferences": novel.style_preferences,
-            "story_bible": story_bible,
-            "current_chapter_no": novel.current_chapter_no,
-            "target_chapter_no": next_no,
+            "name": _truncate_text(row.get("name"), 20),
+            "type": "schedule_character",
+            "title": _truncate_text(row.get("name"), 20),
+            "summary": summary,
+            "chapter_use": push_direction or summary,
+            "constraint": _truncate_text(row.get("interaction_need"), 18),
+            "priority_hint": _truncate_text(row.get("due_status"), 16),
+            "due_status": _truncate_text(row.get("due_status"), 16),
+            "interaction_need": _truncate_text(row.get("interaction_need"), 18),
+            "push_direction": push_direction,
         }
 
-    style_preferences = _compact_value(novel.style_preferences or {}, text_limit=50)
-    global_direction = _select_outline_window(story_bible.get("global_outline", {}), next_no)
-    active_arc = _compact_arc(story_bible.get("active_arc"))
-    live_hooks = _collect_live_hooks(recent_summaries)
-    console = story_bible.get("control_console") or {}
-    protagonist_state = _compact_value(console.get("protagonist_state", {}), text_limit=56)
-    current_volume = _compact_value(
-        next((card for card in story_bible.get("volume_cards", []) if int(card.get("start_chapter", 0) or 0) <= next_no <= int(card.get("end_chapter", 0) or 10**9)), {}),
-        text_limit=70,
-    )
-    project_card = _compact_value(story_bible.get("project_card", {}), text_limit=70)
-    near_outline = _compact_value(console.get("near_7_chapter_outline", []), text_limit=64)
-    recent_progress = _compact_value((console.get("recent_progress") or [])[-3:], text_limit=72)
-    recent_retrospectives = _compact_value((console.get("chapter_retrospectives") or [])[-2:], text_limit=72)
-    latest_stage_review = _compact_value(console.get("latest_stage_character_review", {}), text_limit=72)
-    character_cards = console.get("character_cards") or {}
-    character_roster = []
-    if isinstance(character_cards, dict):
-        for idx, card in enumerate(character_cards.values()):
-            if idx >= 4 or not isinstance(card, dict):
-                break
-            character_roster.append(
-                {
-                    "name": _truncate_text(card.get("name"), 16),
-                    "role_archetype": _truncate_text(card.get("role_archetype"), 16),
-                    "speech_style": _truncate_text(card.get("speech_style"), 44),
-                    "small_tell": _truncate_text(card.get("small_tell"), 30),
-                    "taboo": _truncate_text(card.get("taboo"), 30),
-                }
-            )
-    foreshadowing = _compact_value([item for item in (console.get("foreshadowing") or []) if item.get("status") != "closed"][:6], text_limit=64)
-    daily_workbench = _compact_value(console.get("daily_workbench", {}), text_limit=72)
-    release_state = _compact_value((((story_bible.get("long_term_state") or {}).get("chapter_release_state") or {})), text_limit=64)
-    serial_rules = _compact_value((story_bible.get("serial_rules") or {}), text_limit=64)
-    published_facts, stock_facts = _published_and_stock_facts(story_bible)
-    fact_ledger = _compact_value({"published_facts": published_facts, "stock_facts": stock_facts}, text_limit=74)
-    hard_fact_guard = _compact_value(compact_hard_fact_guard(story_bible.get("hard_fact_guard", {}), max_items=3), text_limit=76)
-    opening_reveal_guidance = _compact_value(_resolve_opening_reveal_guidance(story_bible, chapter_no=next_no), text_limit=72)
+    def _compact_relation_row(row: dict[str, Any]) -> dict[str, Any]:
+        summary = _truncate_text(row.get("summary") or row.get("reason"), 72)
+        push_direction = _truncate_text(row.get("push_direction"), 24)
+        return {
+            "relation_id": _truncate_text(row.get("relation_id"), 48),
+            "type": "schedule_relation",
+            "title": _truncate_text(row.get("relation_id"), 32),
+            "summary": summary,
+            "chapter_use": push_direction or summary,
+            "constraint": _truncate_text(row.get("interaction_depth"), 18),
+            "priority_hint": _truncate_text(row.get("due_status"), 16),
+            "due_status": _truncate_text(row.get("due_status"), 16),
+            "interaction_depth": _truncate_text(row.get("interaction_depth"), 18),
+            "push_direction": push_direction,
+        }
+
     return {
-        "context_mode": "light",
-        "novel_id": novel.id,
-        "title": _truncate_text(novel.title, 40),
-        "genre": _truncate_text(novel.genre, 20),
-        "premise": _truncate_text(novel.premise, 180),
-        "protagonist_name": _truncate_text(novel.protagonist_name, 20),
-        "style_preferences": style_preferences,
-        "current_chapter_no": novel.current_chapter_no,
-        "target_chapter_no": next_no,
-        "story_memory": {
-            "narrative_style": _truncate_text(story_bible.get("narrative_style"), 40),
-            "core_conflict": _truncate_text(story_bible.get("core_conflict"), 110),
-            "phase_rule": _phase_rule(story_bible, next_no),
-            "forbidden_rules": _truncate_list(story_bible.get("forbidden_rules"), max_items=5, item_limit=28),
-            "continuity_rules": _truncate_list(story_bible.get("continuity_rules"), max_items=5, item_limit=42),
-            "characterization_rules": _truncate_list(story_bible.get("characterization_rules"), max_items=4, item_limit=42),
-            "language_rules": _truncate_list(story_bible.get("language_rules"), max_items=4, item_limit=42),
-            "antagonist_rules": _truncate_list(story_bible.get("antagonist_rules"), max_items=3, item_limit=42),
-            "protagonist_emotion_rules": _truncate_list(story_bible.get("protagonist_emotion_rules"), max_items=3, item_limit=42),
-            "ending_rules": _truncate_list(story_bible.get("ending_rules"), max_items=4, item_limit=42),
-            "global_direction": global_direction,
-            "active_arc": active_arc,
-            "live_hooks": live_hooks,
-            "project_card": project_card,
-            "current_volume_card": current_volume,
-            "protagonist_state": protagonist_state,
-            "near_7_chapter_outline": near_outline,
-            "recent_progress": recent_progress,
-            "recent_retrospectives": recent_retrospectives,
-            "latest_stage_character_review": latest_stage_review,
-            "character_roster": character_roster,
-            "foreshadowing": foreshadowing,
-            "daily_workbench": daily_workbench,
-            "serial_rules": serial_rules,
-            "fact_ledger": fact_ledger,
-            "hard_fact_guard": hard_fact_guard,
-            "opening_reveal_guidance": opening_reveal_guidance,
-            "chapter_release_state": release_state,
-            "workflow_runtime": {
-                "stage": _truncate_text((((story_bible.get("workflow_state") or {}).get("live_runtime") or {}).get("stage")), 24),
-                "note": _truncate_text((((story_bible.get("workflow_state") or {}).get("live_runtime") or {}).get("note")), 72),
-                "failed_stage": _truncate_text((((story_bible.get("workflow_state") or {}).get("live_runtime") or {}).get("failed_stage")), 24),
-                "last_error_message": _truncate_text((((story_bible.get("workflow_state") or {}).get("live_runtime") or {}).get("last_error_message")), 72),
-                "retry_feedback": _compact_value(((((story_bible.get("workflow_state") or {}).get("live_runtime") or {}).get("retry_feedback")) or {}), text_limit=64),
-            },
+        "appearance_candidates": [
+            item for item in [
+                _compact_character_row(row)
+                for row in (appearance.get("priority_characters") or [])[:8]
+                if isinstance(row, dict)
+            ]
+            if item.get("name")
+        ],
+        "relation_candidates": [
+            item for item in [
+                _compact_relation_row(row)
+                for row in (relation.get("priority_relations") or [])[:8]
+                if isinstance(row, dict)
+            ]
+            if item.get("relation_id")
+        ],
+        "schedule_summary": {
+            "due_characters": _truncate_list(appearance.get("due_characters"), max_items=5, item_limit=20),
+            "resting_characters": _truncate_list(appearance.get("resting_characters"), max_items=5, item_limit=20),
+            "due_relations": _truncate_list(relation.get("due_relations"), max_items=5, item_limit=48),
+        },
+        "core_cast_summary": {
+            "focus_character": _truncate_text(core_cast.get("focus_character") or ((core_cast.get("focus_slot") or {}).get("name")), 20),
+            "must_keep": _truncate_list(core_cast.get("must_keep_characters"), max_items=4, item_limit=20),
+            "relationship_focus": _truncate_text(core_cast.get("relationship_focus"), 48),
+        },
+        "stage_casting": {
+            "planned_action": _truncate_text(hint.get("planned_action"), 24),
+            "planned_target": _truncate_text(hint.get("planned_target"), 20),
+            "recommended_action": _truncate_text(hint.get("recommended_action"), 24),
+            "chapter_hint": _truncate_text(hint.get("chapter_hint"), 88),
+            "watchouts": _truncate_list(hint.get("watchouts"), max_items=4, item_limit=24),
         },
     }
 
 
-def _unique_texts(values: list[Any] | None, *, limit: int, item_limit: int = 32) -> list[str]:
-    items: list[str] = []
-    seen: set[str] = set()
-    for value in values or []:
-        text = _truncate_text(value, item_limit)
-        if not text:
-            continue
-        norm = "".join(text.split())
-        if not norm or norm in seen:
-            continue
-        seen.add(norm)
-        items.append(text)
-        if len(items) >= limit:
-            break
-    return items
 
 
 
@@ -587,6 +203,306 @@ def _plan_text_blob(plan: dict[str, Any]) -> str:
         parts.extend([item.get("subject"), item.get("target"), item.get("relation_type"), item.get("status"), item.get("recent_trigger")])
     return "\n".join(str(item or "") for item in parts if str(item or "").strip())
 
+
+_RESOURCE_CAPABILITY_ACTION_TOKENS = [
+    "动用", "催动", "激活", "祭出", "引动", "试探", "试着", "试出", "共鸣", "发热", "异动", "照出", "映出",
+    "炼化", "炼制", "服下", "吞下", "灌注", "破局", "护身", "保命", "压价", "交换", "支付", "驱动", "探查", "窥测",
+]
+
+
+def _resource_text_hit(text: str, candidates: list[str]) -> bool:
+    blob = "".join(str(text or "").split())
+    return any(candidate and "".join(candidate.split()) in blob for candidate in candidates)
+
+
+def _resource_capability_card_signature(card: dict[str, Any], *, fallback_name: str, owner: str) -> dict[str, Any]:
+    normalized = ensure_resource_card_structure(card, fallback_name=fallback_name, owner=owner)
+    unlock_state = normalized.get("unlock_state") or {}
+    last_trigger = unlock_state.get("last_trigger") or {}
+    last_update = normalized.get("last_capability_update") or {}
+    known = _unique_texts(list(unlock_state.get("known_abilities") or []), limit=6, item_limit=24)
+    locked = _unique_texts(list(unlock_state.get("locked_abilities") or []), limit=6, item_limit=24)
+    return {
+        "quantity": int(normalized.get("quantity") or 0),
+        "resource_scope": _truncate_text(normalized.get("resource_scope"), 12),
+        "importance_tier": _truncate_text(normalized.get("importance_tier") or normalized.get("resource_tier"), 12),
+        "unlock_level": _truncate_text(unlock_state.get("level"), 16),
+        "known_abilities": known,
+        "locked_abilities": locked,
+        "cooldown": _truncate_text(unlock_state.get("cooldown"), 24),
+        "last_trigger_chapter": int((last_trigger or {}).get("chapter_no") or 0),
+        "last_capability_update_chapter": int((last_update or {}).get("chapter_no") or 0),
+        "resource_kind": _truncate_text(normalized.get("resource_kind"), 16),
+    }
+
+
+def _is_key_resource(card: dict[str, Any]) -> bool:
+    normalized = ensure_resource_card_structure(card, fallback_name=_truncate_text(card.get("name"), 24), owner=_truncate_text(card.get("owner"), 24))
+    scope = _truncate_text(normalized.get("resource_scope"), 12)
+    tier = _truncate_text(normalized.get("importance_tier") or normalized.get("resource_tier"), 12)
+    score = int(normalized.get("importance_score") or 0)
+    return scope == "核心资源" or tier in {"核心级", "重要级"} or score >= 72
+
+
+def _latest_resource_capability_plan_cache_entry(planner_state: dict[str, Any], *, chapter_no: int) -> tuple[int, dict[str, Any]] | tuple[None, None]:
+    cache = planner_state.setdefault("resource_capability_plan_cache", {})
+    candidates: list[tuple[int, dict[str, Any]]] = []
+    for key, value in cache.items():
+        if not isinstance(value, dict):
+            continue
+        try:
+            cached_chapter = int(key)
+        except (TypeError, ValueError):
+            continue
+        if cached_chapter >= int(chapter_no or 0):
+            continue
+        candidates.append((cached_chapter, value))
+    if not candidates:
+        return None, None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0]
+
+
+def _resource_capability_plan_requires_resource_action(plan_text: str, selected_resources: list[str], resources: dict[str, Any]) -> tuple[bool, list[str]]:
+    blob = "".join(str(plan_text or "").split())
+    if not blob or not selected_resources:
+        return False, []
+    matched_resources: list[str] = []
+    has_action_token = any(token in blob for token in _RESOURCE_CAPABILITY_ACTION_TOKENS)
+    for name in selected_resources:
+        card = ensure_resource_card_structure(resources.get(name) or {}, fallback_name=name, owner="")
+        ability_tokens = _unique_texts(
+            list(card.get("core_functions") or [])
+            + list(card.get("activation_rules") or [])
+            + [card.get("ability_summary")],
+            limit=8,
+            item_limit=18,
+        )
+        direct_name_hit = _resource_text_hit(blob, [name])
+        ability_hit = _resource_text_hit(blob, ability_tokens)
+        if ability_hit or (has_action_token and direct_name_hit):
+            matched_resources.append(name)
+    return bool(matched_resources), matched_resources[:4]
+
+
+def _resource_capability_continuity_signal(selected_resources: list[str], resources: dict[str, Any], serialized_last: dict[str, Any], recent_summaries: list[dict[str, Any]]) -> tuple[bool, list[str]]:
+    bridge = serialized_last.get("continuity_bridge") if isinstance(serialized_last.get("continuity_bridge"), dict) else {}
+    text_parts: list[str] = [
+        serialized_last.get("tail_excerpt"),
+        bridge.get("opening_anchor"),
+        *list(bridge.get("unresolved_action_chain") or []),
+        *list(bridge.get("carry_over_clues") or []),
+    ]
+    if recent_summaries:
+        latest = recent_summaries[-1] if isinstance(recent_summaries[-1], dict) else {}
+        text_parts.extend(list((latest.get("open_hooks") or [])))
+        text_parts.append(latest.get("event_summary") or latest.get("summary"))
+    blob = "\n".join(str(item or "") for item in text_parts if str(item or "").strip())
+    if not blob:
+        return False, []
+    matched: list[str] = []
+    for name in selected_resources:
+        card = ensure_resource_card_structure(resources.get(name) or {}, fallback_name=name, owner="")
+        hint_tokens = _unique_texts(
+            [name, card.get("ability_summary"), *list(card.get("core_functions") or []), *list(card.get("activation_rules") or [])],
+            limit=8,
+            item_limit=18,
+        )
+        if _resource_text_hit(blob, hint_tokens):
+            matched.append(name)
+    return bool(matched), matched[:4]
+
+
+def _detect_resource_capability_refresh_signals(
+    *,
+    story_bible: dict[str, Any],
+    protagonist_name: str,
+    plan: dict[str, Any],
+    resources: dict[str, Any],
+    selected_resources: list[str],
+    recent_summaries: list[dict[str, Any]],
+    serialized_last: dict[str, Any],
+    chapter_no: int,
+) -> dict[str, Any]:
+    planner_state = story_bible.setdefault("planner_state", {})
+    current_selected = _unique_texts(list(selected_resources), limit=12, item_limit=24)
+    current_signatures: dict[str, Any] = {
+        name: _resource_capability_card_signature(resources.get(name) or {}, fallback_name=name, owner=protagonist_name)
+        for name in current_selected
+    }
+    cached_chapter, cached_plan = _latest_resource_capability_plan_cache_entry(planner_state, chapter_no=chapter_no)
+    runtime: dict[str, Any] = {
+        "cache_enabled": bool(settings.resource_capability_plan_cache_enabled),
+        "cache_hit": False,
+        "cache_status": "ai_regenerated",
+        "refresh": True,
+        "reasons": [],
+        "matched_resources": [],
+        "source_chapter": cached_chapter,
+        "selected_resources": current_selected,
+        "resource_state_signatures": current_signatures,
+        "plan_requires_resource_capability": False,
+        "continuity_signal": False,
+    }
+    if not settings.resource_capability_plan_cache_enabled:
+        runtime["reasons"] = ["cache_disabled"]
+        return runtime
+    if not isinstance(cached_plan, dict) or not cached_plan:
+        runtime["reasons"] = ["cache_miss"]
+        return runtime
+
+    runtime["cache_hit"] = True
+    cached_meta = cached_plan.get("__meta__") if isinstance(cached_plan.get("__meta__"), dict) else {}
+    cached_selected = _unique_texts(
+        list(cached_meta.get("selected_resources") or [name for name in cached_plan.keys() if name != "__meta__"]),
+        limit=12,
+        item_limit=24,
+    )
+    reasons: list[str] = []
+    matched_resources: list[str] = []
+    new_resources = [name for name in current_selected if name not in cached_selected]
+    removed_resources = [name for name in cached_selected if name not in current_selected]
+    if new_resources:
+        reasons.extend([f"new_resource:{name}" for name in new_resources[:3]])
+        matched_resources.extend(new_resources[:3])
+    if removed_resources:
+        reasons.extend([f"resource_selection_changed:{name}" for name in removed_resources[:3]])
+    force_interval = max(int(settings.resource_capability_plan_force_refresh_interval_chapters or 0), 0)
+    if force_interval and cached_chapter is not None and int(chapter_no or 0) - int(cached_chapter or 0) >= force_interval:
+        reasons.append(f"refresh_interval:{cached_chapter}->{chapter_no}")
+
+    cached_signatures = cached_meta.get("resource_state_signatures") if isinstance(cached_meta.get("resource_state_signatures"), dict) else {}
+    recent_trigger_window = max(int(settings.resource_capability_plan_recent_trigger_window or 1), 1)
+    for name in current_selected:
+        card = resources.get(name) or {}
+        current_signature = current_signatures.get(name) or {}
+        if not _is_key_resource(card):
+            continue
+        previous_signature = cached_signatures.get(name) if isinstance(cached_signatures, dict) else None
+        if not isinstance(previous_signature, dict):
+            reasons.append(f"key_resource_uncached:{name}")
+            matched_resources.append(name)
+            continue
+        unlock_fields = ["unlock_level", "known_abilities", "locked_abilities"]
+        if any(previous_signature.get(field) != current_signature.get(field) for field in unlock_fields):
+            reasons.append(f"unlock_state_changed:{name}")
+            matched_resources.append(name)
+        if previous_signature.get("cooldown") != current_signature.get("cooldown"):
+            reasons.append(f"cooldown_changed:{name}")
+            matched_resources.append(name)
+        last_trigger_chapter = int(current_signature.get("last_trigger_chapter") or 0)
+        last_update_chapter = int(current_signature.get("last_capability_update_chapter") or 0)
+        if int(chapter_no or 0) - max(last_trigger_chapter, last_update_chapter) <= recent_trigger_window and max(last_trigger_chapter, last_update_chapter) > 0:
+            reasons.append(f"recent_capability_use:{name}")
+            matched_resources.append(name)
+
+    plan_text = _plan_text_blob(plan)
+    plan_requires_resource_capability, plan_matched = _resource_capability_plan_requires_resource_action(plan_text, current_selected, resources)
+    if plan_requires_resource_capability:
+        reasons.append("plan_requires_resource_capability")
+        matched_resources.extend(plan_matched)
+
+    continuity_signal, continuity_matched = _resource_capability_continuity_signal(current_selected, resources, serialized_last, recent_summaries)
+    if continuity_signal:
+        reasons.append("continuity_bridge_mentions_resource")
+        matched_resources.extend(continuity_matched)
+
+    refresh = bool(reasons)
+    runtime.update(
+        {
+            "refresh": refresh,
+            "reasons": reasons or ["stable_reuse"],
+            "matched_resources": _unique_texts(matched_resources, limit=6, item_limit=24),
+            "plan_requires_resource_capability": plan_requires_resource_capability,
+            "continuity_signal": continuity_signal,
+        }
+    )
+    if not refresh:
+        runtime["cache_status"] = "reused"
+    return runtime
+
+
+
+def _build_resource_capability_plan_with_cache(
+    *,
+    story_bible: dict[str, Any],
+    protagonist_name: str,
+    plan: dict[str, Any],
+    resources: dict[str, Any],
+    selected_resources: list[str],
+    recent_summaries: list[dict[str, Any]],
+    serialized_last: dict[str, Any],
+    chapter_no: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    planner_state = story_bible.setdefault("planner_state", {})
+    runtime = _detect_resource_capability_refresh_signals(
+        story_bible=story_bible,
+        protagonist_name=protagonist_name,
+        plan=plan,
+        resources=resources,
+        selected_resources=selected_resources,
+        recent_summaries=recent_summaries,
+        serialized_last=serialized_last,
+        chapter_no=chapter_no,
+    )
+    cached_chapter, cached_plan = _latest_resource_capability_plan_cache_entry(planner_state, chapter_no=chapter_no)
+    if runtime.get("cache_hit") and not runtime.get("refresh") and isinstance(cached_plan, dict):
+        reused_plan: dict[str, Any] = {"__meta__": {}}
+        for name in runtime.get("selected_resources") or []:
+            if name == "__meta__":
+                continue
+            entry = cached_plan.get(name)
+            if isinstance(entry, dict):
+                reused_plan[name] = deepcopy(entry)
+        cached_meta = cached_plan.get("__meta__") if isinstance(cached_plan.get("__meta__"), dict) else {}
+        meta = deepcopy(cached_meta)
+        meta.update(
+            {
+                "reasoning_mode": "cache_reuse",
+                "used_ai": False,
+                "source_used_ai": bool(cached_meta.get("used_ai") or cached_meta.get("source_used_ai")),
+                "cache_hit": True,
+                "cache_status": "reused",
+                "reused_from_chapter": cached_chapter,
+                "selected_count": len(runtime.get("selected_resources") or []),
+                "selected_resources": list(runtime.get("selected_resources") or []),
+                "resource_state_signatures": deepcopy(runtime.get("resource_state_signatures") or {}),
+                "refresh_reasons": list(runtime.get("reasons") or []),
+                "generated_for_chapter": chapter_no,
+            }
+        )
+        reused_plan["__meta__"] = meta
+        return reused_plan, runtime
+
+    result = build_resource_capability_plan(
+        story_bible=story_bible,
+        protagonist_name=protagonist_name,
+        plan=plan,
+        resources=resources,
+        selected_resources=selected_resources,
+        recent_summaries=recent_summaries,
+        serialized_last=serialized_last,
+        allow_ai=True,
+    )
+    if not isinstance(result, dict):
+        result = {"__meta__": {}}
+    meta = result.setdefault("__meta__", {})
+    used_ai = bool(meta.get("used_ai"))
+    runtime["cache_status"] = "ai_regenerated" if used_ai else "local_regenerated"
+    meta.update(
+        {
+            "cache_hit": bool(runtime.get("cache_hit")),
+            "cache_status": runtime.get("cache_status"),
+            "reused_from_chapter": None,
+            "selected_count": len(runtime.get("selected_resources") or []),
+            "selected_resources": list(runtime.get("selected_resources") or []),
+            "resource_state_signatures": deepcopy(runtime.get("resource_state_signatures") or {}),
+            "refresh_reasons": list(runtime.get("reasons") or []),
+            "generated_for_chapter": chapter_no,
+            "source_used_ai": used_ai,
+        }
+    )
+    return result, runtime
 
 
 def _planned_name_list(value: Any, *, limit: int, item_limit: int = 24) -> list[str]:
@@ -743,8 +659,8 @@ def _ensure_planned_character_card(
         return False
     domains = story_bible.setdefault("story_domains", {})
     characters = domains.setdefault("characters", {})
-    console = story_bible.setdefault("control_console", {})
-    cards = console.setdefault("character_cards", {})
+    workspace_state = story_bible.setdefault("story_workspace", {})
+    cards = workspace_state.setdefault("cast_cards", {})
     created = False
     template = pick_character_template(
         story_bible,
@@ -961,21 +877,108 @@ def _collect_relevant_relations(relations: dict[str, Any], characters: list[str]
     return selected_keys, selected_cards
 
 
+def _active_importance_handoff(story_bible: dict[str, Any], *, chapter_no: int) -> dict[str, Any]:
+    if not bool(getattr(settings, "importance_handoff_enabled", True)):
+        return {}
+    importance_state = (story_bible.get("importance_state") or {}) if isinstance(story_bible, dict) else {}
+    handoff = (importance_state.get("next_chapter_handoff") or {}) if isinstance(importance_state, dict) else {}
+    if not isinstance(handoff, dict) or not handoff:
+        return {}
+    try:
+        confidence = float(handoff.get("confidence", 0.0) or 0.0)
+    except Exception:
+        confidence = 0.0
+    min_confidence = float(getattr(settings, "importance_handoff_min_confidence", 0.55) or 0.55)
+    if confidence < min_confidence:
+        return {}
+    source_chapter = int(handoff.get("source_chapter", 0) or 0)
+    if source_chapter <= 0 or int(chapter_no or 0) <= source_chapter:
+        return {}
+    decay_window = max(int(getattr(settings, "importance_handoff_decay_chapters", 2) or 2), 1)
+    age = int(chapter_no or 0) - source_chapter
+    if age > decay_window:
+        return {}
+    return handoff
+
+
+
+def _planning_importance_allow_ai(story_bible: dict[str, Any], *, chapter_no: int) -> bool:
+    return True
+
+
+
+def _handoff_bias_map(entity_type: str, handoff: dict[str, Any] | None, *, chapter_no: int) -> dict[str, float]:
+    if not isinstance(handoff, dict) or not handoff:
+        return {}
+    source_chapter = int(handoff.get("source_chapter", 0) or 0)
+    if source_chapter <= 0:
+        return {}
+    age = max(int(chapter_no or 0) - source_chapter, 1)
+    decay_window = max(int(getattr(settings, "importance_handoff_decay_chapters", 2) or 2), 1)
+    if age > decay_window:
+        return {}
+    decay_factor = 1.0 if age <= 1 else max(0.45, 1.0 - 0.35 * (age - 1))
+    must_bonus = float(getattr(settings, "importance_handoff_must_carry_bonus", 20.0) or 20.0)
+    warm_bonus = float(getattr(settings, "importance_handoff_warm_bonus", 10.0) or 10.0)
+    cooldown_penalty = float(getattr(settings, "importance_handoff_cooldown_penalty", 8.0) or 8.0)
+    defer_penalty = float(getattr(settings, "importance_handoff_defer_penalty", 5.0) or 5.0)
+    bias: dict[str, float] = {}
+    buckets = {
+        must_bonus: ((handoff.get("must_carry") or {}).get(entity_type) or []),
+        warm_bonus: ((handoff.get("warm") or {}).get(entity_type) or []),
+        -cooldown_penalty: ((handoff.get("cooldown") or {}).get(entity_type) or []),
+        -defer_penalty: ((handoff.get("defer") or {}).get(entity_type) or []),
+    }
+    for delta, names in buckets.items():
+        for raw in names:
+            name = _truncate_text(raw, 48)
+            if not name:
+                continue
+            bias[name] = bias.get(name, 0.0) + float(delta) * decay_factor
+    return bias
+
+
+
+def _sort_names_with_handoff_bias(container: dict[str, Any], names: list[str], *, mode: str, entity_type: str, handoff: dict[str, Any] | None, chapter_no: int) -> list[str]:
+    ordered_names = [name for name in names if name in container]
+    if not ordered_names:
+        return []
+    score_key = {
+        "mainline": "importance_mainline_rank_score",
+        "activation": "importance_activation_rank_score",
+        "exploration": "importance_exploration_score",
+        "combined": "importance_soft_rank_score",
+    }.get(mode, "importance_soft_rank_score")
+    bias_map = _handoff_bias_map(entity_type, handoff, chapter_no=chapter_no)
+    return sorted(
+        ordered_names,
+        key=lambda item: (
+            -(float((container.get(item) or {}).get(score_key, 0.0) or 0.0) + float(bias_map.get(item, 0.0) or 0.0)),
+            -float((container.get(item) or {}).get("importance_soft_rank_score", 0.0) or 0.0),
+            -int((container.get(item) or {}).get("importance_score", 0) or 0),
+            item,
+        ),
+    )
+
+
 def _combine_importance_lanes(
     container: dict[str, Any],
     names: list[str],
     *,
+    entity_type: str,
+    chapter_no: int,
     base_limit: int,
     keep_names: list[str] | None = None,
     allow_exploration: bool = True,
+    handoff: dict[str, Any] | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
     ordered_names = [name for name in names if name in container]
     keep = [name for name in (keep_names or []) if name in ordered_names]
-    mainline_ranked = sort_entities_by_importance(container, ordered_names, mode="mainline")
-    activation_ranked = sort_entities_by_importance(container, ordered_names, mode="activation")
+    mainline_ranked = _sort_names_with_handoff_bias(container, ordered_names, mode="mainline", entity_type=entity_type, handoff=handoff, chapter_no=chapter_no)
+    activation_ranked = _sort_names_with_handoff_bias(container, ordered_names, mode="activation", entity_type=entity_type, handoff=handoff, chapter_no=chapter_no)
     exploration_ranked = [
         name
-        for name in sort_entities_by_importance(container, ordered_names, mode="exploration")
+        for name in _sort_names_with_handoff_bias(container, ordered_names, mode="exploration", entity_type=entity_type, handoff=handoff, chapter_no=chapter_no)
         if bool((container.get(name) or {}).get("importance_exploration_candidate"))
     ]
     mainline_soft_cap = max(int(getattr(settings, "importance_eval_mainline_soft_cap", 4) or 4), 2)
@@ -1013,6 +1016,8 @@ def _combine_importance_lanes(
         "activation_top": activation_ranked[: min(6, len(activation_ranked))],
         "exploration_top": exploration_ranked[: min(4, len(exploration_ranked))],
         "selected_by_lane": lane_map,
+        "handoff_applied": bool(_handoff_bias_map(entity_type, handoff, chapter_no=chapter_no)),
+        "handoff_reason_summary": _truncate_text((handoff or {}).get("reason_summary"), 120),
     }
     return selected[:base_limit], meta
 
@@ -1029,9 +1034,9 @@ def _build_resource_plan(resources: dict[str, Any], selected_resources: list[str
     return plan_map
 
 
-def _outline_entry_for_chapter(console: dict[str, Any], chapter_no: int) -> dict[str, Any]:
+def _outline_entry_for_chapter(workspace_state: dict[str, Any], chapter_no: int) -> dict[str, Any]:
     for source_key in ("chapter_card_queue", "near_7_chapter_outline"):
-        for item in (console.get(source_key) or []):
+        for item in (workspace_state.get(source_key) or []):
             if int(item.get("chapter_no", 0) or 0) == chapter_no:
                 return item
     return {}
@@ -1045,13 +1050,14 @@ def _build_recent_continuity_plan(
     plan: dict[str, Any],
     serialized_last: dict[str, Any],
     recent_summaries: list[dict[str, Any]],
+    recent_plan_meta: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    console = (story_bible.get("control_console") or {}) if isinstance(story_bible, dict) else {}
+    workspace_state = (story_bible.get("story_workspace") or {}) if isinstance(story_bible, dict) else {}
     chapter_no = int(plan.get("chapter_no", 0) or 0)
     bridge = serialized_last.get("continuity_bridge") if isinstance(serialized_last.get("continuity_bridge"), dict) else {}
-    current_outline = _outline_entry_for_chapter(console, chapter_no)
-    next_outline = _outline_entry_for_chapter(console, chapter_no + 1)
-    next_two_outline = _outline_entry_for_chapter(console, chapter_no + 2)
+    current_outline = _outline_entry_for_chapter(workspace_state, chapter_no)
+    next_outline = _outline_entry_for_chapter(workspace_state, chapter_no + 1)
+    next_two_outline = _outline_entry_for_chapter(workspace_state, chapter_no + 2)
 
     recent_progression: list[dict[str, Any]] = []
     for summary in recent_summaries[-3:]:
@@ -1191,6 +1197,7 @@ def build_chapter_plan_packet(
     plan: dict[str, Any],
     serialized_last: dict[str, Any],
     recent_summaries: list[dict[str, Any]],
+    recent_plan_meta: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     domains = story_bible.setdefault("story_domains", {})
     characters = domains.setdefault("characters", {})
@@ -1301,6 +1308,7 @@ def build_chapter_plan_packet(
         "faction": list(selected_factions),
         "relation": list(relation_keys),
     }
+    active_importance_handoff = _active_importance_handoff(story_bible, chapter_no=chapter_no)
     importance_summary = evaluate_story_elements_importance(
         story_bible=story_bible,
         protagonist_name=protagonist_name,
@@ -1309,7 +1317,7 @@ def build_chapter_plan_packet(
         plan=plan,
         recent_summaries=recent_summaries,
         touched_entities=touched_entities,
-        allow_ai=True,
+        allow_ai=_planning_importance_allow_ai(story_bible, chapter_no=chapter_no),
     )
 
     priority_resources = []
@@ -1319,41 +1327,44 @@ def build_chapter_plan_packet(
         score = int(card.get("importance_score") or 0)
         if tier in {"核心级", "重要级"} or score >= 72:
             priority_resources.append(item)
-    selected_resources = _unique_texts(list(selected_resources) + priority_resources[:2], limit=6, item_limit=24)
 
-    character_selection_lanes: dict[str, Any]
-    resource_selection_lanes: dict[str, Any]
-    faction_selection_lanes: dict[str, Any]
-    relation_selection_lanes: dict[str, Any]
-    candidate_characters, character_selection_lanes = _combine_importance_lanes(
-        characters,
-        candidate_characters,
-        base_limit=6,
-        keep_names=[protagonist_name, focus_name],
-        allow_exploration=True,
-    )
-    selected_resources, resource_selection_lanes = _combine_importance_lanes(
-        resources,
-        selected_resources,
-        base_limit=6,
-        keep_names=priority_resources[:2],
-        allow_exploration=True,
-    )
-    selected_factions, faction_selection_lanes = _combine_importance_lanes(
-        factions,
-        selected_factions,
-        base_limit=5,
-        keep_names=[],
-        allow_exploration=True,
-    )
-    relation_force_keep = [f"{protagonist_name}::{focus_name}"] if protagonist_name and focus_name and f"{protagonist_name}::{focus_name}" in relation_keys else []
-    relation_keys, relation_selection_lanes = _combine_importance_lanes(
-        relations,
-        relation_keys,
-        base_limit=5,
-        keep_names=relation_force_keep,
-        allow_exploration=False,
-    )
+    all_character_names = list((characters or {}).keys())
+    all_resource_names = list((resources or {}).keys())
+    all_faction_names = list((factions or {}).keys())
+    all_relation_names = list((relations or {}).keys())
+    candidate_characters = _unique_texts([protagonist_name, focus_name] + list(candidate_characters) + all_character_names, limit=max(len(all_character_names) + 6, 12), item_limit=20)
+    selected_resources = _unique_texts(priority_resources[:2] + list(selected_resources) + all_resource_names, limit=max(len(all_resource_names) + 6, 12), item_limit=24)
+    selected_factions = _unique_texts(list(selected_factions) + all_faction_names, limit=max(len(all_faction_names) + 4, 10), item_limit=24)
+    relation_keys = _unique_texts(list(relation_keys) + all_relation_names, limit=max(len(all_relation_names) + 6, 12), item_limit=32)
+
+    character_selection_lanes: dict[str, Any] = {
+        "mode": "ai_direct_selection",
+        "candidate_count": len(candidate_characters),
+        "selected_by_lane": {"all_candidates": list(candidate_characters)},
+        "handoff_applied": bool(_handoff_bias_map("character", active_importance_handoff, chapter_no=chapter_no)),
+        "handoff_reason_summary": _truncate_text((active_importance_handoff or {}).get("reason_summary"), 120),
+    }
+    resource_selection_lanes: dict[str, Any] = {
+        "mode": "ai_direct_selection",
+        "candidate_count": len(selected_resources),
+        "selected_by_lane": {"all_candidates": list(selected_resources)},
+        "handoff_applied": bool(_handoff_bias_map("resource", active_importance_handoff, chapter_no=chapter_no)),
+        "handoff_reason_summary": _truncate_text((active_importance_handoff or {}).get("reason_summary"), 120),
+    }
+    faction_selection_lanes: dict[str, Any] = {
+        "mode": "ai_direct_selection",
+        "candidate_count": len(selected_factions),
+        "selected_by_lane": {"all_candidates": list(selected_factions)},
+        "handoff_applied": bool(_handoff_bias_map("faction", active_importance_handoff, chapter_no=chapter_no)),
+        "handoff_reason_summary": _truncate_text((active_importance_handoff or {}).get("reason_summary"), 120),
+    }
+    relation_selection_lanes: dict[str, Any] = {
+        "mode": "ai_direct_selection",
+        "candidate_count": len(relation_keys),
+        "selected_by_lane": {"all_candidates": list(relation_keys)},
+        "handoff_applied": bool(_handoff_bias_map("relation", active_importance_handoff, chapter_no=chapter_no)),
+        "handoff_reason_summary": _truncate_text((active_importance_handoff or {}).get("reason_summary"), 120),
+    }
 
     character_relation_schedule = build_character_relation_schedule_guidance(
         story_bible,
@@ -1361,17 +1372,6 @@ def build_chapter_plan_packet(
         chapter_no=chapter_no or 1,
         focus_name=focus_name,
         plan=plan,
-    )
-    candidate_characters = sort_character_names_by_schedule(
-        characters,
-        candidate_characters,
-        guidance=character_relation_schedule,
-        protagonist_name=protagonist_name,
-    )
-    relation_keys = sort_relation_names_by_schedule(
-        relations,
-        relation_keys,
-        guidance=character_relation_schedule,
     )
 
     for name in candidate_characters:
@@ -1399,7 +1399,7 @@ def build_chapter_plan_packet(
     }
     card_index = build_card_index_payload(relevant_cards)
     resource_plan = _build_resource_plan(resources, selected_resources, plan_text)
-    resource_capability_plan = build_resource_capability_plan(
+    resource_capability_plan, resource_capability_runtime = _build_resource_capability_plan_with_cache(
         story_bible=story_bible,
         protagonist_name=protagonist_name,
         plan=plan,
@@ -1407,7 +1407,7 @@ def build_chapter_plan_packet(
         selected_resources=selected_resources,
         recent_summaries=recent_summaries,
         serialized_last=serialized_last,
-        allow_ai=True,
+        chapter_no=chapter_no,
     )
     recent_continuity_plan = _build_recent_continuity_plan(
         story_bible=story_bible,
@@ -1437,6 +1437,82 @@ def build_chapter_plan_packet(
     continuity_packet_cache[str(chapter_no)] = recent_continuity_plan
     planner_state["last_continuity_review_chapter"] = chapter_no
 
+    payoff_candidate_index = build_payoff_candidate_index(
+        story_bible=story_bible,
+        plan=plan,
+        recent_summaries=recent_summaries,
+        recent_plan_meta=recent_plan_meta,
+    )
+    scene_template_index = build_scene_template_index(
+        story_bible=story_bible,
+        plan=plan,
+        serialized_last=serialized_last,
+        recent_summaries=recent_summaries,
+    )
+    flow_template_index = (build_prompt_bundle_index(story_bible) or {}).get("flow_templates") or []
+    prompt_strategy_index = build_prompt_strategy_index()
+    prompt_bundle_index = {
+        "flow_templates": flow_template_index,
+        "prompt_strategies": prompt_strategy_index,
+    }
+    scene_runtime = {
+        "scene_sequence_plan": [],
+        "scene_execution_card": {
+            "scene_count": int(scene_template_index.get("scene_count", 0) or 0),
+            "must_continue_same_scene": bool(scene_template_index.get("must_continue_same_scene")),
+            "selection_mode": "pending_ai_selection",
+        },
+        "scene_templates_used": [],
+        "recent_scene_hints": scene_template_index.get("recent_scene_hints") or [],
+    }
+
+    payoff_candidates = [item for item in (payoff_candidate_index.get("candidates") or []) if isinstance(item, dict)]
+    selected_payoff_id = _truncate_text((payoff_candidates[0] or {}).get("card_id"), 48) if payoff_candidates else ""
+    payoff_selection_note = "本章爽点由本地短名单先行选定。"
+    payoff_execution_hint = ""
+    payoff_selector_mode = "heuristic_local"
+    payoff_shortlist = payoff_candidates[: max(int(getattr(settings, "payoff_ai_selection_shortlist_limit", 4) or 4), 1)]
+    if payoff_shortlist and bool(getattr(payoff_cards_module, "is_openai_enabled")()):
+        try:
+            ai_payload = payoff_cards_module.call_json_response(
+                stage="payoff_card_selector",
+                system_prompt="",
+                user_prompt="",
+                max_output_tokens=max(int(getattr(settings, "payoff_ai_selection_max_output_tokens", 420) or 420), 220),
+                timeout_seconds=max(int(getattr(settings, "payoff_ai_selection_timeout_seconds", 12) or 12), 8),
+            ) or {}
+            chosen = _truncate_text(ai_payload.get("selected_card_id"), 48)
+            allowed = {_truncate_text(item.get("card_id"), 48) for item in payoff_candidates if _truncate_text(item.get("card_id"), 48)}
+            if chosen in allowed:
+                selected_payoff_id = chosen
+            payoff_selection_note = _truncate_text(ai_payload.get("reason"), 96) or payoff_selection_note
+            payoff_execution_hint = _truncate_text(ai_payload.get("execution_hint"), 96)
+            payoff_selector_mode = "ai_reviewed"
+        except Exception:
+            payoff_selector_mode = "heuristic_local"
+    payoff_runtime = realize_payoff_selection_from_index(
+        story_bible=story_bible,
+        plan=plan,
+        selected_card_id=selected_payoff_id,
+        recent_summaries=recent_summaries,
+        recent_plan_meta=recent_plan_meta,
+        selection_note=payoff_selection_note,
+    )
+    payoff_runtime["selector_mode"] = payoff_selector_mode
+    if payoff_execution_hint and isinstance(payoff_runtime.get("selected_payoff_card"), dict):
+        payoff_runtime["selected_payoff_card"]["ai_execution_hint"] = payoff_execution_hint
+    payoff_runtime.setdefault("payoff_card_candidates", payoff_candidates)
+    if isinstance(payoff_runtime.get("payoff_diagnostics"), dict):
+        payoff_runtime["payoff_diagnostics"]["selector_mode"] = payoff_selector_mode
+        if payoff_execution_hint:
+            payoff_runtime["payoff_diagnostics"]["ai_execution_hint"] = payoff_execution_hint
+
+    schedule_candidate_index = _build_schedule_candidate_index(
+        character_relation_schedule,
+        core_cast_guidance=core_cast_guidance,
+        stage_hint=chapter_stage_casting_hint,
+    )
+
     continuity_window = {
         "recent_chapter_summaries": _compact_value(recent_summaries[-3:], text_limit=72),
         "last_chapter_tail_excerpt": _truncate_text(serialized_last.get("tail_excerpt"), settings.chapter_last_excerpt_chars),
@@ -1465,6 +1541,9 @@ def build_chapter_plan_packet(
             "resources": selected_resources,
             "factions": selected_factions,
             "relations": relation_keys,
+            "payoff_mode": ((payoff_runtime.get("selected_payoff_card") or {}).get("payoff_mode")),
+            "payoff_visibility": ((payoff_runtime.get("selected_payoff_card") or {}).get("payoff_visibility")),
+            "payoff_compensation_priority": (((payoff_runtime.get("payoff_compensation") or {}).get("priority")) or ((plan.get("payoff_compensation") or {}).get("priority"))),
             "due_characters": list((character_relation_schedule.get("appearance_schedule") or {}).get("due_characters") or []),
             "due_relations": list((character_relation_schedule.get("relationship_schedule") or {}).get("due_relations") or []),
             "importance_mainline_characters": list(character_selection_lanes.get("selected_by_lane", {}).get("mainline") or []),
@@ -1476,6 +1555,7 @@ def build_chapter_plan_packet(
         "core_cast_guidance": core_cast_guidance,
         "chapter_stage_casting_hint": chapter_stage_casting_hint,
         "character_relation_schedule": character_relation_schedule,
+        "schedule_candidate_index": schedule_candidate_index,
         "new_cards_created": {
             "characters": _unique_texts(created_characters, limit=8, item_limit=20),
             "resources": _unique_texts(created_resources, limit=4, item_limit=24),
@@ -1489,12 +1569,26 @@ def build_chapter_plan_packet(
             "turning_points": _truncate_list(plan.get("flow_turning_points"), max_items=4, item_limit=28),
             "variation_note": _truncate_text(plan.get("flow_variation_note"), 72),
         },
+        "payoff_runtime": payoff_runtime,
+        "payoff_candidate_index": payoff_candidate_index,
+        "payoff_compensation": payoff_runtime.get("payoff_compensation") or plan.get("payoff_compensation") or {},
+        "selected_payoff_card": payoff_runtime.get("selected_payoff_card") or {},
+        "scene_runtime": scene_runtime,
+        "scene_template_index": scene_template_index,
+        "scene_sequence_plan": scene_runtime.get("scene_sequence_plan") or [],
+        "scene_execution_card": scene_runtime.get("scene_execution_card") or {},
+        "flow_template_index": flow_template_index,
+        "prompt_strategy_index": prompt_strategy_index,
+        "prompt_bundle_index": prompt_bundle_index,
+        "selected_prompt_strategies": [],
         "resource_plan": resource_plan,
         "resource_capability_plan": resource_capability_plan,
+        "resource_capability_runtime": resource_capability_runtime,
         "recent_continuity_plan": recent_continuity_plan,
         "opening_reveal_guidance": opening_reveal_guidance,
         "character_template_guidance": character_template_guidance,
         "importance_snapshot": importance_summary.get("evaluations") or {},
+        "importance_handoff": active_importance_handoff,
         "importance_runtime": {
             "used_ai": bool(importance_summary.get("used_ai")),
             "selection_lanes": {
@@ -1503,6 +1597,9 @@ def build_chapter_plan_packet(
                 "factions": faction_selection_lanes,
                 "relations": relation_selection_lanes,
             },
+        },
+        "resource_runtime": {
+            "capability_plan": resource_capability_runtime,
         },
         "card_index": card_index,
         "relevant_cards": relevant_cards,
@@ -1515,129 +1612,19 @@ def build_chapter_plan_packet(
             item_limit=64,
         ),
         "input_policy": {
-            "write_from": ["chapter_plan", "recent_continuity_plan", "selected_story_cards", "resource_plan", "resource_capability_plan", "recent_chapter_summaries", "last_chapter_tail_excerpt"],
+            "write_from": ["chapter_plan", "recent_continuity_plan", "selected_story_cards", "selected_payoff_card", "selected_prompt_strategies", "resource_plan", "resource_capability_plan", "recent_chapter_summaries", "last_chapter_tail_excerpt"],
             "avoid": ["full_card_pool_dump", "whole_book_recap", "detached_scene_reset"],
             "continuity_priority": "先承接上一章末尾，再落实本章拍表，并兼顾最近几章的连续推进。",
             "resource_quantity_rule": "资源若带数量字段，正文必须保持前后数量一致，不得随意改写。",
             "resource_ability_rule": "资源若带能力档案，只能按 resource_capability_plan 和资源卡里的条件/代价/限制来写，不得突然无代价开新功能。",
             "stage_casting_rule": "若 chapter_stage_casting_hint 里的 final_should_execute_planned_action=true，就自然落实补新人或旧人换功能；若 final_do_not_force_action=true，则不要硬塞。",
-            "importance_lane_rule": "优先落实推进榜对象，再给激活榜留补位口，同时保留少量探索槽位，让冷门但合适的对象有自然冒头机会。",
+            "selector_input_rule": "章节准备阶段的所有筛选输入都应来自压缩索引或压缩摘要；本地只负责压缩、校验和最终拼装。",
+            "importance_lane_rule": "准备阶段不再用本地推进榜/激活榜做终选；这里只保留 importance 诊断供 AI 看全量压缩候选时参考。",
+            "payoff_rule": "若 selected_payoff_card 存在，就把它视为本章爽点执行卡：先让读者拿到可感的回报，再让后患、代价或新压力跟上。",
+            "scene_rule": "若 scene_sequence_plan / scene_execution_card 存在，就把它视为本章场景链：默认按 1 个主场景 + 0~2 个副场景推进；每次切场都要先给出阶段结果或明确过渡，不能突然传送。",
         },
     }
     return packet
 
 
 
-def _pick_story_memory(base_story_memory: dict[str, Any]) -> dict[str, Any]:
-    keep_keys = {
-        "project_card",
-        "current_volume_card",
-        "protagonist_state",
-        "recent_retrospectives",
-        "hard_fact_guard",
-        "opening_reveal_guidance",
-        "workflow_runtime",
-        "continuity_rules",
-        "fact_ledger",
-        "chapter_release_state",
-    }
-    return {key: value for key, value in (base_story_memory or {}).items() if key in keep_keys and value not in (None, "", [], {})}
-
-
-
-def serialize_local_novel_context(
-    *,
-    novel: Novel,
-    next_no: int,
-    recent_summaries: list[dict[str, Any]],
-    chapter_plan_packet: dict[str, Any],
-    execution_brief: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    base_context = _serialize_novel_context(novel, next_no, recent_summaries)
-    if str(base_context.get("context_mode") or "").lower() == "full":
-        base_context["context_mode"] = "planned_local"
-        base_context["chapter_plan_packet"] = chapter_plan_packet
-        if execution_brief is not None:
-            base_context["execution_brief"] = execution_brief
-        return base_context
-
-    story_memory = _pick_story_memory(base_context.get("story_memory") or {})
-    story_memory["execution_brief"] = _compact_value(execution_brief or {}, text_limit=78)
-    story_memory["chapter_local_context"] = _compact_value(chapter_plan_packet, text_limit=84)
-    story_memory["context_strategy"] = {
-        "mode": "planned_local",
-        "source_order": ["本章拍表", "近章承接规划", "本章规划包", "最近几章摘要", "上一章末尾正文片段"],
-        "note": "正文先吃近几章滚动承接，再围绕本章相关卡片与连续性窗口写，不回看全量卡池。",
-    }
-    base_context["context_mode"] = "planned_local"
-    base_context["story_memory"] = story_memory
-    return base_context
-
-
-
-def _fit_chapter_payload_budget(
-    novel_context: dict[str, Any],
-    recent_summaries: list[dict[str, Any]],
-    serialized_last: dict[str, Any],
-    serialized_active: list[dict[str, Any]],
-) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
-    budget = settings.chapter_prompt_max_chars
-    before = _json_size(novel_context) + _json_size(recent_summaries) + _json_size(serialized_last) + _json_size(serialized_active)
-
-    def total_size() -> int:
-        return _json_size(novel_context) + _json_size(recent_summaries) + _json_size(serialized_last) + _json_size(serialized_active)
-
-    if total_size() > budget and serialized_last.get("tail_excerpt"):
-        serialized_last["tail_excerpt"] = _truncate_text(serialized_last["tail_excerpt"], min(260, settings.chapter_last_excerpt_chars))
-        bridge = serialized_last.get("continuity_bridge") if isinstance(serialized_last.get("continuity_bridge"), dict) else None
-        if bridge is not None:
-            bridge["tail_excerpt"] = serialized_last["tail_excerpt"]
-
-    if total_size() > budget and isinstance(serialized_last.get("last_two_paragraphs"), list) and len(serialized_last["last_two_paragraphs"]) > 1:
-        serialized_last["last_two_paragraphs"] = serialized_last["last_two_paragraphs"][-1:]
-        bridge = serialized_last.get("continuity_bridge") if isinstance(serialized_last.get("continuity_bridge"), dict) else None
-        if bridge is not None:
-            bridge["last_two_paragraphs"] = list(serialized_last["last_two_paragraphs"])
-
-    if total_size() > budget and isinstance(serialized_last.get("unresolved_action_chain"), list) and len(serialized_last["unresolved_action_chain"]) > 2:
-        serialized_last["unresolved_action_chain"] = serialized_last["unresolved_action_chain"][:2]
-        bridge = serialized_last.get("continuity_bridge") if isinstance(serialized_last.get("continuity_bridge"), dict) else None
-        if bridge is not None:
-            bridge["unresolved_action_chain"] = list(serialized_last["unresolved_action_chain"])
-
-    if total_size() > budget and len(recent_summaries) > 1:
-        recent_summaries = recent_summaries[-1:]
-
-    if total_size() > budget and len(serialized_active) > 1:
-        serialized_active = serialized_active[-1:]
-
-    story_memory = novel_context.get("story_memory") if isinstance(novel_context, dict) else None
-    if total_size() > budget and isinstance(story_memory, dict):
-        if isinstance(story_memory.get("global_direction"), list) and len(story_memory["global_direction"]) > 1:
-            story_memory["global_direction"] = story_memory["global_direction"][:1]
-        if isinstance(story_memory.get("live_hooks"), list) and len(story_memory["live_hooks"]) > 3:
-            story_memory["live_hooks"] = story_memory["live_hooks"][:3]
-        if isinstance(story_memory.get("core_conflict"), str):
-            story_memory["core_conflict"] = _truncate_text(story_memory["core_conflict"], 80)
-        if isinstance(story_memory.get("phase_rule"), str):
-            story_memory["phase_rule"] = _truncate_text(story_memory["phase_rule"], 60)
-
-    if total_size() > budget:
-        novel_context["premise"] = _truncate_text(novel_context.get("premise"), 120)
-
-    stats = {
-        "context_mode": novel_context.get("context_mode", settings.chapter_context_mode),
-        "payload_chars_before": before,
-        "payload_chars_after": total_size(),
-        "budget": budget,
-        "recent_summary_count": len(recent_summaries),
-        "active_intervention_count": len(serialized_active),
-        "last_excerpt_chars": len(serialized_last.get("tail_excerpt", "")),
-        "continuity_bridge_chars": _json_size(serialized_last.get("continuity_bridge", {})) if serialized_last.get("continuity_bridge") else 0,
-    }
-    return novel_context, recent_summaries, serialized_last, serialized_active, stats
-
-
-
-def _similarity(a: str, b: str) -> float:
-    return SequenceMatcher(None, a[:1500], b[:1500]).ratio()

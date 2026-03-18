@@ -131,6 +131,48 @@ def _make_weak_ending_retry_plan(plan: dict[str, Any], *, ending_pattern: str) -
     return retry_plan
 
 
+def _make_scene_continuity_retry_plan(plan: dict[str, Any], *, details: dict[str, Any]) -> dict[str, Any]:
+    note = (plan.get("writing_note") or "").strip()
+    issue = str(details.get("scene_continuity_issue") or "scene_continuity").strip()
+    opening_anchor = str(details.get("scene_opening_anchor") or "").strip()
+    carry_over = [str(item).strip() for item in (details.get("scene_opening_overlap_tokens") or details.get("must_carry_over") or []) if str(item).strip()]
+    transition_mode = str(details.get("scene_transition_mode") or "").strip()
+    expected_transitions = int(details.get("scene_expected_transition_count") or 0)
+
+    if issue == "abrupt_scene_cut":
+        focus = "上一章场景还没收住，这次开头必须先续接原场景，不能直接跳到次日或新地点。"
+    elif issue == "missing_opening_continuation":
+        focus = "开头两段必须吃掉上一章的动作后果、悬着的问题或携带物，别把旧场景当没发生过。"
+    elif issue == "time_skip_without_anchor":
+        focus = "既然允许时间跳转，就要在前两段写明时间锚点和承接物，别偷偷切到新时段。"
+    else:
+        focus = "一章内多个场景切换时，必须把切场写成可见过渡，至少交代时间、地点或动作链的变化。"
+
+    carry_text = f"必须带上这些承接点：{'、'.join(carry_over[:4])}。" if carry_over else ""
+    anchor_text = f"开章优先承接：{opening_anchor}。" if opening_anchor else ""
+    transition_text = ""
+    if transition_mode:
+        transition_text = f"本章当前场景模式是 {transition_mode}；"
+    if expected_transitions > 0:
+        transition_text += f"正文里至少写出 {expected_transitions} 次可见过渡或阶段换挡。"
+
+    retry_note = (focus + anchor_text + carry_text + transition_text +
+        "场景切换时要先给阶段结果，再切时间/地点/人物重心，不要像被传送。")
+    merged_note = f"{note}；{retry_note}" if note else retry_note
+    retry_plan = dict(plan)
+    retry_plan["writing_note"] = merged_note
+    retry_plan["retry_prompt_mode"] = "compact"
+    retry_plan["retry_focus"] = "scene_continuity"
+    retry_plan["scene_continuity_retry"] = {
+        "reason": issue,
+        "opening_anchor": opening_anchor,
+        "must_carry_over": carry_over[:4],
+        "transition_mode": transition_mode,
+        "expected_transition_count": expected_transitions,
+    }
+    return retry_plan
+
+
 def _make_too_messy_retry_plan(plan: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
     note = (plan.get("writing_note") or "").strip()
     ai_review = details.get("ai_style_review") if isinstance(details.get("ai_style_review"), dict) else {}
@@ -310,6 +352,17 @@ def classify_chapter_repair(
                 target_max=int(targets["target_visible_chars_max"]),
             ),
             delay_ms=max(int(getattr(settings, "chapter_too_short_retry_delay_ms", 0) or 0), 0),
+        )
+
+    if exc.code == ErrorCodes.CHAPTER_PROGRESS_TOO_WEAK and details.get("scene_continuity_issue"):
+        issue = str(details.get("scene_continuity_issue") or "scene_continuity").strip()
+        return ChapterRepairAction(
+            repair_type="scene_continuity",
+            strategy_id="regenerate_scene_continuity_fixed_draft",
+            execution_mode="insert_retry_attempt",
+            reason=f"场景承接或切场过渡不稳，重生一版把场景链接实（问题：{issue}）",
+            retry_plan=_make_scene_continuity_retry_plan(attempt_plan, details=details),
+            delay_ms=max(int(getattr(settings, "chapter_scene_continuity_retry_delay_ms", 0) or 0), 0),
         )
 
     if exc.code == ErrorCodes.CHAPTER_PROGRESS_TOO_WEAK and details.get("ending_pattern"):

@@ -2,6 +2,8 @@ from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
 from app.core.config import settings
+from app.services.ai_capability_audit import build_repo_ai_fallback_audit
+from app.services.ai_capability_policy import build_llm_policy_report
 from app.services.generation_exceptions import GenerationError
 from app.services.llm_runtime import get_llm_runtime_config, ping_generation_provider
 
@@ -52,3 +54,22 @@ def llm_health(
             },
         }
         return JSONResponse(status_code=exc.http_status, content=payload)
+
+
+@router.get("/health/llm/policy")
+def llm_policy() -> dict:
+    payload = build_llm_policy_report()
+    if not settings.expose_diagnostic_runtime:
+        runtime = payload.get("llm_runtime") or {}
+        for key in list(runtime.keys()):
+            runtime[key] = _safe_runtime_payload(runtime.get(key) or {})
+        payload["llm_runtime"] = runtime
+    return payload
+
+@router.get("/health/llm/audit")
+def llm_audit() -> dict:
+    return {
+        "policy": llm_policy(),
+        "repo_audit": build_repo_ai_fallback_audit(),
+    }
+

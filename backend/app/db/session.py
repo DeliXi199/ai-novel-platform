@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib.util
 from functools import lru_cache
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import sessionmaker
@@ -51,14 +51,30 @@ def _normalize_database_url(database_url: str) -> str:
 
 def _engine_kwargs(database_url: str) -> dict:
     if database_url.startswith('sqlite'):
-        return {'connect_args': {'check_same_thread': False}}
+        return {'connect_args': {'check_same_thread': False, 'timeout': 30}}
     return {'pool_pre_ping': True}
+
+
+def _configure_sqlite_connection(engine: Engine) -> Engine:
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragmas(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            cursor.execute("PRAGMA synchronous=NORMAL;")
+            cursor.execute("PRAGMA busy_timeout=30000;")
+        finally:
+            cursor.close()
+    return engine
 
 
 @lru_cache(maxsize=1)
 def get_engine() -> Engine:
     database_url = _normalize_database_url(settings.database_url)
-    return create_engine(database_url, **_engine_kwargs(database_url))
+    engine = create_engine(database_url, **_engine_kwargs(database_url))
+    if database_url.startswith('sqlite'):
+        engine = _configure_sqlite_connection(engine)
+    return engine
 
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, expire_on_commit=False)

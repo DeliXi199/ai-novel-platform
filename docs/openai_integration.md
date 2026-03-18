@@ -3,8 +3,8 @@
 这个项目当前支持三种 provider：
 
 - `LLM_PROVIDER=openai`：调用 OpenAI Python SDK + Responses API。
-- `LLM_PROVIDER=deepseek`：调用 DeepSeek 的 OpenAI-compatible Responses API。
-- `LLM_PROVIDER=groq`：调用 Groq 的 OpenAI-compatible Responses API。
+- `LLM_PROVIDER=deepseek`：调用 DeepSeek 的 Responses API。
+- `LLM_PROVIDER=groq`：调用 Groq 的 Responses API。
 
 ## 1. 最省事的做法
 
@@ -59,4 +59,4 @@ backend/app/services/openai_story_engine.py
 - Groq
 - 统一 Responses API 请求
 
-虽然文件名还叫 `openai_story_engine.py`，但内部已经支持多个 OpenAI-compatible provider。
+当前 `openai_story_engine.py` 作为统一 LLM 调度入口，内部支持多个 provider。

@@ -247,3 +247,97 @@ def test_validate_chapter_content_rejects_structural_repetition_as_too_messy(mon
         )
     assert exc_info.value.code == ErrorCodes.CHAPTER_TOO_MESSY
     assert "messy_metrics" in (exc_info.value.details or {})
+
+
+CONTINUATION_BROKEN_TEXT = """
+次日清晨，方尘已经回到住处，把药包摊在桌上慢慢拆开。
+他先把窗纸掀开一角，又把铜钱压在纸边，免得晨风把那层药屑吹散。
+等他比对完药渣颜色，才意识到自己昨夜根本没来得及处理门外那个人，可眼前这堆东西又逼得他不得不停下来继续验。
+他翻出短刀刮下一层药粉，指腹刚一碰到那股涩意，心里便更加确定掌柜背后还有另一条线。
+可他还没来得及细想，院外便忽然响起一声极轻的咳嗽，让这间安静住处也骤然生出被人盯上的意味。
+""".strip()
+
+
+def test_validate_chapter_content_rejects_abrupt_scene_cut_when_previous_scene_must_continue() -> None:
+    with pytest.raises(GenerationError) as exc_info:
+        validate_chapter_content(
+            title="第12章",
+            content=CONTINUATION_BROKEN_TEXT,
+            min_visible_chars=80,
+            hard_min_visible_chars=60,
+            target_visible_chars_max=420,
+            hook_style="危险逼近",
+            chapter_plan={"progress_kind": "信息推进", "event_type": "调查类"},
+            serialized_last={
+                "continuity_bridge": {
+                    "opening_anchor": "门外的脚步声停在门槛前，掌柜的手还压着那包药渣。",
+                    "unresolved_action_chain": ["门外盯梢者还没处理", "药渣来源尚未验证"],
+                    "carry_over_clues": ["异常药包"],
+                    "scene_handoff_card": {"scene_status_at_end": "open", "must_continue_same_scene": True},
+                }
+            },
+            execution_brief={
+                "scene_execution_card": {"must_continue_same_scene": True, "scene_count": 2, "transition_mode": "continue_same_scene"},
+                "scene_sequence_plan": [{"scene_no": 1, "scene_name": "同场景续接场"}, {"scene_no": 2, "scene_name": "压力悬停场"}],
+            },
+        )
+    assert exc_info.value.code == ErrorCodes.CHAPTER_PROGRESS_TOO_WEAK
+    assert (exc_info.value.details or {}).get("scene_continuity_issue") == "abrupt_scene_cut"
+
+
+TIME_SKIP_WITHOUT_ANCHOR_TEXT = """
+方尘推门进屋后先把袖里的药包压在桌上，又把沾湿的外衣随手搭到椅背。
+他拆开油纸，一层层比对药渣和旧账册上的记号，试着把昨夜听来的只言片语重新拼到一起。
+等他终于确认账册上的缺口和药包来路相扣，才意识到这条线已经从药铺一路延到了西巷背后的旧仓。
+他顺手把账册塞回怀里，盘算要不要立刻去旧仓看一眼，却又被窗外忽然掠过的黑影逼得先按住冲动。
+那影子只停了一息便消失在墙头，让他明白自己今晚未必还能按原来的路数慢慢查下去。
+""".strip()
+
+
+def test_validate_chapter_content_rejects_time_skip_without_time_anchor() -> None:
+    with pytest.raises(GenerationError) as exc_info:
+        validate_chapter_content(
+            title="第13章",
+            content=TIME_SKIP_WITHOUT_ANCHOR_TEXT,
+            min_visible_chars=80,
+            hard_min_visible_chars=60,
+            target_visible_chars_max=420,
+            hook_style="危险逼近",
+            chapter_plan={"progress_kind": "信息推进", "event_type": "调查类"},
+            serialized_last={
+                "continuity_bridge": {
+                    "carry_over_clues": ["异常药包"],
+                    "scene_handoff_card": {
+                        "scene_status_at_end": "closed",
+                        "must_continue_same_scene": False,
+                        "allowed_transition": "time_skip",
+                        "next_opening_anchor": "次日清晨，桌上的药包还带着昨夜的潮气。",
+                    },
+                }
+            },
+            execution_brief={
+                "scene_execution_card": {"must_continue_same_scene": False, "scene_count": 2, "transition_mode": "soft_cut", "allowed_transition": "time_skip_allowed"},
+                "scene_sequence_plan": [{"scene_no": 1, "scene_name": "修整复盘场"}, {"scene_no": 2, "scene_name": "疑点悬停场"}],
+            },
+        )
+    assert exc_info.value.code == ErrorCodes.CHAPTER_PROGRESS_TOO_WEAK
+    assert (exc_info.value.details or {}).get("scene_continuity_issue") == "time_skip_without_anchor"
+
+
+def test_build_quality_feedback_reports_scene_continuity_issue() -> None:
+    exc = GenerationError(
+        code=ErrorCodes.CHAPTER_PROGRESS_TOO_WEAK,
+        message="上一章场景还没收住，这一章却在开头直接跳时段/跳场，承接断了。",
+        stage="chapter_quality",
+        retryable=True,
+        http_status=422,
+        details={
+            "title": "第14章",
+            "scene_continuity_issue": "abrupt_scene_cut",
+            "scene_transition_mode": "continue_same_scene",
+            "scene_count": 2,
+        },
+    )
+    feedback = build_quality_feedback(exc)
+    assert "场景承接/切换不稳" in feedback["failed_checks"]
+    assert any("先续接原场景" in item for item in feedback["suggestions"])

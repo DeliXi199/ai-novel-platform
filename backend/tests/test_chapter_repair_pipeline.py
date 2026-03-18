@@ -208,3 +208,27 @@ def test_attempt_generate_validated_chapter_inserts_weak_ending_retry(monkeypatc
     assert attempt_meta["repair_trace"][0]["strategy_id"] == "regenerate_stronger_ending"
     assert attempt_meta["repair_trace"][0]["status"] == "inserted_retry"
     assert used_plan["ending_retry"]["reason"] == "weak_ending"
+
+
+def test_classify_chapter_repair_routes_scene_continuity_issue_to_regeneration() -> None:
+    exc = GenerationError(
+        code=ErrorCodes.CHAPTER_PROGRESS_TOO_WEAK,
+        message="上一章场景还没收住，这一章却在开头直接跳时段/跳场，承接断了。",
+        stage="chapter_quality",
+        details={
+            "scene_continuity_issue": "abrupt_scene_cut",
+            "scene_opening_anchor": "门外的脚步声停在门槛前。",
+            "scene_transition_mode": "continue_same_scene",
+            "scene_expected_transition_count": 1,
+            "scene_opening_overlap_tokens": ["异常药包"],
+        },
+    )
+
+    action = classify_chapter_repair(exc, attempt_plan=_base_plan(), targets=_base_targets())
+
+    assert action is not None
+    assert action.repair_type == "scene_continuity"
+    assert action.strategy_id == "regenerate_scene_continuity_fixed_draft"
+    assert action.execution_mode == "insert_retry_attempt"
+    assert action.retry_plan is not None
+    assert action.retry_plan["scene_continuity_retry"]["reason"] == "abrupt_scene_cut"

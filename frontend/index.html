@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AI Novel Studio</title>
-    <link rel="stylesheet" href="/app/assets/app.css" />
+    <link rel="stylesheet" href="/app/assets/app.css?v=20260317d" />
   </head>
   <body>
     <div id="studioShell" class="shell">
@@ -13,7 +13,7 @@
           <div class="brand-mark">✦</div>
           <div>
             <h1>AI Novel Studio</h1>
-            <p>书架 · 目录 · 连载控制台</p>
+            <p>书架 · 目录 · Story Workspace</p>
           </div>
         </div>
 
@@ -154,9 +154,20 @@
             <div id="createTaskMeta" class="subtle-text">创建成功后会自动进入小说管理页；失败时会保留失败现场和任务记录。</div>
             <div id="createTaskEventList" class="create-task-event-list subtle-text"></div>
           </section>
+
+          <section id="createTaskHistoryPanel" class="panel glass hidden">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">任务记录</p>
+                <h3>创建任务中心</h3>
+              </div>
+            </div>
+            <div id="createTaskHistoryMeta" class="subtle-text">创建小说会像生成下一章一样产生日志化任务，失败后也会保留记录。</div>
+            <div id="createTaskHistoryList" class="timeline-list"></div>
+          </section>
         </section>
 
-        <section id="workspaceView">
+        <section id="studioView">
         <section class="overview-grid">
           <article class="metric-card glass">
             <span class="metric-label">当前小说</span>
@@ -234,8 +245,8 @@
           </div>
         </section>
 
-        <section class="workspace-grid">
-          <section class="workspace-main-column">
+        <section class="studio-grid">
+          <section class="studio-main-column">
             <section class="panel glass catalog-panel">
               <div class="panel-header">
                 <div>
@@ -258,7 +269,7 @@
             </section>
           </section>
 
-          <aside class="workspace-side-column">
+          <aside class="studio-side-column">
             <section class="panel glass preview-panel">
               <div class="panel-header">
                 <div>
@@ -278,12 +289,12 @@
               <div class="panel-header">
                 <div>
                   <p class="eyebrow">规划状态</p>
-                  <h3>Control Console</h3>
+                  <h3>Story Workspace</h3>
                 </div>
               </div>
               <div id="planningSummary" class="info-stack"></div>
               <div class="section-divider"></div>
-              <div id="consoleHighlights" class="info-stack"></div>
+              <div id="storyWorkspaceHighlights" class="info-stack"></div>
             </section>
 
             <section class="panel glass">
@@ -453,6 +464,6 @@
       </article>
     </template>
 
-    <script type="module" src="/app/assets/app.js?v=20260316c"></script>
+    <script type="module" src="/app/assets/app.js?v=20260317d"></script>
   </body>
 </html>

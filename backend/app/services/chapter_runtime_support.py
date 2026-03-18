@@ -11,6 +11,7 @@ from app.models.novel import Novel
 from app.services.generation_exceptions import ErrorCodes, GenerationError
 from app.services.llm_runtime import current_timeout
 from app.services.story_architecture import ensure_story_architecture
+from app.services.chapter_context_common import _compact_value, _truncate_text
 
 
 def _chapter_wall_clock_limit_seconds() -> int:
@@ -37,6 +38,11 @@ def _minimum_llm_timeout_seconds_for_stage(stage: str) -> tuple[int, int | None]
         preferred = max(int(getattr(settings, "chapter_title_timeout_seconds", 18) or 18), 8)
         hard_minimum = max(min(preferred, 18), 8)
         soft_minimum = max(min(preferred, 12), 8)
+        return hard_minimum, soft_minimum
+    if stage == "chapter_summary_title_package":
+        preferred = max(int(getattr(settings, "chapter_summary_title_package_timeout_seconds", 24) or 24), 10)
+        hard_minimum = max(min(preferred, 24), 10)
+        soft_minimum = max(min(preferred, 16), 10)
         return hard_minimum, soft_minimum
     return base_minimum, None
 
@@ -123,9 +129,9 @@ def _utc_now_iso() -> str:
 
 
 def _planning_runtime_meta(story_bible: dict[str, Any]) -> dict[str, Any]:
-    console = (story_bible or {}).get("control_console") or {}
-    planning_status = console.get("planning_status") or {}
-    queue = console.get("chapter_card_queue") or []
+    workspace_state = (story_bible or {}).get("story_workspace") or {}
+    planning_status = workspace_state.get("planning_status") or {}
+    queue = workspace_state.get("chapter_card_queue") or []
     pending_arc = planning_status.get("pending_arc") or {}
     active_arc = planning_status.get("active_arc") or {}
     return {
@@ -138,6 +144,56 @@ def _planning_runtime_meta(story_bible: dict[str, Any]) -> dict[str, Any]:
 
 
 
+
+def _runtime_event_history_limit() -> int:
+    return max(int(getattr(settings, "live_runtime_event_history_limit", 24) or 24), 6)
+
+
+def _build_live_runtime_event(*, next_chapter_no: int, stage: str, note: str = "", extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    event = {
+        "updated_at": _utc_now_iso(),
+        "target_chapter_no": int(next_chapter_no or 0),
+        "stage": stage,
+        "note": note,
+    }
+    if isinstance(extra, dict) and extra:
+        summary_keys = [
+            "failed_stage",
+            "last_error_code",
+            "last_generated_chapter_no",
+            "last_generated_title",
+            "delivery_mode",
+            "auto_prefetched",
+            "queue_size",
+            "planned_until",
+        ]
+        event_summary = {key: extra.get(key) for key in summary_keys if extra.get(key) not in (None, "", [], {})}
+        if event_summary:
+            event["summary"] = event_summary
+    return event
+
+
+def _append_live_runtime_event(workflow_state: dict[str, Any], event: dict[str, Any]) -> None:
+    history = workflow_state.setdefault("live_runtime_events", [])
+    if not isinstance(history, list):
+        history = []
+    last = history[-1] if history else {}
+    dedupe_key = (
+        str(last.get("stage") or ""),
+        str(last.get("note") or ""),
+        int(last.get("target_chapter_no") or 0),
+    )
+    current_key = (
+        str(event.get("stage") or ""),
+        str(event.get("note") or ""),
+        int(event.get("target_chapter_no") or 0),
+    )
+    if dedupe_key == current_key:
+        history[-1] = event
+    else:
+        history.append(event)
+    workflow_state["live_runtime_events"] = history[-_runtime_event_history_limit():]
+
 def _set_live_runtime(
     story_bible: dict[str, Any],
     *,
@@ -149,16 +205,16 @@ def _set_live_runtime(
     workflow_state = story_bible.setdefault("workflow_state", {})
     pipeline = workflow_state.setdefault("current_pipeline", {})
     runtime = workflow_state.setdefault("live_runtime", {})
-    runtime.update(
-        {
-            "stage": stage,
-            "note": note,
-            "updated_at": _utc_now_iso(),
-            "target_chapter_no": next_chapter_no,
-        }
+    event = _build_live_runtime_event(
+        next_chapter_no=next_chapter_no,
+        stage=stage,
+        note=note,
+        extra=extra,
     )
+    runtime.update(event)
     if extra:
         runtime.update(extra)
+    _append_live_runtime_event(workflow_state, dict(event))
     pipeline["target_chapter_no"] = next_chapter_no
     pipeline["last_live_stage"] = stage
     pipeline["last_live_note"] = note
@@ -191,3 +247,35 @@ def _commit_runtime_snapshot(
     db.commit()
     db.refresh(novel)
     return novel
+
+
+
+def _runtime_stage_casting_extra(execution_brief: dict[str, Any] | None) -> dict[str, Any]:
+    daily = (execution_brief or {}).get("daily_workbench") or {}
+    runtime = daily.get("chapter_stage_casting_runtime") or {}
+    return {
+        "stage_casting_runtime": _compact_value(runtime, text_limit=72),
+        "stage_casting_runtime_note": _truncate_text(daily.get("chapter_stage_casting_runtime_note"), 96),
+        "stage_casting_display_lines": _compact_value(runtime.get("display_lines") or [], text_limit=72),
+    }
+
+
+def _runtime_payoff_extra(execution_brief: dict[str, Any] | None) -> dict[str, Any]:
+    chapter_card = (execution_brief or {}).get("chapter_execution_card") or {}
+    daily = (execution_brief or {}).get("daily_workbench") or {}
+    diagnostics = (daily.get("payoff_diagnostics") or chapter_card.get("payoff_diagnostics") or {}) if isinstance(daily, dict) else {}
+    summary_lines = diagnostics.get("summary_lines") or []
+    return {
+        "selected_payoff_card_id": _truncate_text(chapter_card.get("payoff_card_id") or chapter_card.get("payoff_mode"), 48),
+        "payoff_mode": _truncate_text(chapter_card.get("payoff_mode"), 32),
+        "payoff_level": _truncate_text(chapter_card.get("payoff_level"), 16),
+        "payoff_visibility": _truncate_text(chapter_card.get("payoff_visibility"), 20),
+        "reader_payoff": _truncate_text(chapter_card.get("reader_payoff"), 96),
+        "new_pressure": _truncate_text(chapter_card.get("new_pressure"), 96),
+        "payoff_debt_score": diagnostics.get("pressure_debt_score"),
+        "payoff_debt_level": diagnostics.get("pressure_debt_level"),
+        "payoff_repeat_risk": diagnostics.get("repeat_risk"),
+        "payoff_recommended_level": diagnostics.get("recommended_level"),
+        "payoff_runtime_note": _truncate_text(daily.get("payoff_runtime_note") or (summary_lines[2] if len(summary_lines) >= 3 else ""), 96),
+        "payoff_summary_lines": _compact_value(summary_lines[:4], text_limit=72),
+    }

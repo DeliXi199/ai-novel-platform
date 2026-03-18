@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.services.generation_exceptions import ErrorCodes, GenerationError
 from app.services import chapter_title_service as title_service
 
@@ -52,7 +54,7 @@ def test_refine_generated_chapter_title_prefers_less_repetitive_candidate(monkey
 
 
 
-def test_refine_generated_chapter_title_falls_back_when_ai_errors(monkeypatch) -> None:
+def test_refine_generated_chapter_title_raises_when_ai_errors(monkeypatch) -> None:
     def fake_ai(**_: object):
         raise GenerationError(
             code=ErrorCodes.API_TIMEOUT,
@@ -64,18 +66,15 @@ def test_refine_generated_chapter_title_falls_back_when_ai_errors(monkeypatch) -
 
     monkeypatch.setattr(title_service, "generate_chapter_title_candidates", fake_ai)
 
-    result = title_service.refine_generated_chapter_title(
-        chapter_no=8,
-        original_title="旧纸页",
-        content="主角在后门摸到一张欠条，确认旧案未了。",
-        plan=_sample_plan(),
-        recent_titles=["旧纸页", "坊市试探", "暗流再起"],
-        summary={"event_summary": "主角摸到账簿后的关键欠条。", "new_clues": ["欠条"], "open_hooks": ["旧案未了"]},
-        timeout_seconds=8,
-    )
+    with pytest.raises(GenerationError) as exc_info:
+        title_service.refine_generated_chapter_title(
+            chapter_no=8,
+            original_title="旧纸页",
+            content="主角在后门摸到一张欠条，确认旧案未了。",
+            plan=_sample_plan(),
+            recent_titles=["旧纸页", "坊市试探", "暗流再起"],
+            summary={"event_summary": "主角摸到账簿后的关键欠条。", "new_clues": ["欠条"], "open_hooks": ["旧案未了"]},
+            timeout_seconds=8,
+        )
 
-    assert result.ai_attempted is True
-    assert result.ai_succeeded is False
-    assert result.ai_error is not None
-    assert result.final_title
-    assert result.candidates
+    assert exc_info.value.code == ErrorCodes.API_TIMEOUT

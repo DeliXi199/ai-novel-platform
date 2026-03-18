@@ -178,31 +178,15 @@ def _tts_meta(chapter: Chapter) -> dict[str, Any]:
 def _extract_variants(tts_meta: dict[str, Any]) -> dict[str, dict[str, Any]]:
     variants: dict[str, dict[str, Any]] = {}
     raw_variants = tts_meta.get("variants") if isinstance(tts_meta, dict) else None
-    if isinstance(raw_variants, dict):
-        for key, item in raw_variants.items():
-            if not isinstance(item, dict):
-                continue
-            voice = str(item.get("voice") or key or "").strip()
-            if not voice:
-                continue
-            variants[voice] = {**item, "voice": voice}
-    else:
-        legacy_voice = str(tts_meta.get("voice") or "").strip()
-        legacy_path = str(tts_meta.get("relative_path") or "").strip()
-        if legacy_voice and legacy_path:
-            variants[legacy_voice] = {
-                "voice": legacy_voice,
-                "rate": str(tts_meta.get("rate") or settings.tts_default_rate),
-                "volume": str(tts_meta.get("volume") or settings.tts_default_volume),
-                "pitch": str(tts_meta.get("pitch") or settings.tts_default_pitch),
-                "fingerprint": tts_meta.get("fingerprint"),
-                "relative_path": legacy_path,
-                "subtitle_relative_path": tts_meta.get("subtitle_relative_path") or _relative_subtitle_path(legacy_path),
-                "generated_at": tts_meta.get("generated_at"),
-                "content_hash": tts_meta.get("content_hash"),
-                "file_size_bytes": tts_meta.get("file_size_bytes"),
-                "subtitle_file_size_bytes": tts_meta.get("subtitle_file_size_bytes"),
-            }
+    if not isinstance(raw_variants, dict):
+        return variants
+    for key, item in raw_variants.items():
+        if not isinstance(item, dict):
+            continue
+        voice = str(item.get("voice") or key or "").strip()
+        if not voice:
+            continue
+        variants[voice] = {**item, "voice": voice}
     return variants
 
 
