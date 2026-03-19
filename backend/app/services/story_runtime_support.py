@@ -11,11 +11,19 @@ from app.services.hard_fact_guard import (
 )
 from app.services.story_fact_ledger import _ensure_fact_ledger, _empty_fact_ledger, rebuild_fact_ledger_from_chapters
 from app.services.core_cast_support import empty_core_cast_state, ensure_core_cast_state_shape, summarize_core_cast_state
+from app.services.prompt_support import compact_data
 
 STORY_BIBLE_SCHEMA_VERSION = 9
 STORY_BIBLE_ARCHITECTURE = "story_bible_v2_foundation"
 DEFAULT_SERIAL_DELIVERY_MODE = "live_publish"
 
+
+
+def _text(value: Any, default: str = "") -> str:
+    if value is None:
+        return default
+    text = str(value).strip()
+    return text or default
 
 
 def build_serial_rules() -> dict[str, Any]:
@@ -114,8 +122,8 @@ def _empty_template_library() -> dict[str, Any]:
         "scene_templates": [],
         "roadmap": {
             "character_template_target_count": 40,
-            "flow_template_target_count": 20,
-            "payoff_card_target_count": 20,
+            "flow_template_target_count": 36,
+            "payoff_card_target_count": 40,
             "scene_template_target_count": 20,
             "current_character_template_count": 0,
             "current_flow_template_count": 0,
@@ -383,6 +391,14 @@ def _build_initialization_packet(story_bible: dict[str, Any], current_chapter_no
             "must_gradually_explain": (opening_constraints.get("must_gradually_explain") or [])[:5],
         },
         "core_cast_brief": summarize_core_cast_state(story_bible.get("core_cast_state"), chapter_no=current_chapter_no + 1, limit=4),
+        "book_execution_profile_brief": {
+            "positioning_summary": _text(((story_bible.get("book_execution_profile") or {}).get("positioning_summary")), ""),
+            "flow_family_priority": compact_data(((story_bible.get("book_execution_profile") or {}).get("flow_family_priority") or {}), max_depth=2, max_items=6, text_limit=60),
+            "payoff_priority": compact_data(((story_bible.get("book_execution_profile") or {}).get("payoff_priority") or {}), max_depth=2, max_items=6, text_limit=60),
+            "rhythm_bias": compact_data(((story_bible.get("book_execution_profile") or {}).get("rhythm_bias") or {}), max_depth=2, max_items=6, text_limit=60),
+        },
+        "window_execution_bias_brief": compact_data((((story_bible.get("story_workspace") or {}).get("window_execution_bias") or {})), max_depth=2, max_items=6, text_limit=60),
+        "card_system_profile_brief": compact_data((story_bible.get("card_system_profile") or {}), max_depth=2, max_items=6, text_limit=60),
         "contains_generated_text": False,
         "note": "初始化只准备当前卷与近期章节所需文档，不预生成正文。",
     }

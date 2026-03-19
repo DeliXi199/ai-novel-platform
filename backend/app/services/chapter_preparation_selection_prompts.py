@@ -30,6 +30,7 @@ def chapter_preparation_plan_snapshot(chapter_plan: dict[str, Any], planning_pac
             'new_relations': plan.get('new_relations') or [],
         }, max_depth=3, max_items=max_items, text_limit=72),
         'selected_elements': selection_engine._compact_for_prompt(packet.get('selected_elements') or {}, max_depth=3, max_items=max_items, text_limit=72),
+        'book_execution_profile': selection_engine._compact_for_prompt(selection_engine._book_bias_brief(packet), max_depth=3, max_items=max_items, text_limit=72),
         'schedule_candidate_index': selection_engine._compact_for_prompt(packet.get('schedule_candidate_index') or {}, max_depth=4 if not compact_mode else 3, max_items=max_items, text_limit=72),
         'selection_runtime': selection_engine._compact_for_prompt(packet.get('selection_runtime') or {}, max_depth=3, max_items=max_items, text_limit=72),
     }
@@ -56,15 +57,15 @@ def chapter_preparation_selector_input(
         base['focused_card_index'] = selection_engine._compact_for_prompt(selection_engine._focused_card_index(packet, shortlist), max_depth=3 if not compact_mode else 2, max_items=8 if not compact_mode else 6, text_limit=72)
         return base
     if selector_name == 'payoff':
-        base['task_focus'] = '从爽点候选压缩索引里选出本章真正执行的一张 payoff card。'
+        base['task_focus'] = '从爽点候选压缩索引里选出本章真正执行的一张 payoff card，并参考本书长期爽点偏置。'
         base['focused_payoff_candidate_index'] = selection_engine._compact_for_prompt(selection_engine._focused_payoff_candidate_index(packet, shortlist), max_depth=3 if not compact_mode else 2, max_items=7 if not compact_mode else 5, text_limit=72)
         return base
-    if selector_name == 'scene':
-        base['task_focus'] = '从场景模板压缩索引里排出本章场景链。'
-        base['focused_scene_template_index'] = selection_engine._compact_for_prompt(selection_engine._focused_scene_template_index(packet, shortlist), max_depth=3 if not compact_mode else 2, max_items=7 if not compact_mode else 5, text_limit=72)
+    if selector_name == 'foreshadowing':
+        base['task_focus'] = '从伏笔母卡/子卡与章节级候选压缩索引里决定本章埋哪条、碰哪条、回哪条，并服从本书长期伏笔偏置。'
+        base['focused_foreshadowing_candidate_index'] = selection_engine._compact_for_prompt(selection_engine._focused_foreshadowing_candidate_index(packet, shortlist), max_depth=3 if not compact_mode else 2, max_items=7 if not compact_mode else 5, text_limit=72)
         return base
     if selector_name == 'prompt':
-        base['task_focus'] = '从 prompt / 流程压缩索引里选出本章真正要强调的写法与流程模板。'
+        base['task_focus'] = '从流程母卡/子卡与写法母卡/子卡压缩索引里选出本章真正要强调的写法结构，并参考本书运行画像。'
         base['focused_prompt_bundle_index'] = selection_engine._compact_for_prompt(selection_engine._focused_prompt_bundle_index(packet, shortlist), max_depth=3 if not compact_mode else 2, max_items=8 if not compact_mode else 5, text_limit=72)
         return base
     return base
@@ -77,8 +78,8 @@ def selector_output_schema(selector_name: str) -> dict[str, Any]:
         return selection_engine.ChapterCardSelectionPayload.model_json_schema()
     if selector_name == 'payoff':
         return selection_engine.PayoffSelectionPayload.model_json_schema()
-    if selector_name == 'scene':
-        return selection_engine.SceneTemplateSelectionPayload.model_json_schema()
+    if selector_name == 'foreshadowing':
+        return selection_engine.ForeshadowingSelectionPayload.model_json_schema()
     if selector_name == 'prompt':
         return selection_engine.PromptStrategySelectionPayload.model_json_schema()
     return selection_engine.ChapterFrontloadDecisionPayload.model_json_schema()
@@ -88,9 +89,9 @@ def selector_system_prompt(selector_name: str) -> str:
     prompts = {
         'schedule': '你是“章节准备阶段·角色关系选择器”。只负责判断本章该重点写谁、推进哪些关系、谁应轻触、谁应暂缓。输出必须是 JSON。',
         'cards': '你是“章节准备阶段·卡片选择器”。只负责从全量压缩卡片索引里挑出正文真正要动用的少量卡片编号。不要为了看起来全而乱选。输出必须是 JSON。',
-        'payoff': '你是“章节准备阶段·爽点选择器”。只负责从爽点候选压缩索引里选出本章真正执行的一张 payoff card。输出必须是 JSON。',
-        'scene': '你是“章节准备阶段·场景链选择器”。只负责从场景模板压缩索引里排出本章场景链。输出必须是 JSON。',
-        'prompt': '你是“章节准备阶段·prompt 策略选择器”。只负责从 prompt 策略压缩索引里选出本章真正该强调的写法。输出必须是 JSON。',
+        'payoff': '你是“章节准备阶段·爽点选择器”。只负责从爽点候选压缩索引里选出本章真正执行的一张 payoff card。要优先尊重本书 book_execution_profile 的长期偏置，但不能违背本章实际计划。输出必须是 JSON。',
+        'foreshadowing': '你是“章节准备阶段·伏笔选择器”。只负责从伏笔母卡/子卡与章节级候选压缩索引里决定本章埋哪条、碰哪条、回哪条。要参考本书的伏笔主次偏置和 hold_back 规则。输出必须是 JSON。',
+        'prompt': '你是“章节准备阶段·写法卡选择器”。只负责从流程母卡/子卡与写法母卡/子卡压缩索引里选出本章真正该强调的写法结构。要把本书 book_execution_profile 的长期运行画像当成稳定偏置，而不是每章从零开始。输出必须是 JSON。',
     }
     return prompts.get(selector_name, '你是章节准备阶段选择器，只输出 JSON。')
 
@@ -119,20 +120,29 @@ def selector_user_prompt(
         'cards': [
             'selected_card_ids 里只放编号，不放名字。',
             '优先少而准，不要把全部候选都选上。',
+            '若 book_execution_profile 对某些流程/爽点/伏笔有长期偏置，可在不违背本章目标的前提下顺着偏置选。',
             '若某张卡只是背景板、本章不会真正动它，就不要选。',
         ],
         'payoff': [
-            'selected_card_id 只放一个编号。',
+            'selected_card_id 只放一个编号，优先直接填写候选里的真实 card_id。',
+            '不要自造 payoff_001 / payoff_023 这类序号占位符；若你参考候选里的 selector_key，也必须映射回真实 card_id 后再输出。',
             '要和本章人物关系推进方向一致，不要单独唱戏。',
+            '同等合理时，优先贴近本书 payoff_priority 的高优先项，回避 demotion_rules。',
         ],
-        'scene': [
-            'selected_scene_template_ids 数量要尽量贴近 scene_count。',
-            '同场景续接只有在承接压力确实强时才保留，不要机械复读。',
+        'foreshadowing': [
+            'selected_primary_candidate_id 必须填写聚焦伏笔压缩索引里已出现的稳定 candidate_id（如 fcand_001）或 selector_key（如 foreshadow_001），不能为空。',
+            '如果聚焦伏笔候选只有 1 条，直接填写那 1 条的 candidate_id，不要留空，不要改写，不要概括。',
+            '同等合理时，优先遵循本书 foreshadowing_priority 的主次顺序。',
+            'selected_supporting_candidate_ids 最多放 2 个，而且必须来自同一份聚焦伏笔压缩索引。',
+            '不要把 source_hook、display_label、selector_label、fit_reason、child_card_name 当成 candidate_id 填写。',
+            '优先明确本章主动作是新埋、轻碰、加深、验证还是部分/完整回收，不要什么都想做。',
         ],
         'prompt': [
-            'selected_flow_template_id 只放一个流程模板编号。',
-            'selected_strategy_ids 选 2-4 个最重要的，不要铺满。',
-            '优先选择真正会改变正文写法的策略。',
+            'selected_flow_template_id 只放一个流程母卡编号。',
+            '同等合理时，优先遵循本书 flow_family_priority 与 writing_strategy_priority。',
+            'selected_flow_child_card_id 只放一个流程子卡编号，而且必须属于所选流程母卡。',
+            'selected_strategy_ids 选 2-4 个最重要的写法母卡，不要铺满。',
+            'selected_writing_child_card_ids 选 1-4 个写法子卡，优先让每张母卡至少有一个真正会改变正文写法的子卡。',
         ],
     }
     compact_rule = '当前为紧凑重试模式：只抓主冲突、主关系和真正会动用的候选。\n' if compact_mode else ''
@@ -152,7 +162,7 @@ def selector_user_prompt(
 
 
 def merge_selection_system_prompt() -> str:
-    return '你是“章节准备阶段·全局仲裁器”。你的任务是整合多个并行 AI 选择结果，统一成人物/关系、卡片、爽点、场景链、prompt 策略一致的一套最终选择。后续本地只做合法性校验和拼装。只输出 JSON。'
+    return '你是“章节准备阶段·全局仲裁器”。你的任务是整合多个并行 AI 选择结果，统一成人物/关系、卡片、爽点、伏笔动作、流程母卡/子卡、写法母卡/子卡一致的一套最终选择。场景连续性不由你决定，后续会由独立 AI 评审直接给出完整续场/切场与场景顺序方案，本地不再提供替代规划。只输出 JSON。'
 
 
 def merge_selection_user_prompt(
@@ -171,7 +181,7 @@ def merge_selection_user_prompt(
             'schedule_candidate_index': selection_engine._focused_schedule_candidate_index(planning_packet or {}, shortlist),
             'card_index': selection_engine._focused_card_index(planning_packet or {}, shortlist),
             'payoff_candidate_index': selection_engine._focused_payoff_candidate_index(planning_packet or {}, shortlist),
-            'scene_template_index': selection_engine._focused_scene_template_index(planning_packet or {}, shortlist),
+            'foreshadowing_candidate_index': selection_engine._focused_foreshadowing_candidate_index(planning_packet or {}, shortlist),
             'prompt_bundle_index': selection_engine._focused_prompt_bundle_index(planning_packet or {}, shortlist),
         }, max_depth=3 if not compact_mode else 2, max_items=7 if not compact_mode else 5, text_limit=72),
     }
@@ -186,8 +196,9 @@ def merge_selection_user_prompt(
 {selection_engine._pretty_json(selection_engine.ChapterFrontloadDecisionPayload.model_json_schema())}
 
 补充规则：
-- 所有编号必须来自已给候选索引或并行结果。
-- 最终结果优先保证人物/关系、用卡、爽点、场景链、prompt 策略彼此一致。
+- 所有编号必须来自已给候选索引或并行结果；流程子卡必须属于所选流程母卡，写法子卡必须属于所选写法母卡。
+- 最终结果优先保证人物/关系、用卡、爽点、伏笔动作、流程母卡/子卡、写法母卡/子卡彼此一致，并尽量贴合 book_execution_profile 的长期偏置。
+- 每章伏笔动作以 1 条主动作 + 0-2 条辅助动作为宜，不要同时新埋、轻碰、回收太多条。
 - 不要为了全面而增加正文不会真正执行的选择。
 """.strip()
 
@@ -202,7 +213,8 @@ def preselection_user_prompt(*, chapter_plan: dict[str, Any], planning_packet: d
         'schedule_candidate_index': selection_engine._compact_for_prompt((planning_packet or {}).get('schedule_candidate_index') or {}, max_depth=4 if not compact_mode else 3, max_items=8 if not compact_mode else 6, text_limit=72),
         'card_index': selection_engine._compact_for_prompt((planning_packet or {}).get('card_index') or {}, max_depth=3 if not compact_mode else 2, max_items=8 if not compact_mode else 6, text_limit=72),
         'payoff_candidate_index': selection_engine._compact_for_prompt((planning_packet or {}).get('payoff_candidate_index') or {}, max_depth=3 if not compact_mode else 2, max_items=7 if not compact_mode else 5, text_limit=72),
-        'scene_template_index': selection_engine._compact_for_prompt((planning_packet or {}).get('scene_template_index') or {}, max_depth=3 if not compact_mode else 2, max_items=7 if not compact_mode else 5, text_limit=72),
+        'foreshadowing_candidate_index': selection_engine._compact_for_prompt((planning_packet or {}).get('foreshadowing_candidate_index') or {}, max_depth=3 if not compact_mode else 2, max_items=7 if not compact_mode else 5, text_limit=72),
+        'scene_continuity_index': selection_engine._compact_for_prompt((planning_packet or {}).get('scene_continuity_index') or {}, max_depth=3 if not compact_mode else 2, max_items=7 if not compact_mode else 5, text_limit=72),
         'prompt_bundle_index': selection_engine._compact_for_prompt((planning_packet or {}).get('prompt_bundle_index') or {}, max_depth=3 if not compact_mode else 2, max_items=8 if not compact_mode else 5, text_limit=72),
     }
     compact_rule = '当前为紧凑重试模式：shortlist 只抓主冲突、主关系和真正会动用的候选。\n' if compact_mode else ''
@@ -217,6 +229,7 @@ def preselection_user_prompt(*, chapter_plan: dict[str, Any], planning_packet: d
 
 补充规则：
 - 这一步只产出 shortlist，不做最终拍板。
+- 可参考 book_execution_profile 作为长期偏置，但不能把它当硬性名单。
 - 所有编号都必须来自给定压缩索引。
 - 宁可少而准，也不要为了看起来全而乱塞。
 """.strip()

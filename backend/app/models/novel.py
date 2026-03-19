@@ -27,6 +27,7 @@ class Novel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
 
     characters = relationship("Character", back_populates="novel", cascade="all, delete-orphan")
+    monsters = relationship("Monster", back_populates="novel", cascade="all, delete-orphan")
     chapters = relationship("Chapter", back_populates="novel", cascade="all, delete-orphan")
     interventions = relationship("Intervention", back_populates="novel", cascade="all, delete-orphan")
     async_tasks = relationship("AsyncTask", back_populates="novel", cascade="all, delete-orphan")

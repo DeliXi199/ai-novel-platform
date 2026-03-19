@@ -4,16 +4,24 @@ from app.core.config import settings
 from app.schemas.novel import NovelCreate
 from app.services.openai_story_engine import (
     generate_arc_outline,
-    generate_global_outline,
+    generate_bootstrap_execution_profile,
+    generate_bootstrap_intent_packet,
+    generate_bootstrap_intent_strategy_bundle,
+    generate_bootstrap_outline_and_title,
+    generate_bootstrap_title,
     generate_story_engine_diagnosis,
     generate_story_engine_strategy_bundle as generate_story_engine_strategy_bundle_payload,
     generate_story_strategy_card,
+    review_bootstrap_story_package,
 )
 from app.services.openai_story_engine_arc import (
     apply_arc_casting_layout_review,
     review_arc_casting_layout,
 )
 from app.services.story_architecture import compose_story_bible
+from app.services.story_blueprint_builders import build_arc_digest, build_bootstrap_foundation_assets, build_template_library
+from app.services.foreshadowing_cards import FORESHADOWING_PARENT_CARDS
+from app.services.prompt_strategy_library import build_writing_card_index
 from app.services.payoff_compensation_support import apply_payoff_window_event_bias_to_plan, payoff_window_event_bias
 
 
@@ -182,15 +190,14 @@ def _opening_pacing_rules(
     diagnosis = story_engine_diagnosis or {}
     strategy = story_strategy_card or {}
     if diagnosis:
-        phase_1 = (strategy.get("chapter_1_to_10") or {}) if isinstance(strategy, dict) else {}
-        phase_2 = (strategy.get("chapter_11_to_20") or {}) if isinstance(strategy, dict) else {}
-        frequent = "、".join([str(item).strip() for item in (phase_1.get("frequent_elements") or []) if str(item).strip()][:4]) or "资源、关系、局势与结果"
-        limited = "、".join([str(item).strip() for item in (phase_1.get("limited_elements") or []) if str(item).strip()][:3]) or "重复被怀疑后被动应付"
+        opening_window = (strategy.get("opening_window") or strategy.get("chapter_1_to_10") or {}) if isinstance(strategy, dict) else {}
+        frequent = "、".join([str(item).strip() for item in (opening_window.get("frequent_elements") or []) if str(item).strip()][:4]) or "资源、关系、局势与结果"
+        limited = "、".join([str(item).strip() for item in (opening_window.get("limited_elements") or []) if str(item).strip()][:3]) or "重复被怀疑后被动应付"
         must_haves = "、".join([str(item).strip() for item in (diagnosis.get("early_must_haves") or []) if str(item).strip()][:4]) or "现实压力、第一轮有效收益、主线入口"
         return {
             "overall": str(diagnosis.get("opening_drive") or "前期先把主角处境、第一轮目标和主线引擎钉牢。"),
             "first_three_chapters": f"前3章先完成这些必要建立：{must_haves}。",
-            "first_twelve_chapters": f"前12章优先轮换{frequent}，主动限制{limited}；到中前段要完成：{str(phase_2.get('stage_mission') or strategy.get('first_30_mainline_summary') or '阶段推进')}",
+            "first_twelve_chapters": f"前期优先轮换{frequent}，主动限制{limited}；长线方向是：{str(strategy.get('long_term_direction') or strategy.get('opening_five_summary') or opening_window.get('stage_mission') or '阶段推进')}",
         }
     story_text = _story_text(payload)
     if any(token in story_text for token in ["金手指", "机缘", "外挂", "神器"]):
@@ -219,6 +226,117 @@ def _opening_pacing_rules(
 
 
 
+def _unique_texts(items: list[object] | None, *, limit: int = 8) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for item in items or []:
+        text = _text(item)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        output.append(text)
+        if len(output) >= limit:
+            break
+    return output
+
+
+
+def _template_pool_profile(payload: NovelCreate, *, template_library: dict[str, object] | None = None, writing_cards: list[dict[str, object]] | None = None) -> dict[str, object]:
+    template_library = template_library or build_template_library(payload)
+    writing_cards = writing_cards or build_writing_card_index()
+    flow_templates = template_library.get("flow_templates") or []
+    payoff_cards = template_library.get("payoff_cards") or []
+    scene_templates = template_library.get("scene_templates") or []
+    character_templates = template_library.get("character_templates") or []
+    return {
+        "pool_id": "cultivation_default_pool_v1",
+        "pool_type": "cultivation_single_genre_full_pool",
+        "all_templates_active": True,
+        "selection_mode": "global_pool_with_direct_ai_selection",
+        "note": "当前模板库全部按修仙题材建设，初始化阶段不筛模板，后续每章由 AI 直接从全池候选中终选。",
+        "character_templates": {
+            "count": len(character_templates),
+            "sample_ids": _unique_texts([item.get("template_id") for item in character_templates if isinstance(item, dict)], limit=6),
+            "sample_names": _unique_texts([item.get("name") for item in character_templates if isinstance(item, dict)], limit=6),
+        },
+        "flow_templates": {
+            "count": len(flow_templates),
+            "families": _unique_texts([item.get("family") for item in flow_templates if isinstance(item, dict)], limit=8),
+            "sample_ids": _unique_texts([item.get("flow_id") for item in flow_templates if isinstance(item, dict)], limit=8),
+        },
+        "payoff_cards": {
+            "count": len(payoff_cards),
+            "families": _unique_texts([item.get("family") for item in payoff_cards if isinstance(item, dict)], limit=8),
+            "sample_names": _unique_texts([item.get("name") for item in payoff_cards if isinstance(item, dict)], limit=8),
+        },
+        "scene_templates": {
+            "count": len(scene_templates),
+            "scene_roles": _unique_texts([item.get("scene_role") for item in scene_templates if isinstance(item, dict)], limit=6),
+            "scene_ids": _unique_texts([item.get("scene_id") for item in scene_templates if isinstance(item, dict)], limit=8),
+        },
+        "foreshadowing": {
+            "parent_count": len(FORESHADOWING_PARENT_CARDS),
+            "parent_names": _unique_texts([item.get("name") for item in FORESHADOWING_PARENT_CARDS if isinstance(item, dict)], limit=8),
+        },
+        "writing_cards": {
+            "count": len(writing_cards),
+            "strategy_ids": _unique_texts([item.get("strategy_id") for item in writing_cards if isinstance(item, dict)], limit=8),
+            "sample_titles": _unique_texts([item.get("title") for item in writing_cards if isinstance(item, dict)], limit=8),
+        },
+    }
+
+
+def _bootstrap_asset_packet(payload: NovelCreate) -> dict[str, object]:
+    template_library = build_template_library(payload)
+    writing_cards = build_writing_card_index()
+    return {
+        "template_library": template_library,
+        "writing_cards": writing_cards,
+        "template_pool_profile": _template_pool_profile(payload, template_library=template_library, writing_cards=writing_cards),
+    }
+
+
+
+
+def generate_bootstrap_design_packet(payload: NovelCreate, story_bible: dict[str, object]) -> dict:
+    asset_packet = _bootstrap_asset_packet(payload)
+    intent_strategy_bundle = generate_bootstrap_intent_strategy_bundle(payload.model_dump(mode="python"), story_bible)
+    project_intent_card = intent_strategy_bundle.bootstrap_intent_packet.model_dump(mode="python")
+    story_engine_diagnosis = intent_strategy_bundle.story_engine_diagnosis.model_dump(mode="python")
+    story_strategy_card = intent_strategy_bundle.story_strategy_card.model_dump(mode="python")
+    template_pool_profile = dict(asset_packet.get("template_pool_profile") or {})
+    strategy_candidates = {
+        "mode": "single_pass",
+        "skipped": True,
+        "reason": "初始化不再生成前30章多候选规划，直接生成书级长期方向与首个五章策略。",
+    }
+    strategy_arbitration = {
+        "mode": "single_pass",
+        "selection_reason": "改为单次生成书级长期方向与开局五章策略，减少初始化计算量。",
+        "story_engine_diagnosis": story_engine_diagnosis,
+        "story_strategy_card": story_strategy_card,
+    }
+    book_execution_profile = generate_bootstrap_execution_profile(
+        payload.model_dump(mode="python"),
+        story_bible,
+        project_intent_card,
+        template_pool_profile,
+        story_engine_diagnosis,
+        story_strategy_card,
+    ).model_dump(mode="python")
+    return {
+        "project_intent_card": project_intent_card,
+        "intent_packet": project_intent_card,
+        "template_pool_profile": template_pool_profile,
+        "bootstrap_asset_packet": asset_packet,
+        "book_execution_profile": book_execution_profile,
+        "strategy_candidates": strategy_candidates,
+        "strategy_arbitration": strategy_arbitration,
+        "story_engine_diagnosis": story_engine_diagnosis,
+        "story_strategy_card": story_strategy_card,
+    }
+
+
 def generate_story_engine_diagnosis_bundle(payload: NovelCreate, story_bible: dict[str, object]) -> dict:
     diagnosis = generate_story_engine_diagnosis(payload.model_dump(mode="python"), story_bible)
     return diagnosis.model_dump(mode="python")
@@ -238,6 +356,12 @@ def build_base_story_bible(
     payload: NovelCreate,
     story_engine_diagnosis: dict[str, object] | None = None,
     story_strategy_card: dict[str, object] | None = None,
+    bootstrap_intent_packet: dict[str, object] | None = None,
+    project_intent_card: dict[str, object] | None = None,
+    template_pool_profile: dict[str, object] | None = None,
+    book_execution_profile: dict[str, object] | None = None,
+    bootstrap_strategy_candidates: dict[str, object] | None = None,
+    bootstrap_strategy_decision: dict[str, object] | None = None,
 ) -> dict:
     genre = payload.genre.strip()
     premise = payload.premise.strip()
@@ -282,6 +406,12 @@ def build_base_story_bible(
         },
         "story_engine_diagnosis": story_engine_diagnosis or {},
         "story_strategy_card": story_strategy_card or {},
+        "bootstrap_intent_packet": bootstrap_intent_packet or project_intent_card or {},
+        "project_intent_card": project_intent_card or bootstrap_intent_packet or {},
+        "template_pool_profile": template_pool_profile or {},
+        "book_execution_profile": book_execution_profile or {},
+        "bootstrap_strategy_candidates": bootstrap_strategy_candidates or {},
+        "bootstrap_strategy_decision": bootstrap_strategy_decision or {},
         "pacing_rules": _opening_pacing_rules(payload, story_engine_diagnosis=story_engine_diagnosis, story_strategy_card=story_strategy_card),
         "characterization_rules": [
             "配角不能只做剧情按钮，要带一点自己的私心、职业习惯、说话方式或防备心理。",
@@ -318,11 +448,17 @@ def build_base_story_bible(
 
 
 
-def generate_title(payload: NovelCreate) -> str:
+def generate_title(payload: NovelCreate, story_bible: dict[str, object] | None = None) -> str:
     style = payload.style_preferences or {}
     custom = str(style.get("title_prefix") or style.get("title") or "").strip()
     if custom:
         return custom if ("：" in custom or "-" in custom) else f"{custom}：{payload.protagonist_name}的故事"
+
+    if story_bible:
+        title_payload = generate_bootstrap_title(payload.model_dump(mode="python"), dict(story_bible or {}))
+        title = str(title_payload.title or "").strip()
+        if title:
+            return title
 
     genre_prefix_map = {
         "都市悬疑": "迷雾档案",
@@ -345,12 +481,27 @@ def generate_title(payload: NovelCreate) -> str:
 
 
 def generate_global_story_outline(payload: NovelCreate, story_bible: dict[str, object]) -> dict:
-    outline = generate_global_outline(
+    outline = generate_bootstrap_outline_and_title(
+        payload.model_dump(mode="python"),
+        story_bible,
+        settings.global_outline_acts,
+    ).global_outline
+    return outline.model_dump(mode="python")
+
+
+def generate_global_story_outline_and_title(payload: NovelCreate, story_bible: dict[str, object]) -> tuple[dict, str, dict[str, object]]:
+    result = generate_bootstrap_outline_and_title(
         payload.model_dump(mode="python"),
         story_bible,
         settings.global_outline_acts,
     )
-    return outline.model_dump(mode="python")
+    outline = result.global_outline.model_dump(mode="python")
+    title = str(result.title or "").strip()
+    packaging = {
+        "packaging_line": str(result.packaging_line or "").strip(),
+        "reason": str(result.reason or "").strip(),
+    }
+    return outline, title, packaging
 
 
 
@@ -418,6 +569,29 @@ def generate_arc_outline_bundle(
 
 
 
+def apply_bootstrap_review_to_arc(first_arc: dict, review: dict[str, object] | None) -> dict:
+    if not isinstance(first_arc, dict) or not isinstance(review, dict):
+        return first_arc
+    if str(review.get("status") or "").strip().lower() != "repair":
+        return first_arc
+    chapter_map = {
+        int(item.get("chapter_no", 0) or 0): item
+        for item in (first_arc.get("chapters") or [])
+        if isinstance(item, dict)
+    }
+    for item in review.get("arc_adjustments") or []:
+        if not isinstance(item, dict):
+            continue
+        chapter = chapter_map.get(int(item.get("chapter_no", 0) or 0))
+        field = str(item.get("field") or "").strip()
+        value = str(item.get("value") or "").strip()
+        if not chapter or field not in {"goal", "conflict", "ending_hook", "payoff_or_pressure", "writing_note"} or not value:
+            continue
+        chapter[field] = value
+    first_arc["bootstrap_review"] = review
+    return first_arc
+
+
 def build_story_bible(
     payload: NovelCreate,
     title: str,
@@ -425,8 +599,27 @@ def build_story_bible(
     first_arc: dict,
     story_engine_diagnosis: dict[str, object] | None = None,
     story_strategy_card: dict[str, object] | None = None,
+    bootstrap_intent_packet: dict[str, object] | None = None,
+    project_intent_card: dict[str, object] | None = None,
+    template_pool_profile: dict[str, object] | None = None,
+    book_execution_profile: dict[str, object] | None = None,
+    bootstrap_strategy_candidates: dict[str, object] | None = None,
+    bootstrap_strategy_decision: dict[str, object] | None = None,
+    bootstrap_review: dict[str, object] | None = None,
+    foundation_assets: dict[str, object] | None = None,
+    arc_digest: dict[str, object] | None = None,
 ) -> dict:
-    base = build_base_story_bible(payload, story_engine_diagnosis=story_engine_diagnosis, story_strategy_card=story_strategy_card)
+    base = build_base_story_bible(
+        payload,
+        story_engine_diagnosis=story_engine_diagnosis,
+        story_strategy_card=story_strategy_card,
+        bootstrap_intent_packet=bootstrap_intent_packet,
+        project_intent_card=project_intent_card,
+        template_pool_profile=template_pool_profile,
+        book_execution_profile=book_execution_profile,
+        bootstrap_strategy_candidates=bootstrap_strategy_candidates,
+        bootstrap_strategy_decision=bootstrap_strategy_decision,
+    )
     return compose_story_bible(
         payload,
         title,
@@ -435,4 +628,7 @@ def build_story_bible(
         first_arc,
         story_engine_diagnosis=story_engine_diagnosis,
         story_strategy_card=story_strategy_card,
+        bootstrap_review=bootstrap_review,
+        foundation_assets=dict(foundation_assets or {}),
+        arc_digest=dict(arc_digest or {}),
     )

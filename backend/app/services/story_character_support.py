@@ -210,7 +210,7 @@ def _recent_retrospective_feedback(workspace_state: dict[str, Any]) -> list[dict
                 "problem": _text(item.get("core_problem")),
                 "correction": _text(item.get("next_chapter_correction")),
                 "event_type": _text(item.get("event_type")),
-                "agency_mode": _text(item.get("agency_mode")),
+                "flow_card": _text(item.get("flow_card") or item.get("agency_mode")),
             }
         )
     return [item for item in feedback if item.get("problem") or item.get("correction")]
@@ -224,13 +224,14 @@ def _build_chapter_retrospective(
     summary: Any,
     workspace_state: dict[str, Any] | None = None,
     console: dict[str, Any] | None = None,
+    story_bible: dict[str, Any] | None = None,
     payoff_delivery: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     workspace_state = workspace_state or console or {}
     event_type = _text(plan.get("event_type"), "试探类")
     progress_kind = _text(plan.get("progress_kind"), "信息推进")
     proactive_move = _text(plan.get("proactive_move"), "")
-    agency_mode = _text(plan.get("agency_mode_label") or plan.get("agency_mode"), "")
+    flow_card = _text(plan.get("flow_template_name") or plan.get("flow_template_tag") or plan.get("flow_template_id"), "")
     payoff_or_pressure = _text(plan.get("payoff_or_pressure"), "")
     hook_kind = _text(plan.get("hook_kind"), "更大谜团")
     support_note = _text(plan.get("supporting_character_note"), "")
@@ -261,6 +262,25 @@ def _build_chapter_retrospective(
     if hook_kind in {"", "余味收束"}:
         hook_status = "soft"
 
+    profile = (story_bible or {}).get("book_execution_profile") or {}
+    window_bias = (((story_bible or {}).get("story_workspace") or {}).get("window_execution_bias") or {}) if isinstance(story_bible, dict) else {}
+    high_flows = [str(x).strip() for x in (((profile.get("flow_family_priority") or {}).get("high") or [])) if str(x).strip()]
+    high_payoffs = [str(x).strip() for x in (((profile.get("payoff_priority") or {}).get("high") or [])) if str(x).strip()]
+    demotion_rules = [str(x).strip() for x in ((profile.get("demotion_rules") or [])) if str(x).strip()]
+    plan_blob = " ".join([event_type, progress_kind, proactive_move, flow_card, payoff_or_pressure, support_note])
+    alignment_hits = sum(1 for item in high_flows if item and item in plan_blob) + sum(1 for item in high_payoffs if item and item in plan_blob)
+    drift_hits = sum(1 for item in demotion_rules if item and item in plan_blob)
+    if drift_hits:
+        book_execution_alignment = "drift"
+    elif alignment_hits:
+        book_execution_alignment = "aligned"
+    elif profile:
+        book_execution_alignment = "mixed"
+    else:
+        book_execution_alignment = "unknown"
+    window_mode = _text(window_bias.get("window_mode"))
+    window_execution_alignment = "aligned" if (window_mode == "repay" and (payoff_status == "payoff" or "兑现" in payoff_or_pressure)) or (window_mode == "probe" and ("试探" in event_type or "验证" in flow_card or "信息推进" == progress_kind)) or (window_mode == "reveal" and ("发现" in payoff_or_pressure or "真相" in payoff_or_pressure or hook_kind in {"新发现", "更大谜团"})) else ("unknown" if not window_mode else "mixed")
+
     character_flatness_risk = "low"
     if plan.get("supporting_character_focus") and (not support_note or len(support_note) < 8):
         character_flatness_risk = "high"
@@ -271,14 +291,20 @@ def _build_chapter_retrospective(
     if repetition_risk != "low":
         corrections.append("下一章必须主动换主事件类型，不要再沿用同一种试探/盘问结构。")
     if agency_status != "pass":
-        if agency_mode:
-            corrections.append(f"下一章继续保留‘{agency_mode}’的主动性，但要把动作写实，不要只剩概念。")
+        if flow_card:
+            corrections.append(f"下一章继续按流程卡‘{flow_card}’推进，但要把动作写实，不要只剩概念。")
         else:
             corrections.append("下一章把主角主动动作写实，至少安排一次主动试探、争资源或误导。")
     if character_flatness_risk != "low":
         corrections.append("下一章把关键配角写出私心、说话习惯和忌讳，不能只留功能。")
     if hook_status == "soft":
         corrections.append("下一章的结尾拉力要更具体，最好落在新威胁、新发现或关键人物动作上。")
+    if book_execution_alignment == "drift":
+        corrections.append("下一章要重新贴回本书长期气质：顺着高优先流程、兑现方式和禁忌规则来写，不要漂成另一种书。")
+    elif book_execution_alignment == "mixed" and profile:
+        corrections.append("下一章把本书长期偏好的流程/兑现方式再写实半步，别只剩中性推进。")
+    if window_mode and window_execution_alignment == "mixed":
+        corrections.append(_text(window_bias.get("directive"), "下一章顺着当前窗口模式推进，不要逆着窗口节奏写。"))
 
     payoff_delivery = payoff_delivery or {}
     delivery_level = _text(payoff_delivery.get("delivery_level"), "")
@@ -299,7 +325,7 @@ def _build_chapter_retrospective(
         "title": chapter_title,
         "event_type": event_type,
         "progress_kind": progress_kind,
-        "agency_mode": agency_mode,
+        "flow_card": flow_card,
         "agency_status": agency_status,
         "payoff_status": payoff_status,
         "hook_status": hook_status,
@@ -310,6 +336,9 @@ def _build_chapter_retrospective(
         "should_compensate_next_chapter": should_compensate,
         "compensation_priority": compensation_priority,
         "payoff_compensation_note": compensation_note,
+        "book_execution_alignment": book_execution_alignment,
+        "window_execution_alignment": window_execution_alignment,
+        "book_execution_note": _text(profile.get("positioning_summary")),
         "core_problem": core_problem,
         "next_chapter_correction": " ".join(corrections[:2]),
         "summary": summary_text,

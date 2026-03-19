@@ -10,7 +10,7 @@ from app.services.ai_capability_policy import build_llm_policy_report
 _RISK_MARKERS: dict[str, list[tuple[str, str]]] = {
     "app/services/story_blueprint_builders.py": [
         ("_fallback_story_engine_profile", "创建阶段仍保留本地 story_engine_diagnosis 兜底。"),
-        ("_fallback_first_30_engine", "创建阶段仍保留本地 story_strategy_card 兜底。"),
+        ("_fallback_opening_strategy", "创建阶段仍保留本地 story_strategy_card 兜底。"),
     ],
     "app/services/chapter_title_service.py": [
         ('"source": "local_fallback"', "标题精修仍会补充本地 fallback 候选。"),

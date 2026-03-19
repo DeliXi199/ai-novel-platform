@@ -255,6 +255,123 @@ def _flow_template_prompt_payload(story_bible: dict[str, Any]) -> list[dict[str,
     return payload
 
 
+
+BOOTSTRAP_INTENT_PACKET_SCHEMA = {
+    "story_promise": "一句话写清这本书持续追更的核心体验",
+    "protagonist_core_drive": "主角当前最硬的行动驱动力",
+    "core_conflict": "当前阶段最主要的矛盾轴",
+    "expected_payoffs": ["2到4项读者期待的爽点或回报"],
+    "pacing_mode": "例如稳推/快推/慢热后提速",
+    "world_reveal_mode": "例如局部先行/层层揭示",
+    "first_ten_chapter_tasks": ["前10章必须完成的建立任务"],
+    "major_risks": ["最需要防的写崩点"],
+}
+
+BOOTSTRAP_STRATEGY_CANDIDATES_SCHEMA = {
+    "candidates": [
+        {
+            "candidate_id": "A",
+            "design_focus": "该候选方案的主要差异点",
+            "story_engine_diagnosis": "同 STORY_ENGINE_DIAGNOSIS_SCHEMA",
+            "story_strategy_card": "同 STORY_STRATEGY_CARD_SCHEMA",
+        }
+    ]
+}
+
+BOOTSTRAP_STRATEGY_ARBITRATION_SCHEMA = {
+    "selected_candidate_id": "A/B/C",
+    "selection_reason": "为什么选它，以及融合了哪些优点",
+    "merge_notes": ["2到4条融合或取舍说明"],
+    "story_engine_diagnosis": "同 STORY_ENGINE_DIAGNOSIS_SCHEMA",
+    "story_strategy_card": "同 STORY_STRATEGY_CARD_SCHEMA",
+}
+
+BOOK_EXECUTION_PROFILE_SCHEMA = {
+    "positioning_summary": "一句话概括这本书如何使用整套修仙模板池",
+    "template_pool_policy": "说明所有模板都可用，但后续按书级偏置和章级重筛来决定具体取用",
+    "flow_family_priority": {
+        "high": ["高频流程家族，如成长/冲突/探查"],
+        "medium": ["中频流程家族"],
+        "low": ["低频流程家族或前期少用家族"],
+    },
+    "scene_template_priority": {
+        "high": ["高优先场景模板名或 scene_id"],
+        "medium": ["中优先场景模板名或 scene_id"],
+        "low": ["低优先场景模板名或 scene_id"],
+    },
+    "payoff_priority": {
+        "high": ["高优先爽点卡名或 family"],
+        "medium": ["中优先爽点卡名或 family"],
+        "low": ["低优先爽点卡名或 family"],
+    },
+    "foreshadowing_priority": {
+        "primary": ["主线伏笔母卡名"],
+        "secondary": ["次线伏笔母卡名"],
+        "hold_back": ["需要后置显影的伏笔类型"],
+    },
+    "writing_strategy_priority": {
+        "high": ["高优先写法策略 strategy_id"],
+        "medium": ["中优先写法策略 strategy_id"],
+        "low": ["低优先或前期降权策略 strategy_id"],
+    },
+    "character_template_priority": {
+        "high": ["高优先人物模板名或 template_id"],
+        "medium": ["中优先人物模板名或 template_id"],
+    },
+    "rhythm_bias": {
+        "opening_pace": "例如稳推/快压/慢热后提速",
+        "world_reveal_density": "例如低/中/高",
+        "relationship_weight": "例如低/中/高",
+        "hook_strength": "例如中/强",
+        "payoff_interval": "例如短/中",
+        "pressure_curve": "例如渐压/快抬/波浪推进",
+    },
+    "demotion_rules": ["2到5条初始化阶段就该压住的写法或模板倾向"],
+}
+
+BOOTSTRAP_STORY_REVIEW_SCHEMA = {
+    "status": "keep 或 repair",
+    "summary": "一句话说明初始化方案是否能直接落地",
+    "strengths": ["当前方案的优点"],
+    "risks": ["当前方案的主要风险"],
+    "must_fix": ["必须修的点；没有就空列表"],
+    "arc_adjustments": [
+        {
+            "chapter_no": 1,
+            "field": "goal/conflict/ending_hook/payoff_or_pressure/writing_note",
+            "value": "替换后的短文本",
+            "reason": "为什么改",
+        }
+    ],
+}
+
+BOOTSTRAP_TITLE_SCHEMA = {
+    "title": "正式书名",
+    "packaging_line": "一句包装说明，可选",
+    "reason": "为什么这个标题贴题材和主角",
+}
+
+BOOTSTRAP_OUTLINE_AND_TITLE_SCHEMA = {
+    "title": "正式书名",
+    "packaging_line": "一句包装说明，可选",
+    "reason": "为什么这个标题贴题材和主角",
+    "global_outline": {
+        "story_positioning": {
+            "tone": "根据题材决定，例如慢热/凌厉/热血/诡谲",
+            "core_promise": "前期建立主角处境与主线引擎，中期扩大地图、对手与资源层级。",
+        },
+        "acts": [
+            {
+                "act_no": 1,
+                "title": "入局",
+                "purpose": "建立主角处境、第一轮目标、代价与主要矛盾",
+                "target_chapter_end": 12,
+                "summary": "主角在初始舞台拿到第一阶段主动权，并被推向更大的局势。",
+            }
+        ],
+    },
+}
+
 GLOBAL_OUTLINE_SCHEMA = {
     "story_positioning": {
         "tone": "根据题材决定，例如慢热/凌厉/热血/诡谲",
@@ -362,7 +479,7 @@ CHAPTER_FRONTLOAD_DECISION_SCHEMA = {
     },
     "prompt_strategy_selection": {
         "selected_strategy_ids": ["continuity_guard", "proactive_drive", "payoff_delivery"],
-        "selection_note": "只选本章真正该强调的写法，不要把所有 prompt 策略都开满。",
+        "selection_note": "只选本章真正该强调的写法，不要把所有 写法卡都开满。",
     },
 }
 
@@ -381,6 +498,35 @@ CHARACTER_RELATION_SCHEDULE_REVIEW_SCHEMA = {
     "do_not_force_stage_casting_action": True,
     "stage_casting_reason": "一句话说明本章是否适合承担补新人或旧人换功能动作。",
     "review_note": "一句话说明本章人物与关系推进重心。",
+}
+
+
+SCENE_CONTINUITY_REVIEW_SCHEMA = {
+    "must_continue_same_scene": True,
+    "recommended_scene_count": 2,
+    "transition_mode": "continue_same_scene | soft_cut | single_scene",
+    "allowed_transition": "stay_in_scene | resolve_then_cut | soft_cut_only | time_skip_allowed",
+    "opening_anchor": "下一章开头必须先接住的动作/画面/后果锚点。",
+    "must_carry_over": ["上一章留下来的动作后果或线索"],
+    "cut_plan": [
+        {
+            "cut_after_scene_no": 1,
+            "reason": "为什么这里可以切场或必须继续同场推进。",
+            "required_result": "切场前必须先拿到的阶段结果。",
+            "transition_anchor": "切场后开头必须显式给出的锚点。",
+        }
+    ],
+    "scene_sequence_plan": [
+        {
+            "scene_no": 1,
+            "scene_name": "院中续压",
+            "scene_role": "opening | main | ending | bridge",
+            "purpose": "这一场具体要先完成什么。",
+            "transition_in": "这一场开头如何承接上一场或上一章。",
+            "target_result": "这一场结束前必须拿到的阶段结果。",
+        }
+    ],
+    "review_note": "一句话说明这章场景连续性为什么应该这样处理。",
 }
 
 
@@ -473,9 +619,30 @@ TITLE_REFINEMENT_SCHEMA = {
 
 SUMMARY_TITLE_PACKAGE_SCHEMA = {
     "summary": {
-        "event_summary": "主角在门后发现旧欠条，确认有人提前盯上自己。",
+        "event_summary": "主角借险局逼出对手失误，顺势稳住了新到手的药材。",
         "character_updates": {
-            "林秋雨": "对主角的警惕明显上升。"
+            "林秋雨": {
+                "current_realm": "炼气三层",
+                "cultivation_progress": "灵力运转更稳，已摸到下一层门槛。",
+                "latest_update": "对主角的警惕明显上升。"
+            },
+            "__resource_updates__": {
+                "赤纹草": {
+                    "quality_tier": "中品",
+                    "quantity_after": 2,
+                    "status": "持有中",
+                    "latest_update": "药力保存完整，价值被重新抬高。"
+                }
+            },
+            "__monster_updates__": {
+                "裂爪山魈": {
+                    "species_type": "山魈",
+                    "current_realm": "炼气四层",
+                    "threat_level": "炼气四层",
+                    "status": "active",
+                    "latest_update": "首次完整露面，压迫感明显高于主角当前层级。"
+                }
+            }
         },
         "new_clues": ["欠条背后另有旧账", "有人提前进入过屋内"],
         "open_hooks": ["欠条是谁故意留下的", "盯梢者是否已经认出主角"],
@@ -503,46 +670,37 @@ STORY_ENGINE_DIAGNOSIS_SCHEMA = {
 
 
 STORY_STRATEGY_CARD_SCHEMA = {
-    "story_promise": "前30章要让读者明确感到：这本书的推进方式和常规模板不同。",
+    "story_promise": "开书就要让读者明确感到：这本书的推进方式和常规模板不同。",
     "strategic_premise": "主角要在现实压力、资源缺口和更大局势之间找到可持续上升路径。",
     "main_conflict_axis": "立足需求与暴露风险的长期拉扯",
-    "first_30_mainline_summary": "前30章围绕立足、试错、关系绑定与阶段破局推进，不让同一桥段垄断。",
-    "chapter_1_to_10": {
-        "range": "1-10",
-        "stage_mission": "用题材最有辨识度的推进方式抓住读者",
+    "long_term_direction": "先立足，再扩张关系、资源与地图，始终让成长绑定代价与后果。",
+    "opening_five_summary": "开局五章围绕立足、试错、关系绑定与第一次明确破局推进，不让同一桥段垄断。",
+    "opening_window": {
+        "range": "1-5",
+        "stage_mission": "用题材最有辨识度的推进方式抓住读者，并立住修炼与成长主线",
         "reader_hook": "第一轮可感收益 + 明确代价",
         "frequent_elements": ["现实压力", "主动试探", "具体结果"],
         "limited_elements": ["重复盘问", "连续隐藏同一秘密"],
         "relationship_tasks": ["建立至少一条会长期变化的关键关系"],
-        "phase_result": "主角拿到第一阶段立足资本，并被推向更大局势",
+        "phase_result": "主角拿到第一阶段立足资本，并被推向下一轮五章滚动规划",
     },
-    "chapter_11_to_20": {
-        "range": "11-20",
-        "stage_mission": "扩大地图、对手和关系压力",
-        "reader_hook": "阶段收益之后出现更高位风险或更大诱惑",
-        "frequent_elements": ["关系变化", "资源争夺", "局势升级"],
-        "limited_elements": ["原地踏步试探"],
-        "relationship_tasks": ["让关键配角关系发生第一次实质变化"],
-        "phase_result": "主角失去一部分原有安全区，但获得新的行动空间",
-    },
-    "chapter_21_to_30": {
-        "range": "21-30",
-        "stage_mission": "做出前30章的阶段高潮与方向确认",
-        "reader_hook": "更大的地图、规则或敌意被清楚打开",
-        "frequent_elements": ["阶段破局", "主动布局", "关系站队"],
-        "limited_elements": ["只靠气氛拖章"],
-        "relationship_tasks": ["把至少一条关系推入不可逆的新状态"],
-        "phase_result": "主角从开书状态进入新的故事层级",
-    },
+    "rolling_replan_rule": "初始化只定书级骨架和首个五章方向，之后每五章重规划一次。",
     "frequent_event_types": ["资源获取类", "关系推进类", "反制类"],
     "limited_event_types": ["连续被怀疑后被动应付"],
     "must_establish_relationships": ["核心绑定角色", "长期压迫源", "阶段性合作对象"],
     "escalation_path": ["处境压力", "局部破局", "关系重组", "阶段高潮"],
-    "anti_homogenization_rules": ["不要让前三十章只围着一个物件转", "每个阶段都要换推进重心"],
+    "anti_homogenization_rules": ["不要让开局五章只围着一个物件打转", "滚动重规划后也要持续换推进重心"],
 }
 
 
 STORY_ENGINE_STRATEGY_BUNDLE_SCHEMA = {
+    "story_engine_diagnosis": STORY_ENGINE_DIAGNOSIS_SCHEMA,
+    "story_strategy_card": STORY_STRATEGY_CARD_SCHEMA,
+}
+
+
+BOOTSTRAP_INTENT_STRATEGY_BUNDLE_SCHEMA = {
+    "bootstrap_intent_packet": BOOTSTRAP_INTENT_PACKET_SCHEMA,
     "story_engine_diagnosis": STORY_ENGINE_DIAGNOSIS_SCHEMA,
     "story_strategy_card": STORY_STRATEGY_CARD_SCHEMA,
 }

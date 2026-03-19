@@ -7,12 +7,27 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
-from app.services.agency_modes import AGENCY_MODES
 from app.services.generation_exceptions import ErrorCodes, GenerationError
 from app.services.llm_runtime import call_json_response, extract_json, provider_name
 from app.services.prompt_templates import (
     arc_outline_system_prompt,
     arc_outline_user_prompt,
+    bootstrap_execution_profile_system_prompt,
+    bootstrap_execution_profile_user_prompt,
+    bootstrap_intent_parse_system_prompt,
+    bootstrap_intent_parse_user_prompt,
+    bootstrap_intent_strategy_bundle_system_prompt,
+    bootstrap_intent_strategy_bundle_user_prompt,
+    bootstrap_story_review_system_prompt,
+    bootstrap_story_review_user_prompt,
+    bootstrap_strategy_arbitration_system_prompt,
+    bootstrap_strategy_arbitration_user_prompt,
+    bootstrap_strategy_candidates_system_prompt,
+    bootstrap_strategy_candidates_user_prompt,
+    bootstrap_outline_title_system_prompt,
+    bootstrap_outline_title_user_prompt,
+    bootstrap_title_system_prompt,
+    bootstrap_title_user_prompt,
     global_outline_system_prompt,
     global_outline_user_prompt,
     instruction_parse_system_prompt,
@@ -113,14 +128,14 @@ class ChapterPlan(BaseModel):
     agency_avoid: list[str] | None = None
 
 
-class ThirtyChapterPhase(BaseModel):
-    range: str
-    stage_mission: str
-    reader_hook: str
+class OpeningWindowPhase(BaseModel):
+    range: str = ""
+    stage_mission: str = ""
+    reader_hook: str = ""
     frequent_elements: list[str] = Field(default_factory=list)
     limited_elements: list[str] = Field(default_factory=list)
     relationship_tasks: list[str] = Field(default_factory=list)
-    phase_result: str
+    phase_result: str = ""
 
 
 class StoryEngineDiagnosisPayload(BaseModel):
@@ -141,13 +156,13 @@ class StoryEngineDiagnosisPayload(BaseModel):
 
 
 class StoryStrategyCardPayload(BaseModel):
-    story_promise: str
-    strategic_premise: str
-    main_conflict_axis: str
-    first_30_mainline_summary: str
-    chapter_1_to_10: ThirtyChapterPhase
-    chapter_11_to_20: ThirtyChapterPhase
-    chapter_21_to_30: ThirtyChapterPhase
+    story_promise: str = ""
+    strategic_premise: str = ""
+    main_conflict_axis: str = ""
+    long_term_direction: str = ""
+    opening_five_summary: str = ""
+    opening_window: OpeningWindowPhase = Field(default_factory=OpeningWindowPhase)
+    rolling_replan_rule: str = ""
     frequent_event_types: list[str] = Field(default_factory=list)
     limited_event_types: list[str] = Field(default_factory=list)
     must_establish_relationships: list[str] = Field(default_factory=list)
@@ -158,6 +173,124 @@ class StoryStrategyCardPayload(BaseModel):
 class StoryEngineStrategyBundlePayload(BaseModel):
     story_engine_diagnosis: StoryEngineDiagnosisPayload
     story_strategy_card: StoryStrategyCardPayload
+
+
+class BootstrapIntentPacket(BaseModel):
+    story_promise: str
+    protagonist_core_drive: str
+    core_conflict: str
+    expected_payoffs: list[str] = Field(default_factory=list)
+    pacing_mode: str
+    world_reveal_mode: str
+    first_ten_chapter_tasks: list[str] = Field(default_factory=list)
+    major_risks: list[str] = Field(default_factory=list)
+
+
+class BootstrapIntentStrategyBundlePayload(BaseModel):
+    bootstrap_intent_packet: BootstrapIntentPacket
+    story_engine_diagnosis: StoryEngineDiagnosisPayload
+    story_strategy_card: StoryStrategyCardPayload
+
+
+class BootstrapStrategyCandidate(BaseModel):
+    candidate_id: str
+    design_focus: str
+    story_engine_diagnosis: StoryEngineDiagnosisPayload
+    story_strategy_card: StoryStrategyCardPayload
+
+
+class BootstrapStrategyCandidatesPayload(BaseModel):
+    candidates: list[BootstrapStrategyCandidate] = Field(default_factory=list)
+
+
+class BootstrapInitializationCardsPayload(BaseModel):
+    story_engine_card: dict[str, Any] = Field(default_factory=dict)
+    mainline_drive_card: dict[str, Any] = Field(default_factory=dict)
+    growth_upgrade_card: dict[str, Any] = Field(default_factory=dict)
+    pressure_source_card: dict[str, Any] = Field(default_factory=dict)
+    payoff_rhythm_card: dict[str, Any] = Field(default_factory=dict)
+    darkline_card: dict[str, Any] = Field(default_factory=dict)
+    foreshadowing_mother_card: dict[str, Any] = Field(default_factory=dict)
+    chapter_structure_card: dict[str, Any] = Field(default_factory=dict)
+    expression_emphasis_card: dict[str, Any] = Field(default_factory=dict)
+    world_reveal_card: dict[str, Any] = Field(default_factory=dict)
+
+
+class BootstrapStrategyArbitrationPayload(BaseModel):
+    selected_candidate_id: str
+    selection_reason: str
+    merge_notes: list[str] = Field(default_factory=list)
+    story_engine_diagnosis: StoryEngineDiagnosisPayload
+    story_strategy_card: StoryStrategyCardPayload
+    initialization_cards: BootstrapInitializationCardsPayload = Field(default_factory=BootstrapInitializationCardsPayload)
+
+
+class BookExecutionProfilePriority(BaseModel):
+    high: list[str] = Field(default_factory=list)
+    medium: list[str] = Field(default_factory=list)
+    low: list[str] = Field(default_factory=list)
+
+
+class BookExecutionForeshadowPriority(BaseModel):
+    primary: list[str] = Field(default_factory=list)
+    secondary: list[str] = Field(default_factory=list)
+    hold_back: list[str] = Field(default_factory=list)
+
+
+class BookExecutionCharacterPriority(BaseModel):
+    high: list[str] = Field(default_factory=list)
+    medium: list[str] = Field(default_factory=list)
+
+
+class BookExecutionRhythmBias(BaseModel):
+    opening_pace: str = ""
+    world_reveal_density: str = ""
+    relationship_weight: str = ""
+    hook_strength: str = ""
+    payoff_interval: str = ""
+    pressure_curve: str = ""
+
+
+class BookExecutionProfilePayload(BaseModel):
+    positioning_summary: str = ""
+    template_pool_policy: str = ""
+    flow_family_priority: BookExecutionProfilePriority = Field(default_factory=BookExecutionProfilePriority)
+    scene_template_priority: BookExecutionProfilePriority = Field(default_factory=BookExecutionProfilePriority)
+    payoff_priority: BookExecutionProfilePriority = Field(default_factory=BookExecutionProfilePriority)
+    foreshadowing_priority: BookExecutionForeshadowPriority = Field(default_factory=BookExecutionForeshadowPriority)
+    writing_strategy_priority: BookExecutionProfilePriority = Field(default_factory=BookExecutionProfilePriority)
+    character_template_priority: BookExecutionCharacterPriority = Field(default_factory=BookExecutionCharacterPriority)
+    rhythm_bias: BookExecutionRhythmBias
+    demotion_rules: list[str] = Field(default_factory=list)
+
+
+class BootstrapArcAdjustment(BaseModel):
+    chapter_no: int
+    field: str
+    value: str
+    reason: str | None = None
+
+
+class BootstrapStoryReviewPayload(BaseModel):
+    status: str
+    summary: str
+    strengths: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    must_fix: list[str] = Field(default_factory=list)
+    arc_adjustments: list[BootstrapArcAdjustment] = Field(default_factory=list)
+
+
+class BootstrapTitlePayload(BaseModel):
+    title: str
+    packaging_line: str | None = None
+    reason: str | None = None
+
+
+class BootstrapOutlineAndTitlePayload(BaseModel):
+    title: str
+    packaging_line: str | None = None
+    reason: str | None = None
+    global_outline: GlobalOutlinePayload
 
 
 def _infer_event_type(goal: str, conflict: str, ending_hook: str) -> str:
@@ -245,7 +378,30 @@ def _keyword_hit_count(text: str, keywords: list[str]) -> int:
     return sum(1 for token in keywords if token and token in text)
 
 
-def _flow_match_score(template: dict[str, Any], chapter: ChapterPlan, recent_flow_ids: list[str]) -> float:
+def _book_execution_profile_from_story_bible(story_bible: dict[str, Any] | None) -> dict[str, Any]:
+    profile = ((story_bible or {}).get("book_execution_profile") or {}) if isinstance(story_bible, dict) else {}
+    return profile if isinstance(profile, dict) else {}
+
+
+
+def _priority_bucket_score(value: str, *, high: list[str] | None = None, medium: list[str] | None = None, low: list[str] | None = None) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    high_list = [str(item or "").strip() for item in (high or []) if str(item or "").strip()]
+    medium_list = [str(item or "").strip() for item in (medium or []) if str(item or "").strip()]
+    low_list = [str(item or "").strip() for item in (low or []) if str(item or "").strip()]
+    if any(token == text or token in text or text in token for token in high_list):
+        return 3.5
+    if any(token == text or token in text or text in token for token in medium_list):
+        return 1.2
+    if any(token == text or token in text or text in token for token in low_list):
+        return -2.4
+    return 0.0
+
+
+
+def _flow_match_score(template: dict[str, Any], chapter: ChapterPlan, recent_flow_ids: list[str], story_bible: dict[str, Any] | None = None) -> float:
     event_type = str(chapter.event_type or "").strip()
     progress_kind = str(chapter.progress_kind or "").strip()
     hook_style = str(chapter.hook_style or "").strip()
@@ -269,6 +425,14 @@ def _flow_match_score(template: dict[str, Any], chapter: ChapterPlan, recent_flo
     if hook_style and hook_style in list(template.get("preferred_hook_styles") or []):
         score += 2.0
     score += min(_keyword_hit_count(text, list(template.get("keyword_hints") or [])), 3) * 1.4
+    profile = _book_execution_profile_from_story_bible(story_bible)
+    flow_priority = (profile.get("flow_family_priority") or {}) if isinstance(profile, dict) else {}
+    score += _priority_bucket_score(
+        str(template.get("family") or "").strip(),
+        high=list(flow_priority.get("high") or []),
+        medium=list(flow_priority.get("medium") or []),
+        low=list(flow_priority.get("low") or []),
+    )
     recent = [str(item or "").strip() for item in recent_flow_ids if str(item or "").strip()]
     flow_id = str(template.get("flow_id") or "").strip()
     if flow_id in recent:
@@ -288,7 +452,7 @@ def _choose_flow_template_for_chapter(chapter: ChapterPlan, story_bible: dict[st
 
     candidates: list[tuple[float, dict[str, Any]]] = []
     for item in templates:
-        score = _flow_match_score(item, chapter, recent_flow_ids)
+        score = _flow_match_score(item, chapter, recent_flow_ids, story_bible)
         flow_id = str(item.get("flow_id") or "").strip()
         if desired_id and flow_id == desired_id:
             score += 8.0
@@ -307,6 +471,82 @@ def _choose_flow_template_for_chapter(chapter: ChapterPlan, story_bible: dict[st
         else:
             best = chosen
     return best
+
+
+def _preferred_hook_styles_for_profile(profile: dict[str, Any] | None) -> list[str]:
+    rhythm = ((profile or {}).get("rhythm_bias") or {}) if isinstance(profile, dict) else {}
+    hook_strength = str(rhythm.get("hook_strength") or "").strip()
+    pressure_curve = str(rhythm.get("pressure_curve") or "").strip()
+    if any(token in hook_strength for token in ["强", "高"]):
+        ordered = ["危险逼近", "信息反转", "人物选择", "异象", "余味收束", "平稳过渡"]
+    elif any(token in hook_strength for token in ["弱", "低"]):
+        ordered = ["平稳过渡", "余味收束", "人物选择", "信息反转", "危险逼近", "异象"]
+    else:
+        ordered = ["人物选择", "信息反转", "危险逼近", "余味收束", "平稳过渡", "异象"]
+    if any(token in pressure_curve for token in ["渐压", "递增"]):
+        ordered = ["危险逼近", "人物选择", "信息反转", "余味收束", "平稳过渡", "异象"]
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in ordered:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
+
+def _apply_book_execution_profile_to_chapter(chapter: ChapterPlan, story_bible: dict[str, Any], *, chapter_offset: int = 0) -> None:
+    profile = _book_execution_profile_from_story_bible(story_bible)
+    if not profile:
+        return
+    rhythm = (profile.get("rhythm_bias") or {}) if isinstance(profile, dict) else {}
+    if not getattr(chapter, "hook_style", None):
+        hook_styles = _preferred_hook_styles_for_profile(profile)
+        if hook_styles:
+            chapter.hook_style = hook_styles[int(chapter_offset or 0) % len(hook_styles)]
+    if not getattr(chapter, "opening_beat", None):
+        opening_pace = str(rhythm.get("opening_pace") or "稳推").strip() or "稳推"
+        chapter.opening_beat = f"按{opening_pace}节奏开场，主角先手推进。"[:24]
+    if not getattr(chapter, "mid_turn", None):
+        pressure_curve = str(rhythm.get("pressure_curve") or "渐压").strip() or "渐压"
+        chapter.mid_turn = f"中段按{pressure_curve}抬压并逼出换招。"[:24]
+    if not getattr(chapter, "discovery", None):
+        world_density = str(rhythm.get("world_reveal_density") or "中").strip() or "中"
+        chapter.discovery = f"只按{world_density}密度补当前必要信息。"[:24]
+    if not getattr(chapter, "closing_image", None):
+        hook_strength = str(rhythm.get("hook_strength") or "中强").strip() or "中强"
+        chapter.closing_image = f"章尾按{hook_strength}拉力落在结果或新压上。"[:24]
+    if not getattr(chapter, "flow_variation_note", None):
+        flow_priority = (profile.get("flow_family_priority") or {}) if isinstance(profile, dict) else {}
+        high = [str(item or "").strip() for item in (flow_priority.get("high") or []) if str(item or "").strip()]
+        if high:
+            chapter.flow_variation_note = f"本章优先贴近{' / '.join(high[:2])}系节奏。"[:36]
+    relationship_weight = str(rhythm.get("relationship_weight") or "").strip()
+    if not getattr(chapter, "supporting_character_note", None) and relationship_weight:
+        chapter.supporting_character_note = (f"关系占比{relationship_weight}，配角先给立场与受压反应。")[:40]
+    notes: list[str] = []
+    positioning = str(profile.get("positioning_summary") or "").strip()
+    if positioning:
+        notes.append(f"长期气质：{positioning[:28]}")
+    opening_pace = str(rhythm.get("opening_pace") or "").strip()
+    if opening_pace:
+        notes.append(f"开场节奏{opening_pace}")
+    world_density = str(rhythm.get("world_reveal_density") or "").strip()
+    if world_density:
+        notes.append(f"世界揭示{world_density}")
+    payoff_interval = str(rhythm.get("payoff_interval") or "").strip()
+    if payoff_interval:
+        notes.append(f"兑现节奏{payoff_interval}")
+    pressure_curve = str(rhythm.get("pressure_curve") or "").strip()
+    if pressure_curve:
+        notes.append(f"压力曲线{pressure_curve}")
+    demotion_rules = [str(item or "").strip() for item in (profile.get("demotion_rules") or []) if str(item or "").strip()]
+    if demotion_rules:
+        notes.append(f"避免：{demotion_rules[0][:18]}")
+    existing = str(chapter.writing_note or "").strip()
+    merged = "；".join([item for item in notes if item])
+    if merged:
+        chapter.writing_note = (f"{existing} {merged}".strip() if existing else merged)[:120]
 
 
 def _apply_flow_template_to_chapter(chapter: ChapterPlan, story_bible: dict[str, Any]) -> None:
@@ -389,34 +629,54 @@ def _normalize_story_engine_diagnosis(payload: dict[str, Any], diagnosis: StoryE
 
 
 def _normalize_story_strategy_card(strategy: StoryStrategyCardPayload) -> StoryStrategyCardPayload:
-    def _fill_phase(phase: ThirtyChapterPhase, *, phase_range: str, mission: str, result: str) -> ThirtyChapterPhase:
-        if not phase.range:
-            phase.range = phase_range
-        if not phase.stage_mission:
-            phase.stage_mission = mission
-        if not phase.reader_hook:
-            phase.reader_hook = "这一阶段必须给读者明确的局势变化与追更理由。"
-        if not phase.frequent_elements:
-            phase.frequent_elements = ["主角主动选择", "具体结果", "关系或资源变化"]
-        if not phase.limited_elements:
-            phase.limited_elements = ["重复试探同一线索"]
-        if not phase.relationship_tasks:
-            phase.relationship_tasks = ["建立或改写一条关键关系"]
-        if not phase.phase_result:
-            phase.phase_result = result
-        return phase
+    legacy_opening = getattr(strategy, "__pydantic_extra__", {}) or {}
+    old_phase = legacy_opening.get("chapter_1_to_10") if isinstance(legacy_opening, dict) else {}
+    if isinstance(old_phase, dict):
+        if not strategy.opening_window.range:
+            strategy.opening_window.range = str(old_phase.get("range") or "")
+        if not strategy.opening_window.stage_mission:
+            strategy.opening_window.stage_mission = str(old_phase.get("stage_mission") or "")
+        if not strategy.opening_window.reader_hook:
+            strategy.opening_window.reader_hook = str(old_phase.get("reader_hook") or "")
+        if not strategy.opening_window.frequent_elements:
+            strategy.opening_window.frequent_elements = list(old_phase.get("frequent_elements") or [])
+        if not strategy.opening_window.limited_elements:
+            strategy.opening_window.limited_elements = list(old_phase.get("limited_elements") or [])
+        if not strategy.opening_window.relationship_tasks:
+            strategy.opening_window.relationship_tasks = list(old_phase.get("relationship_tasks") or [])
+        if not strategy.opening_window.phase_result:
+            strategy.opening_window.phase_result = str(old_phase.get("phase_result") or "")
+        if not strategy.opening_five_summary:
+            strategy.opening_five_summary = str(legacy_opening.get("first_30_mainline_summary") or old_phase.get("stage_mission") or "")
 
+    phase = strategy.opening_window
     if not strategy.story_promise:
-        strategy.story_promise = "前30章要让读者明确感到这本书有自己的推进方式。"
+        strategy.story_promise = "开书就要让读者明确感到这本书有自己的推进方式。"
     if not strategy.strategic_premise:
         strategy.strategic_premise = "围绕主角处境、目标、代价与更大局势持续升级。"
     if not strategy.main_conflict_axis:
         strategy.main_conflict_axis = "立足需求与暴露风险的长期拉扯。"
-    if not strategy.first_30_mainline_summary:
-        strategy.first_30_mainline_summary = "前30章围绕立足、关系绑定、阶段破局与更大局势展开。"
-    strategy.chapter_1_to_10 = _fill_phase(strategy.chapter_1_to_10, phase_range="1-10", mission="先用最有辨识度的推进方式抓住读者。", result="主角获得第一阶段立足资本。")
-    strategy.chapter_11_to_20 = _fill_phase(strategy.chapter_11_to_20, phase_range="11-20", mission="扩大地图、关系和局势压力。", result="主角失去一部分原有安全区，但得到新的行动空间。")
-    strategy.chapter_21_to_30 = _fill_phase(strategy.chapter_21_to_30, phase_range="21-30", mission="做出阶段高潮并确认下一层故事方向。", result="主角进入新的故事层级。")
+    if not strategy.long_term_direction:
+        strategy.long_term_direction = "先立足，再扩张关系、资源与地图，始终让成长绑定代价与后果。"
+    if not strategy.opening_five_summary:
+        strategy.opening_five_summary = "开局五章围绕立足、关系绑定、阶段破局与第一次明确回报展开。"
+    if not phase.range:
+        phase.range = "1-5"
+    if not phase.stage_mission:
+        phase.stage_mission = "先用最有辨识度的推进方式抓住读者，并立住修炼与成长主线。"
+    if not phase.reader_hook:
+        phase.reader_hook = "这一阶段必须给读者明确的局势变化、第一轮回报和继续追更的理由。"
+    if not phase.frequent_elements:
+        phase.frequent_elements = ["主角主动选择", "具体结果", "关系或资源变化"]
+    if not phase.limited_elements:
+        phase.limited_elements = ["重复试探同一线索"]
+    if not phase.relationship_tasks:
+        phase.relationship_tasks = ["建立或改写一条关键关系"]
+    if not phase.phase_result:
+        phase.phase_result = "主角拿到第一阶段立足资本，并进入下一轮五章滚动规划。"
+    strategy.opening_window = phase
+    if not strategy.rolling_replan_rule:
+        strategy.rolling_replan_rule = "初始化只定书级骨架和首个五章方向，之后每五章重规划一次。"
     if not strategy.frequent_event_types:
         strategy.frequent_event_types = ["关系推进类", "资源获取类", "反制类"]
     if not strategy.limited_event_types:
@@ -426,8 +686,425 @@ def _normalize_story_strategy_card(strategy: StoryStrategyCardPayload) -> StoryS
     if not strategy.escalation_path:
         strategy.escalation_path = ["处境压力", "局部破局", "关系重组", "阶段高潮"]
     if not strategy.anti_homogenization_rules:
-        strategy.anti_homogenization_rules = ["不要让前30章只围着一个物件打转", "每个阶段都要换推进重心"]
+        strategy.anti_homogenization_rules = ["不要让开局五章只围着一个物件打转", "滚动重规划后也要持续换推进重心"]
     return strategy
+
+
+def _normalize_bootstrap_intent(payload: dict[str, Any], packet: BootstrapIntentPacket) -> BootstrapIntentPacket:
+    genre = str((payload or {}).get("genre") or "").strip()
+    premise = str((payload or {}).get("premise") or "").strip()
+    protagonist = str((payload or {}).get("protagonist_name") or "主角").strip()
+    if not packet.story_promise:
+        packet.story_promise = f"让读者持续看到{protagonist}如何在‘{premise or genre}’里一步步破局。"
+    if not packet.protagonist_core_drive:
+        packet.protagonist_core_drive = f"{protagonist}必须先保住立足点，再争取更主动的位置。"
+    if not packet.core_conflict:
+        packet.core_conflict = f"{protagonist}的生存需求与更大规则压迫之间的拉扯。"
+    if not packet.expected_payoffs:
+        packet.expected_payoffs = ["第一轮有效收益", "更高层风险显影", "关键关系站位变化"]
+    if not packet.pacing_mode:
+        packet.pacing_mode = "稳推但每章要有结果"
+    if not packet.world_reveal_mode:
+        packet.world_reveal_mode = "局部先行，逐层抬高"
+    if not packet.first_ten_chapter_tasks:
+        packet.first_ten_chapter_tasks = ["建立主角处境", "钉牢主线入口", "给第一轮明确回报"]
+    if not packet.major_risks:
+        packet.major_risks = ["连续只写气氛不落结果", "重复同一种试探结构"]
+    return packet
+
+
+
+def _normalize_bootstrap_strategy_candidates(payload: dict[str, Any], bundle: BootstrapStrategyCandidatesPayload) -> BootstrapStrategyCandidatesPayload:
+    normalized: list[BootstrapStrategyCandidate] = []
+    fallback_ids = ["A", "B", "C"]
+    for idx, item in enumerate(bundle.candidates[:3]):
+        item.candidate_id = str(item.candidate_id or fallback_ids[idx]).strip()[:8] or fallback_ids[idx]
+        if not item.design_focus:
+            item.design_focus = f"候选{item.candidate_id}：强调不同的开局抓力与阶段推进方式。"
+        item.story_engine_diagnosis = _normalize_story_engine_diagnosis(payload, item.story_engine_diagnosis)
+        item.story_strategy_card = _normalize_story_strategy_card(item.story_strategy_card)
+        normalized.append(item)
+    if not normalized:
+        fallback = generate_story_engine_strategy_bundle(payload, {})
+        normalized.append(BootstrapStrategyCandidate(candidate_id="A", design_focus="默认候选", story_engine_diagnosis=fallback.story_engine_diagnosis, story_strategy_card=fallback.story_strategy_card))
+    bundle.candidates = normalized
+    return bundle
+
+
+
+def _normalize_priority_bucket(items: list[Any] | None, *, limit: int = 6) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for item in items or []:
+        text = str(item or '').strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        output.append(text[:40])
+        if len(output) >= limit:
+            break
+    return output
+
+
+def _fallback_priority(*preferred: str, available: list[str], low_defaults: list[str] | None = None) -> BookExecutionProfilePriority:
+    high = [item for item in _normalize_priority_bucket(list(preferred), limit=6) if item in available]
+    medium = [item for item in available if item not in high][:6]
+    low = [item for item in _normalize_priority_bucket(low_defaults or [], limit=6) if item in available and item not in high and item not in medium]
+    return BookExecutionProfilePriority(high=high, medium=medium, low=low)
+
+
+def _normalize_book_execution_profile(
+    payload: dict[str, Any],
+    template_pool_profile: dict[str, Any],
+    diagnosis: StoryEngineDiagnosisPayload,
+    strategy: StoryStrategyCardPayload,
+    profile: BookExecutionProfilePayload,
+) -> BookExecutionProfilePayload:
+    flow_available = [str(item).strip() for item in (((template_pool_profile.get('flow_templates') or {}).get('families')) or []) if str(item).strip()] or ['成长', '冲突', '探查', '关系']
+    scene_available = [str(item).strip() for item in (((template_pool_profile.get('scene_templates') or {}).get('scene_ids')) or []) if str(item).strip()] or ['same_scene_continuation', 'bridge_settlement']
+    payoff_available = [str(item).strip() for item in (((template_pool_profile.get('payoff_cards') or {}).get('sample_names')) or []) if str(item).strip()] or ['捡漏反压', '公开打脸']
+    foreshadow_available = [str(item).strip() for item in (((template_pool_profile.get('foreshadowing') or {}).get('parent_names')) or []) if str(item).strip()] or ['身份真相型', '规则异常型']
+    writing_available = [str(item).strip() for item in (((template_pool_profile.get('writing_cards') or {}).get('strategy_ids')) or []) if str(item).strip()] or ['continuity_guard', 'proactive_drive']
+    character_available = [str(item).strip() for item in (((template_pool_profile.get('character_templates') or {}).get('sample_ids')) or []) if str(item).strip()] or ['starter_cautious_observer']
+
+    if not str(profile.positioning_summary or '').strip():
+        profile.positioning_summary = f"{diagnosis.primary_story_engine}为主轴，整套修仙模板池全量保留，具体章节再做 AI 重筛。"[:120]
+    if not str(profile.template_pool_policy or '').strip():
+        profile.template_pool_policy = '整套修仙模板池全量保留；初始化阶段只定义长期偏置与降权规则，具体取用交给章级 AI 重筛。'
+
+    if not (profile.flow_family_priority.high or profile.flow_family_priority.medium or profile.flow_family_priority.low):
+        profile.flow_family_priority = _fallback_priority(*list(strategy.frequent_event_types[:3]), available=flow_available, low_defaults=list(strategy.limited_event_types[:3]))
+    else:
+        profile.flow_family_priority.high = [item for item in _normalize_priority_bucket(profile.flow_family_priority.high) if item in flow_available]
+        profile.flow_family_priority.medium = [item for item in _normalize_priority_bucket(profile.flow_family_priority.medium) if item in flow_available and item not in profile.flow_family_priority.high]
+        profile.flow_family_priority.low = [item for item in _normalize_priority_bucket(profile.flow_family_priority.low) if item in flow_available and item not in profile.flow_family_priority.high and item not in profile.flow_family_priority.medium]
+
+    for bucket_name, available in [('scene_template_priority', scene_available), ('payoff_priority', payoff_available), ('writing_strategy_priority', writing_available)]:
+        bucket = getattr(profile, bucket_name)
+        bucket.high = [item for item in _normalize_priority_bucket(bucket.high) if item in available]
+        bucket.medium = [item for item in _normalize_priority_bucket(bucket.medium) if item in available and item not in bucket.high]
+        bucket.low = [item for item in _normalize_priority_bucket(bucket.low) if item in available and item not in bucket.high and item not in bucket.medium]
+        if not (bucket.high or bucket.medium or bucket.low):
+            filled = _fallback_priority(available[0] if available else '', available=available)
+            bucket.high, bucket.medium, bucket.low = filled.high, filled.medium, filled.low
+
+    profile.foreshadowing_priority.primary = [item for item in _normalize_priority_bucket(profile.foreshadowing_priority.primary) if item in foreshadow_available]
+    profile.foreshadowing_priority.secondary = [item for item in _normalize_priority_bucket(profile.foreshadowing_priority.secondary) if item in foreshadow_available and item not in profile.foreshadowing_priority.primary]
+    profile.foreshadowing_priority.hold_back = _normalize_priority_bucket(profile.foreshadowing_priority.hold_back)
+    if not profile.foreshadowing_priority.primary:
+        profile.foreshadowing_priority.primary = foreshadow_available[:2]
+    if not profile.foreshadowing_priority.secondary:
+        profile.foreshadowing_priority.secondary = [item for item in foreshadow_available if item not in profile.foreshadowing_priority.primary][:2]
+
+    profile.character_template_priority.high = [item for item in _normalize_priority_bucket(profile.character_template_priority.high) if item in character_available]
+    profile.character_template_priority.medium = [item for item in _normalize_priority_bucket(profile.character_template_priority.medium) if item in character_available and item not in profile.character_template_priority.high]
+    if not profile.character_template_priority.high:
+        profile.character_template_priority.high = character_available[:2]
+    if not profile.character_template_priority.medium:
+        profile.character_template_priority.medium = [item for item in character_available if item not in profile.character_template_priority.high][:2]
+
+    profile.rhythm_bias.opening_pace = str(profile.rhythm_bias.opening_pace or diagnosis.pacing_profile or '稳推').strip()[:24]
+    profile.rhythm_bias.world_reveal_density = str(profile.rhythm_bias.world_reveal_density or diagnosis.world_reveal_strategy or '中').strip()[:24]
+    profile.rhythm_bias.relationship_weight = str(profile.rhythm_bias.relationship_weight or ('中' if strategy.must_establish_relationships else '低')).strip()[:16]
+    profile.rhythm_bias.hook_strength = str(profile.rhythm_bias.hook_strength or '中强').strip()[:16]
+    profile.rhythm_bias.payoff_interval = str(profile.rhythm_bias.payoff_interval or '中短').strip()[:16]
+    profile.rhythm_bias.pressure_curve = str(profile.rhythm_bias.pressure_curve or '渐压').strip()[:16]
+    profile.demotion_rules = _normalize_priority_bucket(profile.demotion_rules or diagnosis.avoid_tropes or strategy.limited_event_types, limit=5)
+    if len(profile.demotion_rules) < 2:
+        for fallback in ['不要连续重复同一试探结构', '不要前期高密度硬灌世界说明']:
+            if fallback not in profile.demotion_rules:
+                profile.demotion_rules.append(fallback)
+            if len(profile.demotion_rules) >= 2:
+                break
+    return profile
+
+
+def _normalize_initialization_cards(
+    *,
+    payload: dict[str, Any],
+    intent_packet: BootstrapIntentPacket,
+    diagnosis: StoryEngineDiagnosisPayload,
+    strategy: StoryStrategyCardPayload,
+    cards: BootstrapInitializationCardsPayload,
+) -> BootstrapInitializationCardsPayload:
+    protagonist = str((payload or {}).get("protagonist_name") or "主角").strip() or "主角"
+    cards.story_engine_card = dict(cards.story_engine_card or {})
+    cards.story_engine_card.setdefault("engine_name", diagnosis.primary_story_engine)
+    cards.story_engine_card.setdefault("core_loop", diagnosis.protagonist_action_logic)
+    cards.story_engine_card.setdefault("do_not_write", list(diagnosis.avoid_tropes or [])[:4])
+
+    cards.mainline_drive_card = dict(cards.mainline_drive_card or {})
+    cards.mainline_drive_card.setdefault("short_term_goal", (strategy.opening_window.stage_mission or "开局五章先抓住读者"))
+    cards.mainline_drive_card.setdefault("mid_term_goal", (strategy.long_term_direction or strategy.opening_five_summary or strategy.strategic_premise))
+    cards.mainline_drive_card.setdefault("pressure_source", strategy.main_conflict_axis)
+
+    cards.growth_upgrade_card = dict(cards.growth_upgrade_card or {})
+    cards.growth_upgrade_card.setdefault("growth_path", diagnosis.power_growth_strategy)
+    cards.growth_upgrade_card.setdefault("cost_rule", "成长必须绑定资源、代价与后果。")
+    cards.growth_upgrade_card.setdefault("unlock_style", "每次升级都要带来新选择，而不只是数值上涨。")
+
+    cards.pressure_source_card = dict(cards.pressure_source_card or {})
+    cards.pressure_source_card.setdefault("core_pressure", intent_packet.core_conflict)
+    cards.pressure_source_card.setdefault("secondary_pressure", strategy.opening_window.reader_hook or strategy.long_term_direction or "局势进一步升级")
+    cards.pressure_source_card.setdefault("escalation_rule", "先现实压力，再关系/资源压力，最后推到阶段性破局。")
+
+    cards.payoff_rhythm_card = dict(cards.payoff_rhythm_card or {})
+    cards.payoff_rhythm_card.setdefault("early_payoff", list(intent_packet.expected_payoffs or [])[:3])
+    cards.payoff_rhythm_card.setdefault("mid_payoff", list(strategy.escalation_path or [])[:3])
+    cards.payoff_rhythm_card.setdefault("avoid_payoff_pattern", ["不要连续多章只蓄压不兑现", "不要把回报全写成围观或感叹"]) 
+
+    cards.darkline_card = dict(cards.darkline_card or {})
+    cards.darkline_card.setdefault("hidden_question", diagnosis.early_hook_focus)
+    cards.darkline_card.setdefault("early_signal", list(diagnosis.differentiation_focus or [])[:3])
+    cards.darkline_card.setdefault("late_release_rule", "暗线前期给信号，中期给代价，后期再放大真相。")
+
+    cards.foreshadowing_mother_card = dict(cards.foreshadowing_mother_card or {})
+    cards.foreshadowing_mother_card.setdefault("long_term_threads", [diagnosis.early_hook_focus, strategy.main_conflict_axis][:2])
+    cards.foreshadowing_mother_card.setdefault("short_term_threads", list(intent_packet.first_ten_chapter_tasks or [])[:3])
+    cards.foreshadowing_mother_card.setdefault("reveal_rule", "短伏笔在近章就回收，长伏笔只先给信号与牵引。")
+
+    cards.chapter_structure_card = dict(cards.chapter_structure_card or {})
+    cards.chapter_structure_card.setdefault("opening_rule", f"开场先让{protagonist}面对具体压力并做出动作。")
+    cards.chapter_structure_card.setdefault("middle_rule", "中段必须出现受阻、换招或判断失误，不能平推。")
+    cards.chapter_structure_card.setdefault("ending_rule", "结尾要留下下一章继续看的理由，但不必每章都硬悬念。")
+
+    cards.expression_emphasis_card = dict(cards.expression_emphasis_card or {})
+    cards.expression_emphasis_card.setdefault("language_focus", list(diagnosis.tone_keywords or ["具体", "克制", "有代价"])[:4])
+    cards.expression_emphasis_card.setdefault("emotion_delivery", "情绪落在动作、停顿、视线和处理具体物件上。")
+    cards.expression_emphasis_card.setdefault("ban_generic_patterns", ["不要空泛氛围词堆积", "不要把情绪只写成抽象判断"]) 
+
+    cards.world_reveal_card = dict(cards.world_reveal_card or {})
+    cards.world_reveal_card.setdefault("phase_1", list(intent_packet.first_ten_chapter_tasks or [])[:3])
+    cards.world_reveal_card.setdefault("phase_2", list(strategy.escalation_path or strategy.opening_window.frequent_elements or [])[:3])
+    cards.world_reveal_card.setdefault("do_not_dump", ["不要一口气灌完整世界观", "不要先讲百科再推进剧情"]) 
+    return cards
+
+
+
+def _normalize_bootstrap_strategy_arbitration(
+    payload: dict[str, Any],
+    intent_packet: BootstrapIntentPacket,
+    arbitration: BootstrapStrategyArbitrationPayload,
+) -> BootstrapStrategyArbitrationPayload:
+    arbitration.story_engine_diagnosis = _normalize_story_engine_diagnosis(payload, arbitration.story_engine_diagnosis)
+    arbitration.story_strategy_card = _normalize_story_strategy_card(arbitration.story_strategy_card)
+    arbitration.initialization_cards = _normalize_initialization_cards(
+        payload=payload,
+        intent_packet=intent_packet,
+        diagnosis=arbitration.story_engine_diagnosis,
+        strategy=arbitration.story_strategy_card,
+        cards=arbitration.initialization_cards,
+    )
+    if not arbitration.selected_candidate_id:
+        arbitration.selected_candidate_id = "A"
+    if not arbitration.selection_reason:
+        arbitration.selection_reason = "该方案更适合长篇连载，且能兼顾前期抓力与后续扩展。"
+    if not arbitration.merge_notes:
+        arbitration.merge_notes = ["保留主方案的推进重心，同时吸收其它候选的局部优点。"]
+    return arbitration
+
+
+
+def _normalize_bootstrap_story_review(review: BootstrapStoryReviewPayload) -> BootstrapStoryReviewPayload:
+    review.status = str(review.status or "keep").strip().lower()
+    if review.status not in {"keep", "repair"}:
+        review.status = "keep"
+    if not review.summary:
+        review.summary = "初始化方案可直接落地。"
+    normalized: list[BootstrapArcAdjustment] = []
+    for item in review.arc_adjustments[:6]:
+        item.field = str(item.field or "").strip()
+        if item.field not in {"goal", "conflict", "ending_hook", "payoff_or_pressure", "writing_note"}:
+            continue
+        item.value = str(item.value or "").strip()[:120]
+        if not item.value:
+            continue
+        normalized.append(item)
+    review.arc_adjustments = normalized
+    return review
+
+
+
+def generate_bootstrap_intent_packet(payload: dict[str, Any], story_bible: dict[str, Any]) -> BootstrapIntentPacket:
+    data = call_json_response(
+        stage="bootstrap_intent_parse",
+        system_prompt=bootstrap_intent_parse_system_prompt(),
+        user_prompt=bootstrap_intent_parse_user_prompt(payload=payload, story_bible=story_bible),
+        max_output_tokens=900,
+    )
+    packet = BootstrapIntentPacket.model_validate(data)
+    return _normalize_bootstrap_intent(payload, packet)
+
+
+
+def generate_bootstrap_intent_strategy_bundle(payload: dict[str, Any], story_bible: dict[str, Any]) -> BootstrapIntentStrategyBundlePayload:
+    data = call_json_response(
+        stage="bootstrap_intent_strategy_generation",
+        system_prompt=bootstrap_intent_strategy_bundle_system_prompt(),
+        user_prompt=bootstrap_intent_strategy_bundle_user_prompt(payload=payload, story_bible=story_bible),
+        max_output_tokens=2200,
+    )
+    bundle = BootstrapIntentStrategyBundlePayload.model_validate(data)
+    bundle.bootstrap_intent_packet = _normalize_bootstrap_intent(payload, bundle.bootstrap_intent_packet)
+    bundle.story_engine_diagnosis = _normalize_story_engine_diagnosis(payload, bundle.story_engine_diagnosis)
+    bundle.story_strategy_card = _normalize_story_strategy_card(bundle.story_strategy_card)
+    return bundle
+
+
+
+def generate_bootstrap_strategy_candidates(
+    payload: dict[str, Any],
+    story_bible: dict[str, Any],
+    intent_packet: dict[str, Any] | BootstrapIntentPacket,
+    *,
+    candidate_count: int = 3,
+) -> BootstrapStrategyCandidatesPayload:
+    intent_data = intent_packet.model_dump(mode="python") if isinstance(intent_packet, BootstrapIntentPacket) else dict(intent_packet or {})
+    data = call_json_response(
+        stage="bootstrap_strategy_candidate_generation",
+        system_prompt=bootstrap_strategy_candidates_system_prompt(),
+        user_prompt=bootstrap_strategy_candidates_user_prompt(
+            payload=payload,
+            story_bible=story_bible,
+            intent_packet=intent_data,
+            candidate_count=max(int(candidate_count or 3), 2),
+        ),
+        max_output_tokens=2600,
+    )
+    bundle = BootstrapStrategyCandidatesPayload.model_validate(data)
+    return _normalize_bootstrap_strategy_candidates(payload, bundle)
+
+
+
+def arbitrate_bootstrap_strategy_bundle(
+    payload: dict[str, Any],
+    story_bible: dict[str, Any],
+    intent_packet: dict[str, Any] | BootstrapIntentPacket,
+    candidates: dict[str, Any] | BootstrapStrategyCandidatesPayload,
+) -> BootstrapStrategyArbitrationPayload:
+    intent_model = intent_packet if isinstance(intent_packet, BootstrapIntentPacket) else BootstrapIntentPacket.model_validate(intent_packet)
+    candidate_data = candidates.model_dump(mode="python") if isinstance(candidates, BootstrapStrategyCandidatesPayload) else dict(candidates or {})
+    data = call_json_response(
+        stage="bootstrap_strategy_arbitration",
+        system_prompt=bootstrap_strategy_arbitration_system_prompt(),
+        user_prompt=bootstrap_strategy_arbitration_user_prompt(
+            payload=payload,
+            story_bible=story_bible,
+            intent_packet=intent_model.model_dump(mode="python"),
+            candidates=candidate_data,
+        ),
+        max_output_tokens=2600,
+    )
+    arbitration = BootstrapStrategyArbitrationPayload.model_validate(data)
+    return _normalize_bootstrap_strategy_arbitration(payload, intent_model, arbitration)
+
+
+
+def generate_bootstrap_execution_profile(
+    payload: dict[str, Any],
+    story_bible: dict[str, Any],
+    intent_packet: dict[str, Any] | BootstrapIntentPacket,
+    template_pool_profile: dict[str, Any],
+    story_engine_diagnosis: dict[str, Any] | StoryEngineDiagnosisPayload,
+    story_strategy_card: dict[str, Any] | StoryStrategyCardPayload,
+) -> BookExecutionProfilePayload:
+    intent_model = intent_packet if isinstance(intent_packet, BootstrapIntentPacket) else BootstrapIntentPacket.model_validate(intent_packet or {})
+    diagnosis = story_engine_diagnosis if isinstance(story_engine_diagnosis, StoryEngineDiagnosisPayload) else StoryEngineDiagnosisPayload.model_validate(story_engine_diagnosis or {})
+    strategy = story_strategy_card if isinstance(story_strategy_card, StoryStrategyCardPayload) else StoryStrategyCardPayload.model_validate(story_strategy_card or {})
+    data = call_json_response(
+        stage="bootstrap_execution_profile_generation",
+        system_prompt=bootstrap_execution_profile_system_prompt(),
+        user_prompt=bootstrap_execution_profile_user_prompt(
+            payload=payload,
+            story_bible=story_bible,
+            intent_packet=intent_model.model_dump(mode="python"),
+            template_pool_profile=template_pool_profile,
+            story_engine_diagnosis=diagnosis.model_dump(mode="python"),
+            story_strategy_card=strategy.model_dump(mode="python"),
+        ),
+        max_output_tokens=1300,
+    )
+    profile = BookExecutionProfilePayload.model_validate(data)
+    return _normalize_book_execution_profile(payload, template_pool_profile, diagnosis, strategy, profile)
+
+
+def review_bootstrap_story_package(
+    payload: dict[str, Any],
+    story_bible: dict[str, Any],
+    global_outline: dict[str, Any],
+    first_arc: dict[str, Any],
+    arc_digest: dict[str, Any] | None = None,
+) -> BootstrapStoryReviewPayload:
+    data = call_json_response(
+        stage="bootstrap_story_review",
+        system_prompt=bootstrap_story_review_system_prompt(),
+        user_prompt=bootstrap_story_review_user_prompt(
+            payload=payload,
+            story_bible=story_bible,
+            global_outline=global_outline,
+            first_arc=first_arc,
+            arc_digest=arc_digest,
+        ),
+        max_output_tokens=1200,
+    )
+    review = BootstrapStoryReviewPayload.model_validate(data)
+    return _normalize_bootstrap_story_review(review)
+
+
+def generate_bootstrap_outline_and_title(payload: dict[str, Any], story_bible: dict[str, Any], total_acts: int) -> BootstrapOutlineAndTitlePayload:
+    data = call_json_response(
+        stage="bootstrap_outline_title_generation",
+        system_prompt=bootstrap_outline_title_system_prompt(),
+        user_prompt=bootstrap_outline_title_user_prompt(payload=payload, story_bible=story_bible, total_acts=total_acts),
+        max_output_tokens=2200,
+    )
+    result = BootstrapOutlineAndTitlePayload.model_validate(data)
+    result.title = str(result.title or "").strip()[:40]
+    if not result.title:
+        raise GenerationError(
+            code=ErrorCodes.EMPTY_OUTPUT,
+            message="创建阶段总纲/书名联合生成失败：AI 未返回有效标题。",
+            stage="bootstrap_outline_title_generation",
+            retryable=True,
+            provider=provider_name(),
+        )
+    outline = result.global_outline
+    normalized: list[StoryAct] = []
+    for idx, act in enumerate(outline.acts[:total_acts], start=1):
+        act.act_no = idx
+        if not act.title:
+            act.title = f"第{idx}幕"
+        if not act.purpose:
+            act.purpose = "稳定推进主线"
+        if not act.summary:
+            act.summary = "主角被更大的局势逐步卷入。"
+        if not act.target_chapter_end:
+            act.target_chapter_end = idx * 10
+        normalized.append(act)
+    outline.acts = normalized
+    result.global_outline = outline
+    return result
+
+
+
+def generate_bootstrap_title(payload: dict[str, Any], story_bible: dict[str, Any]) -> BootstrapTitlePayload:
+    data = call_json_response(
+        stage="bootstrap_title_generation",
+        system_prompt=bootstrap_title_system_prompt(),
+        user_prompt=bootstrap_title_user_prompt(payload=payload, story_bible=story_bible),
+        max_output_tokens=420,
+    )
+    result = BootstrapTitlePayload.model_validate(data)
+    result.title = str(result.title or "").strip()[:40]
+    if not result.title:
+        raise GenerationError(
+            code=ErrorCodes.EMPTY_OUTPUT,
+            message="创建阶段书名生成失败：AI 未返回有效标题。",
+            stage="bootstrap_title_generation",
+            retryable=True,
+            provider=provider_name(),
+        )
+    return result
 
 
 def generate_story_engine_strategy_bundle(payload: dict[str, Any], story_bible: dict[str, Any]) -> StoryEngineStrategyBundlePayload:
@@ -544,23 +1221,17 @@ def generate_arc_outline(
         if not ch.hook_style:
             hook_cycle = ["异象", "人物选择", "危险逼近", "信息反转", "平稳过渡", "余味收束"]
             ch.hook_style = hook_cycle[(expected_no - start_chapter) % len(hook_cycle)]
+        _apply_book_execution_profile_to_chapter(ch, story_bible, chapter_offset=expected_no - start_chapter)
         if not ch.conflict:
             ch.conflict = "主角推进目标时遭遇新的阻力或暴露风险。"
         if not ch.main_scene:
             ch.main_scene = "当前主线所处的具体场景。"
-        if not ch.opening_beat:
-            ch.opening_beat = "开场先落在一个具体动作或眼前小异常上。"
-        if not ch.mid_turn:
-            ch.mid_turn = "中段加入一次受阻、遮掩或判断失误，让场面真正动起来。"
-        if not ch.discovery:
-            ch.discovery = "给出一个具体而可感的发现，推动本章信息增量。"
-        if not ch.closing_image:
-            ch.closing_image = "结尾收在一个可见可感的画面上，而不是抽象总结。"
         ch.event_type = str(ch.event_type or _infer_event_type(ch.goal, ch.conflict or "", ch.ending_hook)).strip()[:12]
         ch.progress_kind = str(ch.progress_kind or _infer_progress_kind(ch.goal, ch.conflict or "", ch.ending_hook)).strip()[:12]
         ch.proactive_move = str(ch.proactive_move or _infer_proactive_move(ch.goal, ch.conflict or "", ch.event_type)).strip()[:24]
         ch.payoff_or_pressure = str(ch.payoff_or_pressure or f"本章至少完成一次{ch.progress_kind}，并给出明确回报或压力升级。").strip()[:42]
         ch.hook_kind = str(ch.hook_kind or _infer_hook_kind(ch.ending_hook, ch.hook_style)).strip()[:16]
+        _apply_book_execution_profile_to_chapter(ch, story_bible, chapter_offset=expected_no - start_chapter)
         if ch.supporting_character_focus:
             ch.supporting_character_focus = str(ch.supporting_character_focus).strip()[:20]
         if ch.supporting_character_note:
@@ -584,22 +1255,15 @@ def generate_arc_outline(
         if not ch.writing_note:
             ch.writing_note = "正文阶段避免模板句，保持单场景推进、主角主动性和自然收束。"
         _apply_flow_template_to_chapter(ch, story_bible)
-        if ch.agency_mode and ch.agency_mode in AGENCY_MODES:
-            spec = AGENCY_MODES[ch.agency_mode]
-            if not ch.agency_mode_label:
-                ch.agency_mode_label = str(spec.get("label") or ch.agency_mode)
-            if not ch.agency_style_summary:
-                ch.agency_style_summary = str(spec.get("summary") or "")
-            if not ch.agency_opening_instruction:
-                ch.agency_opening_instruction = str(spec.get("opening") or "")
-            if not ch.agency_mid_instruction:
-                ch.agency_mid_instruction = str(spec.get("mid") or "")
-            if not ch.agency_discovery_instruction:
-                ch.agency_discovery_instruction = str(spec.get("discovery") or "")
-            if not ch.agency_closing_instruction:
-                ch.agency_closing_instruction = str(spec.get("closing") or "")
-            if not ch.agency_avoid:
-                ch.agency_avoid = list(spec.get("avoid") or [])
+        # agency mode 已退役：保留旧字段兼容解析，但这里统一清空，避免再把模板化模式注入章节计划。
+        ch.agency_mode = None
+        ch.agency_mode_label = None
+        ch.agency_style_summary = None
+        ch.agency_opening_instruction = None
+        ch.agency_mid_instruction = None
+        ch.agency_discovery_instruction = None
+        ch.agency_closing_instruction = None
+        ch.agency_avoid = None
         normalized.append(ch)
         expected_no += 1
     _enforce_event_type_variety(normalized)

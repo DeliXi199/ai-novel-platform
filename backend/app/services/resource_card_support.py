@@ -35,6 +35,24 @@ RESOURCE_ACTION_PATTERNS = (
     ("damage", ["损坏", "破碎", "裂开", "耗损"]),
 )
 
+RESOURCE_QUALITY_LADDER = ["凡品", "下品", "中品", "上品", "极品", "地阶", "天阶", "王阶", "圣阶"]
+RESOURCE_QUALITY_ALIASES = {
+    "普通": "凡品",
+    "粗品": "凡品",
+    "凡品": "凡品",
+    "下品": "下品",
+    "中品": "中品",
+    "上品": "上品",
+    "极品": "极品",
+    "地阶": "地阶",
+    "天阶": "天阶",
+    "王阶": "王阶",
+    "圣阶": "圣阶",
+    "低品": "下品",
+    "高品": "上品",
+}
+
+
 RESOURCE_FUNCTION_HINTS = {
     "灵石": {
         "resource_kind": "修行材料",
@@ -202,6 +220,42 @@ def _resource_hint_key(name: str) -> str:
 
 
 
+def normalize_resource_quality(raw_value: Any | None, *, fallback: str = "凡品") -> str:
+    text = _text(raw_value)
+    if text in RESOURCE_QUALITY_ALIASES:
+        return RESOURCE_QUALITY_ALIASES[text]
+    for token, mapped in RESOURCE_QUALITY_ALIASES.items():
+        if token and token in text:
+            return mapped
+    return fallback
+
+
+
+def infer_resource_quality(raw_value: Any | None, *, rarity: str = "", resource_type: str = "") -> str:
+    joined = " ".join([_text(raw_value), _text(rarity), _text(resource_type)])
+    quality = normalize_resource_quality(joined, fallback="")
+    if quality:
+        return quality
+    if any(token in joined for token in ["金手指", "天书", "传承", "异火", "本命", "古镜"]):
+        return "天阶"
+    if any(token in joined for token in ["秘宝", "异宝", "祖器", "核心法器"]):
+        return "地阶"
+    if any(token in joined for token in ["灵石", "养气丹", "回气丹", "符", "符箓"]):
+        return "下品"
+    if any(token in joined for token in ["法器", "飞剑", "灵丹", "宝甲"]):
+        return "中品"
+    return "凡品"
+
+
+
+def resource_quality_index(quality: Any | None) -> int:
+    normalized = normalize_resource_quality(quality)
+    try:
+        return RESOURCE_QUALITY_LADDER.index(normalized)
+    except ValueError:
+        return 0
+
+
 def _guess_resource_scope(name: str, resource_type: str) -> str:
     text_blob = f"{name} {resource_type}"
     if any(keyword in text_blob for keyword in CORE_RESOURCE_KEYWORDS):
@@ -345,6 +399,7 @@ def build_resource_card(
     resource_type: str,
     status: str,
     rarity: str,
+    quality: str | None = None,
     exposure_risk: str,
     narrative_role: str,
     recent_change: str,
@@ -352,6 +407,7 @@ def build_resource_card(
 ) -> tuple[str, dict[str, Any]]:
     seed = parse_resource_seed(raw_value)
     name = _text(seed.get("name"))
+    normalized_quality = normalize_resource_quality(quality or infer_resource_quality(raw_value, rarity=rarity, resource_type=resource_type))
     profile = _default_capability_profile(
         name,
         resource_type=_text(resource_type),
@@ -366,6 +422,10 @@ def build_resource_card(
         "owner": _text(owner),
         "status": _text(status),
         "rarity": _text(rarity),
+        "quality_tier": normalized_quality,
+        "quality_rank": normalized_quality,
+        "quality_index": resource_quality_index(normalized_quality),
+        "quality_note": "品质会影响药效、威力、稀有度与交易价值；正文首次完整出现时应尽量点明。",
         "exposure_risk": _text(exposure_risk),
         "narrative_role": _text(narrative_role),
         "recent_change": _text(recent_change),
@@ -426,6 +486,11 @@ def ensure_resource_card_structure(card: dict[str, Any] | None, *, fallback_name
     payload.setdefault("owner", _text(owner) or _text(payload.get("owner")))
     payload.setdefault("status", "持有中")
     payload.setdefault("rarity", "普通/待判定")
+    normalized_quality = normalize_resource_quality(payload.get("quality_tier") or payload.get("quality_rank") or infer_resource_quality(raw_name, rarity=_text(payload.get("rarity")), resource_type=_text(payload.get("resource_type"))))
+    payload.setdefault("quality_tier", normalized_quality)
+    payload.setdefault("quality_rank", normalized_quality)
+    payload.setdefault("quality_index", resource_quality_index(normalized_quality))
+    payload.setdefault("quality_note", "品质会影响药效、威力、稀有度与交易价值；正文首次完整出现时应尽量点明。")
     payload.setdefault("exposure_risk", "待观察")
     payload.setdefault("narrative_role", "资源状态待后续章节细化。")
     payload.setdefault("recent_change", "结构补齐。")

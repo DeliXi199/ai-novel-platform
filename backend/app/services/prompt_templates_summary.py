@@ -24,7 +24,7 @@ def summary_user_prompt(chapter_title: str, chapter_content: str) -> str:
 
 输出格式必须严格如下，缺少内容时写“无”：
 事件摘要：<80字以内，一句话概括本章发生了什么>
-人物变化：<若无则写 无>
+人物变化：<若无则写 无；若正文明确出现境界/实力/修炼进度/突破结果，也要写进去>
 新线索：<用；分隔，若无则写 无>
 未回收钩子：<用；分隔，若无则写 无>
 已回收钩子：<用；分隔，若无则写 无>
@@ -33,6 +33,8 @@ def summary_user_prompt(chapter_title: str, chapter_content: str) -> str:
 1. 不要输出任何额外说明。
 2. 不要复述提示词。
 3. 只基于正文提取。
+4. 关键资源若正文明确写到品质、数量变化或炼化结果，人物变化里要顺手提到。
+5. 怪兽/妖兽/异类若正文明确出现并给出强弱层位或状态变化，人物变化里也要顺手提到。
 """.strip()
 
 
@@ -79,8 +81,10 @@ def summary_title_package_user_prompt(
 要求：
 1. 只输出一个 JSON 对象，严格对齐给定 schema。
 2. summary.event_summary 必须是 80 字以内的一句话，只概括本章已经发生的事。
-3. summary.character_updates 只写正文里明确可见的角色变化；没有就返回空对象 {{}}。
-4. summary.new_clues / open_hooks / closed_hooks 只保留正文里已经落地的信息，每项尽量短，最多 6 项。
+3. summary.character_updates 只写正文里明确可见的变化；普通角色直接写角色名键值即可。
+4. 若正文明确出现了资源品质/数量变化，可把它们写进 character_updates.__resource_updates__；若正文明确出现了怪兽/妖兽/异类的出场、强弱层位或状态变化，可写进 character_updates.__monster_updates__。
+5. 角色、怪兽、资源若正文里明确提到了境界/实力/品质变化，优先用结构化字段表达，例如 current_realm / current_strength / cultivation_progress / breakthrough / quality_tier / quantity_after / threat_level / status / latest_update。
+6. summary.new_clues / open_hooks / closed_hooks 只保留正文里已经落地的信息，每项尽量短，最多 6 项。
 5. title_refinement.recommended_title 必须是你最推荐的标题。
 6. 一共输出 {candidate_count} 个标题候选，标题尽量 4 到 10 个汉字，不要超过 14 个汉字。
 7. 标题优先落在：结果、后果、新信息、人物选择、关系变化、具体风险、具体物件。

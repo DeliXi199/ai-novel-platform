@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from app.services.scene_templates import build_scene_handoff_card, build_scene_templates, choose_scene_sequence_for_chapter
+from app.services.scene_templates import build_scene_handoff_card, build_scene_templates, choose_scene_sequence_for_chapter, realize_scene_continuity_plan
 from app.services.story_blueprint_builders import build_template_library
 
 
@@ -148,3 +148,62 @@ def test_choose_scene_sequence_prefers_handoff_anchor_and_time_skip() -> None:
     assert scene_card.get("allowed_transition") == "time_skip_allowed"
     assert "次日清晨" in (scene_card.get("opening_anchor") or "")
     assert "异常药包" in (scene_card.get("must_carry_over") or [])
+
+
+def test_realize_scene_continuity_plan_accepts_ai_review_override() -> None:
+    story_bible = {"template_library": {"scene_templates": build_scene_templates(), "roadmap": {}}}
+    plan = {
+        "chapter_no": 8,
+        "main_scene": "院中对峙后转去藏书阁核对旧卷",
+        "goal": "先接住门前对峙，再去验证卷宗",
+        "conflict": "若现在硬切场，会把刚压出来的关系变化切断",
+        "opening_beat": "接着上一章院中对峙继续压下去",
+        "mid_turn": "拿到一句关键判断后，再转去藏书阁确认旧卷",
+        "ending_hook": "卷宗里的时间顺序对不上",
+        "closing_image": "旧卷末页上的缺口和昨夜痕迹重合",
+    }
+    serialized_last = {
+        "continuity_bridge": {
+            "opening_anchor": "她指尖还按在剑鞘上，院里风声没停。",
+            "unresolved_action_chain": ["院中对峙未收住"],
+            "carry_over_clues": ["昨夜留下的残页"],
+            "scene_handoff_card": {
+                "next_opening_anchor": "她指尖还按在剑鞘上，院里风声没停。",
+                "carry_over_items": ["昨夜留下的残页"],
+            },
+        }
+    }
+
+    runtime = realize_scene_continuity_plan(
+        story_bible=story_bible,
+        plan=plan,
+        serialized_last=serialized_last,
+        recent_summaries=[],
+        scene_continuity_review={
+            "must_continue_same_scene": True,
+            "recommended_scene_count": 2,
+            "transition_mode": "continue_same_scene",
+            "allowed_transition": "resolve_then_cut",
+            "opening_anchor": "她指尖还按在剑鞘上，院里风声没停。",
+            "must_carry_over": ["院中对峙未收住", "昨夜留下的残页"],
+            "cut_plan": [
+                {
+                    "cut_after_scene_no": 1,
+                    "reason": "先让院中对峙拿到阶段结果，再切去查卷。",
+                    "required_result": "对方先松口半句",
+                    "transition_anchor": "切去藏书阁时要显式带上残页和刚得到的判断。",
+                }
+            ],
+            "review_note": "这一章先续场再切场，读感会更顺。",
+        },
+    )
+
+    scene_card = runtime.get("scene_execution_card") or {}
+    continuity_index = runtime.get("scene_continuity_index") or {}
+
+    assert scene_card.get("scene_count") == 2
+    assert scene_card.get("must_continue_same_scene") is True
+    assert scene_card.get("allowed_transition") == "resolve_then_cut"
+    assert scene_card.get("planning_basis") == "scene_continuity_ai_only"
+    assert continuity_index.get("cut_plan")[0]["cut_after_scene_no"] == 1
+    assert continuity_index.get("ai_review", {}).get("review_note")

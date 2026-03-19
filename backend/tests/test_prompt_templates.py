@@ -132,18 +132,37 @@ def test_chapter_prompt_includes_effective_progress_and_agency_constraints() -> 
     assert "禁止用“回去休息了/暂时压下念头/明日再看/夜色沉沉事情暂告一段落”这类平钩子收尾" in prompt
 
 
-def test_chapter_prompt_includes_agency_mode_block_when_plan_has_mode() -> None:
+def test_chapter_prompt_includes_flow_and_writing_child_cards() -> None:
     prompt = chapter_draft_user_prompt(
         novel_context={"project_card": {"genre_positioning": "修仙", "protagonist": {"name": "方尘"}}},
         chapter_plan={
             "title": "第四章",
             "hook_style": "信息反转",
-            "agency_mode": "strategic_setup",
-            "agency_mode_label": "谋划设局型",
-            "agency_style_summary": "主角表面克制，实际通过误导和留钩控制信息差。",
-            "agency_opening_instruction": "开场让主角先藏一步，再顺势诱导对方先暴露。",
-            "agency_mid_instruction": "受阻后要继续借势，不要退回纯观察位。",
-            "agency_avoid": ["只有分析没有布置", "把克制写成纯站桩"],
+            "flow_template_name": "试探获益",
+            "flow_child_card_name": "试探获益·先手直推",
+            "flow_opening_move": "开场就让主角先试一手，逼对方露反应。",
+            "flow_mid_shift": "中段受阻后立刻换招，不要原地观察。",
+            "flow_ending_drop": "结尾落在这次先手带来的具体后患上。",
+            "planning_packet": {
+                "selected_flow_child_card": {"name": "试探获益·先手直推", "avoid": "不要只有分析没有动作"},
+                "selected_flow_instance_card": {"summary": "本章围绕试探获益推进，并把先手动作落进场面。"},
+                "selected_writing_child_cards": [
+                    {"child_id": "proactive_drive__visible_first_move", "name": "主角先手·先手显形", "summary": "前两段就见动作", "directive_focus": "前两段就给动作"}
+                ],
+                "selected_writing_instance_cards": [
+                    {"title": "主角先手·本章实例卡", "summary": "围绕拿消息强化先手", "directive": "前两段先手，受阻再压"}
+                ],
+                "writing_card_selection": {
+                    "selected_flow_card_id": "probe_gain",
+                    "selected_flow_child_card_id": "probe_gain__direct_push",
+                    "selected_writing_card_ids": ["proactive_drive"],
+                    "selected_writing_child_card_ids": ["proactive_drive__visible_first_move"],
+                    "selection_note": "本章优先强化先手动作"
+                },
+                "selected_writing_cards": [
+                    {"strategy_id": "proactive_drive", "name": "主角先手", "summary": "把主角先手写硬", "writing_directive": "前两段就给主角动作"}
+                ],
+            },
         },
         last_chapter={"continuity_bridge": {"opening_anchor": "院门没有关死。"}},
         recent_summaries=[],
@@ -152,10 +171,11 @@ def test_chapter_prompt_includes_agency_mode_block_when_plan_has_mode() -> None:
         target_visible_chars_min=1600,
         target_visible_chars_max=2800,
     )
-    assert "【本章主动方式】" in prompt
-    assert "谋划设局型" in prompt
-    assert "主动性的定义：不是更频繁地猛冲" in prompt
-    assert "只有分析没有布置" in prompt
+    assert "流程子卡：试探获益·先手直推" in prompt
+    assert "本章围绕试探获益推进" in prompt
+    assert "selected_writing_child_card_ids" in prompt
+    assert "主角先手·本章实例卡" in prompt
+    assert "不要只有分析没有动作" in prompt
 
 
 

@@ -22,23 +22,18 @@ def chapter_draft_system_prompt() -> str:
 
 
 
-def _agency_mode_prompt_block(chapter_plan: dict[str, Any]) -> str:
-    mode = _text(chapter_plan.get("agency_mode"))
-    label = _text(chapter_plan.get("agency_mode_label"), "通用主动推进")
-    summary = _text(chapter_plan.get("agency_style_summary"), "主角要主动施加影响，但不必总靠猛冲。")
-    opening = _text(chapter_plan.get("agency_opening_instruction") or chapter_plan.get("opening_beat"))
-    middle = _text(chapter_plan.get("agency_mid_instruction") or chapter_plan.get("mid_turn"))
-    discovery = _text(chapter_plan.get("agency_discovery_instruction") or chapter_plan.get("discovery"))
-    closing = _text(chapter_plan.get("agency_closing_instruction") or chapter_plan.get("closing_image") or chapter_plan.get("ending_hook"))
-    rotation_note = _text(chapter_plan.get("agency_rotation_note"))
-    avoid_items = chapter_plan.get("agency_avoid") or []
-    avoid_lines = "\n".join(f"- {item}" for item in avoid_items if str(item).strip()) or "- 不要把谨慎写成纯被动\n- 不要只观察不施加影响"
-    mode_line = f"- 采用模式：{label}" + (f"（{mode}）" if mode else "")
+def _writing_structure_card_block(chapter_plan: dict[str, Any]) -> str:
+    flow_label = _text(chapter_plan.get("flow_template_name") or chapter_plan.get("flow_template_tag") or chapter_plan.get("flow_template_id"), "当前流程卡")
+    proactive_move = _text(chapter_plan.get("proactive_move"), "主角要主动做出改变局面的动作。")
+    opening = _text(chapter_plan.get("opening_beat"))
+    middle = _text(chapter_plan.get("mid_turn"))
+    discovery = _text(chapter_plan.get("discovery"))
+    closing = _text(chapter_plan.get("closing_image") or chapter_plan.get("ending_hook"))
     lines = [
-        "【本章主动方式】",
-        mode_line,
-        f"- 模式说明：{summary}",
-        "- 主动性的定义：不是更频繁地猛冲，而是更频繁地改变局势、信息分布、关系结构或决策条件。",
+        "【本章结构卡】",
+        f"- 流程卡：{flow_label}",
+        f"- 主角先手：{proactive_move}",
+        "- 核心要求：把章节写成‘主角先手 -> 外界反应 -> 主角调整/加码 -> 结果落地’的因果链，不要写成概念说明。",
     ]
     if opening:
         lines.append(f"- 开场方向：{opening}")
@@ -48,10 +43,7 @@ def _agency_mode_prompt_block(chapter_plan: dict[str, Any]) -> str:
         lines.append(f"- 发现落点：{discovery}")
     if closing:
         lines.append(f"- 收尾方向：{closing}")
-    if rotation_note:
-        lines.append(f"- 变体提醒：{rotation_note}")
-    lines.append("- 避免写法：")
-    lines.append(avoid_lines)
+    lines.append("- 避免写法：不要只观察、只承受、只总结，不要把主角写成被剧情推着走。")
     return "\n".join(lines)
 
 
@@ -110,7 +102,7 @@ def chapter_body_draft_system_prompt() -> str:
 def _chapter_body_light_memory(novel_context: dict[str, Any]) -> dict[str, Any]:
     story_memory = (novel_context or {}).get("story_memory") or {}
     payload: dict[str, Any] = {}
-    for key in ["project_card", "current_volume_card", "protagonist_profile", "execution_brief", "hard_fact_guard"]:
+    for key in ["project_card", "current_volume_card", "protagonist_profile", "execution_brief", "book_execution_profile", "window_execution_bias", "card_system_profile", "hard_fact_guard"]:
         value = story_memory.get(key) or (novel_context or {}).get(key)
         if value:
             payload[key] = value
@@ -118,11 +110,21 @@ def _chapter_body_light_memory(novel_context: dict[str, Any]) -> dict[str, Any]:
     if recent_retrospectives:
         payload["recent_retrospectives"] = recent_retrospectives[:2]
     if not payload and novel_context:
-        for key in ["project_card", "current_volume_card", "protagonist_profile", "execution_brief", "hard_fact_guard"]:
+        for key in ["project_card", "current_volume_card", "protagonist_profile", "execution_brief", "book_execution_profile", "window_execution_bias", "card_system_profile", "hard_fact_guard"]:
             value = (novel_context or {}).get(key)
             if value:
                 payload[key] = value
     return payload
+
+
+def _book_execution_prompt_block(source: dict[str, Any]) -> str:
+    payload = {
+        "book_execution_profile": (source or {}).get("book_execution_profile") or {},
+        "window_execution_bias": (source or {}).get("window_execution_bias") or {},
+        "card_system_profile": (source or {}).get("card_system_profile") or {},
+    }
+    compact = _compact_pretty(payload, max_depth=3, max_items=8, text_limit=96)
+    return _section_block("本书长期气质与阶段偏置", compact)
 
 
 def _chapter_body_plan_packet_summary(chapter_plan: dict[str, Any]) -> dict[str, Any]:
@@ -170,6 +172,10 @@ def _chapter_body_plan_packet_summary(chapter_plan: dict[str, Any]) -> dict[str,
         summary["payoff_runtime"] = packet.get("payoff_runtime")
     if packet.get("selected_payoff_card"):
         summary["selected_payoff_card"] = packet.get("selected_payoff_card")
+    if packet.get("foreshadowing_runtime"):
+        summary["foreshadowing_runtime"] = packet.get("foreshadowing_runtime")
+    if packet.get("selected_foreshadowing_instance_cards"):
+        summary["selected_foreshadowing_instance_cards"] = packet.get("selected_foreshadowing_instance_cards")
     if packet.get("relevant_cards"):
         summary["relevant_cards"] = packet.get("relevant_cards")
     if packet.get("importance_runtime"):
@@ -257,24 +263,46 @@ def _chapter_body_plan_summary(chapter_plan: dict[str, Any]) -> dict[str, Any]:
 
 def _selected_prompt_strategies_block(planning_packet: dict[str, Any] | None) -> str:
     packet = planning_packet or {}
-    strategies = packet.get("selected_prompt_strategies") or []
-    selection = packet.get("prompt_selection") or {}
+    strategies = packet.get("selected_writing_cards") or packet.get("selected_prompt_strategies") or []
+    child_cards = packet.get("selected_writing_child_cards") or []
+    instance_cards = packet.get("selected_writing_instance_cards") or []
+    selection = packet.get("writing_card_selection") or packet.get("prompt_selection") or {}
     if not strategies and not selection:
         return ""
     payload = {
         "selection_note": selection.get("selection_note"),
-        "selected_strategy_ids": selection.get("selected_strategy_ids") or [],
-        "selected_prompt_strategies": [
+        "selected_flow_card_id": selection.get("selected_flow_card_id") or selection.get("selected_flow_template_id"),
+        "selected_flow_child_card_id": selection.get("selected_flow_child_card_id"),
+        "selected_writing_card_ids": selection.get("selected_writing_card_ids") or selection.get("selected_strategy_ids") or [],
+        "selected_writing_child_card_ids": selection.get("selected_writing_child_card_ids") or [],
+        "selected_writing_cards": [
             {
-                "strategy_id": item.get("strategy_id"),
+                "strategy_id": item.get("strategy_id") or item.get("card_id"),
                 "name": item.get("name"),
                 "summary": item.get("summary"),
                 "writing_directive": item.get("writing_directive"),
             }
             for item in strategies[:4] if isinstance(item, dict)
         ],
+        "selected_writing_child_cards": [
+            {
+                "child_id": item.get("child_id") or item.get("card_id"),
+                "name": item.get("name"),
+                "summary": item.get("summary"),
+                "directive_focus": item.get("directive_focus"),
+            }
+            for item in child_cards[:4] if isinstance(item, dict)
+        ],
+        "selected_writing_instance_cards": [
+            {
+                "title": item.get("title"),
+                "summary": item.get("summary"),
+                "directive": item.get("directive"),
+            }
+            for item in instance_cards[:4] if isinstance(item, dict)
+        ],
     }
-    return _section_block("本章选中的 prompt 策略", _compact_pretty(payload, max_depth=3, max_items=8, text_limit=90))
+    return _section_block("本章选中的写法卡", _compact_pretty(payload, max_depth=3, max_items=10, text_limit=90))
 
 
 def chapter_body_draft_user_prompt(
@@ -296,7 +324,7 @@ def chapter_body_draft_user_prompt(
     if isinstance(plan_retry_feedback, dict):
         runtime_feedback.update({key: value for key, value in plan_retry_feedback.items() if value is not None})
     proactive_move = _text(chapter_plan.get("proactive_move"), "主角必须主动做出判断并推动局势前进。")
-    agency_mode_block = _agency_mode_prompt_block(chapter_plan)
+    structure_card_block = _writing_structure_card_block(chapter_plan)
     progress_result_block = _progress_result_prompt_block(chapter_plan)
     agency_constraints = f"""
 【主角主动性硬约束】
@@ -314,6 +342,7 @@ def chapter_body_draft_user_prompt(
     protagonist_name = _protagonist_name_from_context(novel_context)
     blacklist = "\n".join(f"- {item}" for item in REPETITION_BLACKLIST)
     light_memory = _chapter_body_light_memory(novel_context)
+    execution_profile_block = _book_execution_prompt_block(light_memory)
     body_plan = _chapter_body_plan_summary(chapter_plan)
     compact_last = _chapter_body_last_chapter_summary(last_chapter)
     compact_recent = _chapter_body_recent_summary_payload(recent_summaries)
@@ -330,12 +359,13 @@ def chapter_body_draft_user_prompt(
         prompt_context,
         [
             {"title": "本章拍表（主体阶段）", "body": _section_block("本章拍表（主体阶段）", _pretty(body_plan)), "tags": ["计划", "流程", "本章"], "stages": ["chapter_body_draft"], "priority": "must"},
-            {"title": "本章选中的 prompt 策略", "body": _selected_prompt_strategies_block(chapter_plan.get("planning_packet") or {}), "tags": ["prompt", "策略", "写法"], "stages": ["chapter_body_draft"], "priority": "high"},
+            {"title": "本章选中的写法卡", "body": _selected_prompt_strategies_block(chapter_plan.get("planning_packet") or {}), "tags": ["写法卡", "策略", "写法"], "stages": ["chapter_body_draft"], "priority": "high"},
             {"title": "上一章承接要点", "body": _section_block("上一章承接要点", _pretty(compact_last)), "tags": ["上一章", "承接", "连续性"], "stages": ["chapter_body_draft"], "priority": "high"},
             {"title": "正文主体轻量上下文", "body": _section_block("正文主体轻量上下文", _pretty(light_memory)), "tags": ["记忆", "硬事实", "上下文"], "stages": ["chapter_body_draft"], "priority": "high"},
+            {"title": "本书长期气质与阶段偏置", "body": execution_profile_block, "tags": ["长期气质", "窗口偏置", "写法约束"], "stages": ["chapter_body_draft"], "priority": "high"},
             {"title": "最近章节摘要（精简）", "body": _section_block("最近章节摘要（精简）", _pretty(compact_recent)), "tags": ["最近摘要", "连续性"], "stages": ["chapter_body_draft"], "priority": "medium"},
             {"title": "当前生效的读者干预（精简）", "body": _section_block("当前生效的读者干预（精简）", _pretty(compact_interventions)), "tags": ["干预", "偏好"], "stages": ["chapter_body_draft"], "priority": "medium"},
-            {"title": "本章主动方式", "body": agency_mode_block, "tags": ["主动性", "模式"], "stages": ["chapter_body_draft"], "priority": "high"},
+            {"title": "本章结构卡", "body": structure_card_block, "tags": ["流程卡", "结构", "写法"], "stages": ["chapter_body_draft"], "priority": "high"},
             {"title": "本章推进结果", "body": progress_result_block, "tags": ["推进", "结果"], "stages": ["chapter_body_draft"], "priority": "high"},
             {"title": "角色回场与关系推进", "body": _section_block("角色回场与关系推进", _compact_pretty(((chapter_plan.get("planning_packet") or {}).get("character_relation_schedule") or {}), max_depth=4, max_items=8, text_limit=90)), "tags": ["回场", "关系", "互动深度"], "stages": ["chapter_body_draft"], "priority": "high"},
             {"title": "AI复核后的本章人物关系建议", "body": _section_block("AI复核后的本章人物关系建议", _compact_pretty(((chapter_plan.get("planning_packet") or {}).get("character_relation_schedule_ai") or {}), max_depth=4, max_items=8, text_limit=90)), "tags": ["AI复核", "人物", "关系"], "stages": ["chapter_body_draft"], "priority": "high"},
@@ -358,7 +388,10 @@ def chapter_body_draft_user_prompt(
 5. 本章必须有明确推进，至少推进信息、关系、资源、实力、风险中的一项，而且要让读者看得见结果；禁止只写气氛、顾虑、怀疑、压迫感或回忆，而不把结果落地。
 6. 主角不能只被动应对；前两段就让主角先手，形成“主角动作/判断 -> 外界反应 -> 主角顺势调整或加码”的链条。中段受阻后，主角必须再追一步，不能只是心里一沉或暂时按下不动。
 7. 本章只围绕当前章真正需要的局部连续性来写：若【本章拍表（主体阶段）】里带 planning_packet，就优先兑现其中 recent_continuity_plan / continuity_window / selected_elements / card_index / card_selection / relevant_cards / resource_plan / resource_capability_plan，不要回看全书乱扩写。
+7.0 把【本书长期气质与阶段偏置】当成正文执行约束：book_execution_profile 决定这本书整体写法底色，window_execution_bias 决定这一章/这一窗口更该探查、追回、显影还是收束，正文必须实际写出来。
 7.1 若 planning_packet 或轻量记忆里提供了 opening_reveal_guidance，且当前仍在开篇窗口内，就通过场景、试探、交易、受挫或旁人评价自然补出世界/势力/实力等级信息，不要写成说明书，也不要拖过前20章还讲不清基础强弱。
+7.2 若轻量记忆或规划包里给了 power_system_snapshot / strength_rank_table / resource_quality_table / monster_roster / character_roster，则把它们当成正文显影约束：新人物、怪兽、关键资源第一次完整出场时，尽量自然点出境界、威胁层位或品质，不要一直含糊带过。
+7.3 若本章发生修炼、闭关、试炼、炼化、突破、历练兑现或战后稳境，不要只写“实力提升了”；必须写出过程、阻碍、代价或稳固动作，并明确落到提升后的层级结果。
 8. 维持正常章节质感：优先写动作、观察、试探、对话和具体现象，不要把正文主体写成提纲扩写或信息清单。
 9. 若【角色回场与关系推进】里有“该回场/本章应动”的人物或关系，本章至少要给一次可感知推进；深互动关系要写出具体来回，轻互动关系只推一格即可。
 10. 若【AI复核后的本章人物关系建议】里点名了 focus_characters / main_relation_ids，就按它们作为本章主推进；supporting/light_touch 只做辅助；defer_* 尽量不让其抢走篇幅。
@@ -549,7 +582,7 @@ def chapter_draft_user_prompt(
     if isinstance(plan_retry_feedback, dict):
         runtime_feedback.update({key: value for key, value in plan_retry_feedback.items() if value is not None})
     proactive_move = _text(chapter_plan.get("proactive_move"), "主角必须主动做出判断并推动局势前进。")
-    agency_mode_block = _agency_mode_prompt_block(chapter_plan)
+    structure_card_block = _writing_structure_card_block(chapter_plan)
     progress_result_block = _progress_result_prompt_block(chapter_plan)
     agency_constraints = f"""
 【主角主动性硬约束】
@@ -572,6 +605,8 @@ def chapter_draft_user_prompt(
     planning_packet_block = f"\n【本章规划包】\n{_compact_pretty(planning_packet_summary, max_depth=3, max_items=8, text_limit=100)}\n" if planning_packet_summary else ""
     selected_payoff_card = (planning_packet.get("selected_payoff_card") or {}) if isinstance(planning_packet, dict) else {}
     payoff_block = f"\n【本章爽点执行卡】\n{_compact_pretty(selected_payoff_card, max_depth=3, max_items=8, text_limit=90)}\n" if selected_payoff_card else ""
+    selected_foreshadowing_cards = (planning_packet.get("selected_foreshadowing_instance_cards") or []) if isinstance(planning_packet, dict) else []
+    foreshadowing_block = f"\n【本章伏笔执行卡】\n{_compact_pretty(selected_foreshadowing_cards, max_depth=3, max_items=6, text_limit=90)}\n" if selected_foreshadowing_cards else ""
     payoff_compensation = chapter_plan.get("payoff_compensation") or {}
     payoff_compensation_block = f"\n【爽点追账补偿】\n{_compact_pretty(payoff_compensation, max_depth=3, max_items=8, text_limit=90)}\n" if payoff_compensation else ""
     blacklist = "\n".join(f"- {item}" for item in REPETITION_BLACKLIST)
@@ -583,6 +618,12 @@ def chapter_draft_user_prompt(
         "recent_retrospectives": ((novel_context or {}).get("story_memory") or {}).get("recent_retrospectives"),
         "hard_fact_guard": ((novel_context or {}).get("story_memory") or {}).get("hard_fact_guard"),
         "workflow_runtime": ((novel_context or {}).get("story_memory") or {}).get("workflow_runtime"),
+        "book_execution_profile": ((novel_context or {}).get("story_memory") or {}).get("book_execution_profile"),
+        "window_execution_bias": ((novel_context or {}).get("story_memory") or {}).get("window_execution_bias"),
+        "card_system_profile": ((novel_context or {}).get("story_memory") or {}).get("card_system_profile"),
+        "book_execution_profile": ((novel_context or {}).get("story_memory") or {}).get("book_execution_profile"),
+        "window_execution_bias": ((novel_context or {}).get("story_memory") or {}).get("window_execution_bias"),
+        "card_system_profile": ((novel_context or {}).get("story_memory") or {}).get("card_system_profile"),
     }, max_depth=3, max_items=8, text_limit=100), max_depth=3, max_items=8, text_limit=100)
     compact_plan_view = _compact_pretty(_chapter_plan_prompt_view(chapter_plan, include_packet=False), max_depth=3, max_items=8, text_limit=120)
     compact_last_view = _compact_pretty(_chapter_body_last_chapter_summary(last_chapter), max_depth=3, max_items=8, text_limit=100)
@@ -601,13 +642,15 @@ def chapter_draft_user_prompt(
             [
                 {"title": "本章拍表", "body": _section_block("本章拍表", compact_plan_view), "tags": ["计划", "流程", "本章"], "stages": ["chapter_draft_retry"], "priority": "must"},
                 {"title": "必要上下文", "body": _section_block("必要上下文", compact_memory), "tags": ["记忆", "硬事实"], "stages": ["chapter_draft_retry"], "priority": "high"},
+                {"title": "本书长期气质与阶段偏置", "body": _book_execution_prompt_block((novel_context or {}).get("story_memory") or {}), "tags": ["长期气质", "窗口偏置", "写法约束"], "stages": ["chapter_draft_retry"], "priority": "high"},
                 {"title": "上一章信息", "body": _section_block("上一章信息", compact_last_view), "tags": ["上一章", "承接"], "stages": ["chapter_draft_retry"], "priority": "high"},
                 {"title": "最近摘要", "body": _section_block("最近摘要", compact_recent_view), "tags": ["最近摘要", "连续性"], "stages": ["chapter_draft_retry"], "priority": "medium"},
                 {"title": "本章规划包", "body": planning_packet_block.strip(), "tags": ["规划包", "局部卡片"], "stages": ["chapter_draft_retry"], "priority": "high"},
-                {"title": "本章选中的 prompt 策略", "body": _selected_prompt_strategies_block(chapter_plan.get("planning_packet") or {}), "tags": ["prompt", "策略", "写法"], "stages": ["chapter_draft_retry"], "priority": "high"},
-                {"title": "本章主动方式", "body": agency_mode_block, "tags": ["主动性", "模式"], "stages": ["chapter_draft_retry"], "priority": "high"},
+                {"title": "本章选中的写法卡", "body": _selected_prompt_strategies_block(chapter_plan.get("planning_packet") or {}), "tags": ["写法卡", "策略", "写法"], "stages": ["chapter_draft_retry"], "priority": "high"},
+                {"title": "本章结构卡", "body": structure_card_block, "tags": ["流程卡", "结构", "写法"], "stages": ["chapter_draft_retry"], "priority": "high"},
                 {"title": "本章推进结果", "body": progress_result_block, "tags": ["推进", "结果"], "stages": ["chapter_draft_retry"], "priority": "high"},
                 {"title": "本章爽点执行卡", "body": payoff_block.strip(), "tags": ["爽点", "兑现", "回报"], "stages": ["chapter_draft_retry"], "priority": "high"},
+                {"title": "本章伏笔执行卡", "body": foreshadowing_block.strip(), "tags": ["伏笔", "埋线", "回收"], "stages": ["chapter_draft_retry"], "priority": "high"},
                 {"title": "爽点追账补偿", "body": payoff_compensation_block.strip(), "tags": ["追账", "补偿", "爽点"], "stages": ["chapter_draft_retry"], "priority": "high"},
                 {"title": "本章人物投放提示", "body": _section_block("本章人物投放提示", _compact_pretty(_chapter_stage_casting_prompt_payload(chapter_plan.get("planning_packet") or {}), max_depth=4, max_items=8, text_limit=90)), "tags": ["投放", "新人", "换功能"], "stages": ["chapter_draft_retry"], "priority": "high"},
                 {"title": "主角主动性硬约束", "body": agency_constraints, "tags": ["主动性", "硬约束"], "stages": ["chapter_draft_retry"], "priority": "must"},
@@ -629,17 +672,23 @@ def chapter_draft_user_prompt(
 6. 目标约 {target_words} 字，尽量控制在 {target_visible_chars_min}-{target_visible_chars_max} 个中文可见字符。
 7. 这次优先修复：主动性、推进、篇幅、结尾，不要再回到模板句和空转气氛。
 8. 若提供了【本章规划包】，正文只围绕其中 recent_continuity_plan / selected_elements / card_index / card_selection / relevant_cards / selected_payoff_card / resource_plan / resource_capability_plan / continuity_window / opening_reveal_guidance / character_template_guidance 写，不要回看全书或擅自扩成全量卡池。
+8.0 还要贴着【本书长期气质与阶段偏置】重写：不要只修局部句子，要把书味和当前窗口节奏一并拉回正轨。
 8.0 若提供了【本章爽点执行卡】，至少兑现一次“reader_payoff -> external_reaction -> new_pressure/aftershock”的完整链条；public/semi_public 爽点必须让旁人看见，private 爽点也要让主角的下一步动作立刻改变。
-8.0.1 若同时提供了【爽点追账补偿】，优先把这一章写成“追回一次明确回报”的章，不要继续只蓄压、只埋钩、只让主角心里有数。
+8.0.1 若同时提供了【本章伏笔执行卡】，把它视为本章伏笔动作清单：优先落实 1 条主动作，最多再带 1-2 条辅助动作，明确区分新埋、轻碰、加深、验证或回收，不要一章同时把多条伏笔讲穿。
+8.0.2 若同时提供了【爽点追账补偿】，优先把这一章写成“追回一次明确回报”的章，不要继续只蓄压、只埋钩、只让主角心里有数。
 8.1 若 opening_reveal_guidance 提供了当前窗口该补的世界/势力/实力等级信息，就把它自然揉进动作、对话、试错和代价里，不要写成设定说明书，也别拖到前20章后还含糊。
+8.2 若轻量记忆里给了 power_system_snapshot / monster_roster / character_roster，就把它们视为当前章的显影参考：人物、怪兽、关键资源第一次完整露面时，尽量让读者知道其境界、威胁层位或品质。
+8.3 若本段写到修炼、突破、炼化、历练兑现或稳固境界，必须把过程写实，再明确点出提升后的新层级，不准只给抽象结果。
 9. 若【本章人物投放提示】写明 final_should_execute_planned_action=true，就把对应人物投放动作自然落进本章正文；若 final_do_not_force_action=true，就不要为了补新人或换功能硬塞多余动作。
 10. recent_continuity_plan 负责最近几章的承接链：recent_progression / carry_in / current_chapter_bridge / lookahead_handoff 都要尽量兑现，别把上一章和下一章写断。
 11. 若 relevant_cards.resources 或 resource_plan 提供了 quantity / unit / delta_hint，正文必须保持资源数量、消耗和剩余量前后一致，不能把三块灵石写成五块。
+11.1 若 relevant_cards.resources / power_system_snapshot 里还提供了 quality_tier / quality_rank / quality_note，关键资源出现时要尽量把品质写出来，并让品质影响价值、争夺热度、炼化效果或使用判断。
 12. 若 resource_capability_plan 或资源卡里提供了 ability_summary / core_functions / activation_rules / usage_limits / costs / unlock_state，只能按这些边界写资源能力，不能临场把核心资源写成万能外挂。
 13. 开头承接上一章末尾时，优先吃掉 continuity_window 里的 last_chapter_tail_excerpt / opening_anchor / unresolved_action_chain。
 14. 禁止出现这些重复模板：
 {blacklist}
 """.strip()
+    execution_profile_block = _book_execution_prompt_block((novel_context or {}).get("story_memory") or {})
     full_memory_view = _compact_pretty(_novel_context_prompt_view(novel_context), max_depth=3, max_items=8, text_limit=120)
     recent_view = _compact_pretty(_recent_summaries_prompt_view(recent_summaries, limit=4), max_depth=3, max_items=6, text_limit=100)
     interventions_view = _compact_pretty(_interventions_prompt_view(active_interventions, limit=4), max_depth=3, max_items=6, text_limit=100)
@@ -649,14 +698,16 @@ def chapter_draft_user_prompt(
         [
             {"title": "本章拍表", "body": _section_block("本章拍表", compact_plan_view), "tags": ["计划", "流程", "本章"], "stages": ["chapter_draft_full"], "priority": "must"},
             {"title": "本章规划包", "body": planning_packet_block.strip(), "tags": ["规划包", "局部连续性", "卡片"], "stages": ["chapter_draft_full"], "priority": "high"},
-            {"title": "本章选中的 prompt 策略", "body": _selected_prompt_strategies_block(chapter_plan.get("planning_packet") or {}), "tags": ["prompt", "策略", "写法"], "stages": ["chapter_draft_full"], "priority": "high"},
+            {"title": "本章选中的写法卡", "body": _selected_prompt_strategies_block(chapter_plan.get("planning_packet") or {}), "tags": ["写法卡", "策略", "写法"], "stages": ["chapter_draft_full"], "priority": "high"},
             {"title": "上一章信息", "body": _section_block("上一章信息", compact_last_view) + "\n\n若【上一章信息】里包含 continuity_bridge / scene_handoff_card / last_two_paragraphs / last_scene_card / unresolved_action_chain / onstage_characters，必须把它们视为开章硬承接依据。", "tags": ["上一章", "承接", "连续性"], "stages": ["chapter_draft_full"], "priority": "high"},
             {"title": "轻量小说记忆", "body": _section_block("轻量小说记忆", full_memory_view), "tags": ["记忆", "硬事实", "项目卡"], "stages": ["chapter_draft_full"], "priority": "high"},
+            {"title": "本书长期气质与阶段偏置", "body": execution_profile_block, "tags": ["长期气质", "窗口偏置", "写法约束"], "stages": ["chapter_draft_full"], "priority": "high"},
             {"title": "最近章节摘要", "body": _section_block("最近章节摘要", recent_view), "tags": ["最近摘要", "连续性"], "stages": ["chapter_draft_full"], "priority": "medium"},
             {"title": "当前生效的读者干预", "body": _section_block("当前生效的读者干预", interventions_view), "tags": ["干预", "偏好"], "stages": ["chapter_draft_full"], "priority": "medium"},
-            {"title": "本章主动方式", "body": agency_mode_block, "tags": ["主动性", "模式"], "stages": ["chapter_draft_full"], "priority": "high"},
+            {"title": "本章结构卡", "body": structure_card_block, "tags": ["流程卡", "结构", "写法"], "stages": ["chapter_draft_full"], "priority": "high"},
             {"title": "本章推进结果", "body": progress_result_block, "tags": ["推进", "结果"], "stages": ["chapter_draft_full"], "priority": "high"},
             {"title": "本章爽点执行卡", "body": payoff_block.strip(), "tags": ["爽点", "兑现", "回报"], "stages": ["chapter_draft_full"], "priority": "high"},
+            {"title": "本章伏笔执行卡", "body": foreshadowing_block.strip(), "tags": ["伏笔", "埋线", "回收"], "stages": ["chapter_draft_full"], "priority": "high"},
             {"title": "爽点追账补偿", "body": payoff_compensation_block.strip(), "tags": ["追账", "补偿", "爽点"], "stages": ["chapter_draft_full"], "priority": "high"},
             {"title": "本章人物投放提示", "body": _section_block("本章人物投放提示", _compact_pretty(_chapter_stage_casting_prompt_payload(chapter_plan.get("planning_packet") or {}), max_depth=4, max_items=8, text_limit=90)), "tags": ["投放", "新人", "换功能"], "stages": ["chapter_draft_full"], "priority": "high"},
             {"title": "主角主动性硬约束", "body": agency_constraints, "tags": ["主动性", "硬约束"], "stages": ["chapter_draft_full"], "priority": "must"},
@@ -673,11 +724,12 @@ def chapter_draft_user_prompt(
 写作要求：
 1. 用中文写完整下一章，目标约 {target_words} 字，建议控制在 {target_visible_chars_min}-{target_visible_chars_max} 个中文可见字符之间，允许自然波动，但必须写成完整一章而不是片段。
 2. 把【轻量小说记忆】中的 project_card / current_volume_card / protagonist_profile / near_7_chapter_outline / foreshadowing / daily_workbench / execution_brief / recent_retrospectives / character_roster / hard_fact_guard 当成硬约束，严格按“项目卡 -> 当前卷卡 -> 近7章近纲 -> 本章执行卡 -> 复盘纠偏 -> 正文”的顺序落实，不得跳步。
-3. 本章默认围绕 1 个主场景推进；若 execution_brief.scene_outline / scene_execution_card 明确给了场景链，允许自然切到 1~2 个副场景，但每次切场都必须先给出阶段结果或明确的时间/地点/动作过渡。
+2.1 还要服从【本书长期气质与阶段偏置】：book_execution_profile 决定这本书长期更偏哪种流程、兑现和写法，window_execution_bias 决定当前窗口更该探查、追回、显影还是收束；正文必须把这种气质实际写出来，而不是只在计划里出现。
+3. 本章默认围绕 1 个主场景推进；若 execution_brief.scene_outline / scene_execution_card 明确给了场景切换计划，允许自然切到 1~2 个副场景，但每次切场都必须先给出阶段结果，并写出明确的时间/地点/动作过渡。
 4. 本章必须依次落到拍点链：开场承接 -> 中段受阻或转折 -> 至少一次具体发现或兑现 -> 结尾结果/钩子；若提供了 scene_outline，就按它的场景顺序推进，不要乱跳。
 5. 本章不能重复最近两章的主事件类型；如果最近两章都在隐藏、盘问、怀疑，本章必须换挡，改成资源获取、关系推进、反制、外部任务或危机爆发中的一种有效推进。
 6. 本章必须有明确推进，至少推进信息、关系、资源、实力、风险中的一项，并且正文里要让读者看得见这个推进结果。
-7. 主角不能只被动应对，本章必须存在至少一个主动行为或主动决策，优先落实 chapter_execution_card 里的 proactive_move，并贴合本章的主动方式。
+7. 主角不能只被动应对，本章必须存在至少一个主动行为或主动决策，优先落实 chapter_execution_card 里的 proactive_move，并贴合本章流程卡与写法卡的组合。
 7.1 开头两段必须先给主角一个可见动作、试探、验证、表态或改条件，再给环境反应，不要先空转气氛。
 7.2 中段受阻后，主角必须再追一步，不能只是心里一沉或暂时按下不动。
 7.3 结尾的变化最好来自主角本章的先手动作，而不是纯粹等外界把事情送上门；但主动方式不必每章都一样。
@@ -686,13 +738,17 @@ def chapter_draft_user_prompt(
 7. 轻量上下文只提供当前章真正需要的记忆点，不要机械复述设定，不要回顾整本书。
 7.1 若提供了【本章规划包】，正文输入顺序固定为：本章拍表 -> 近章承接规划 -> 本章规划包 -> 最近几章摘要 -> 上一章末尾正文片段。不要脱离这个顺序乱扩写。
 7.1.1 若本章规划包里附带 opening_reveal_guidance，就把当前窗口该补的世界/势力/实力等级信息自然埋进本章动作、试探、受挫或他人评价里；不要写成硬设定说明，也不要拖过前20章。
+7.1.2 若轻量记忆 / 本章规划包里提供了 power_system_snapshot / monster_roster / character_roster，则把它们视为人物、怪兽、资源出场时的显影约束：第一次完整登场尽量自然落出境界、威胁层位或品质，而不是一直模糊处理。
+7.1.3 若本章发生修炼、闭关、历练、炼化、突破或稳固境界，必须写出过程、阻碍、代价、感知变化与提升后的明确层级结果；等级提升不能只体现在旁白总结。
 7.2 recent_continuity_plan 负责把最近两三章接成一条连续线：recent_progression 负责回看推进，carry_in / current_chapter_bridge 负责本章承接，lookahead_handoff 负责给后一两章留自然入口。
 7.3 recent_chapter_summaries 负责承接最近几章的事件连续性，last_chapter_tail_excerpt / last_two_paragraphs 负责承接场面与语气连续性，两者都要吃进去。
 7.4 selected_elements / relevant_cards 之外的角色、资源、势力，除非上下文明确要求，否则不要突然大量拉入本章；若 planning_packet 还带了 card_selection，也把它当成本章局部选卡参考。
 7.5 若本章规划包里提供了 resource_plan，则把它视为资源数量与变化的硬参考：起始数量、单位、计划消耗/获得都要尽量保持一致。
+7.5.1 若 resource_plan / relevant_cards.resources / power_system_snapshot 里还给了 quality_tier / quality_rank / quality_note，关键资源第一次完整出现时尽量点出品质，并让品质影响争夺、判断、疗效或价值。
 7.6 若本章规划包里提供了 resource_capability_plan，则把它视为资源能力使用的硬参考：哪些资源该用、怎么用、付什么代价、有哪些限制，都要尽量兑现；核心资源只能小步显露，不得跳级成万能解题。
 7.7 若本章规划包里提供了 selected_payoff_card，就把它视为本章爽点执行卡：至少兑现一次“reader_payoff -> external_reaction -> new_pressure/aftershock”的完整链条。reader_payoff 是本章读者要拿到的实在回报，external_reaction 决定这次爽点如何显影，new_pressure / aftershock 负责把爽完后的后患接上。public/semi_public 爽点必须让旁人看见，private 爽点也要让主角的路线、计划或判断立刻发生变化。
-7.7.1 若 chapter_plan 或 execution_brief 里提供了 payoff_compensation / payoff_compensation_note，就把它视为“追账补偿指令”：这一章必须优先补一次明确兑现，降低继续只蓄压不回收的比例。
+7.7.1 若本章规划包里提供了 selected_foreshadowing_instance_cards，就把它视为本章伏笔执行卡：优先落实 1 条主伏笔动作，最多再带 1-2 条辅助动作；新埋只露可追线索，轻碰/加深必须让旧伏笔重新发声，部分回收只证一块，不要一次讲穿长期暗线。
+7.7.2 若 chapter_plan 或 execution_brief 里提供了 payoff_compensation / payoff_compensation_note，就把它视为“追账补偿指令”：这一章必须优先补一次明确兑现，降低继续只蓄压不回收的比例。
 8. 结尾必须自然收束，不能停在半句上；是否留悬念，要服从本章 hook_style。若是“平稳过渡/余味收束”，可以只落在人物选择、结果落地、关系变化或下一步准备上，不必硬留悬念。
 10. {_chapter_genre_guidance(novel_context)}
 11. 配角不能只是抛信息的工具人。尤其是反复出现的人物，要给他一点职业习惯、说话方式、私心、忌讳或防备心理，让他先像人，再推动情节。

@@ -24,7 +24,7 @@ from app.services.generation_exceptions import ErrorCodes, GenerationError
 from app.services.hard_fact_guard import HardFactConflict, validate_and_register_chapter
 from app.services.openai_story_engine_summary import generate_chapter_summary_and_title_package
 from app.services.scene_templates import build_scene_handoff_card
-from app.services.story_architecture import sync_character_registry, update_story_architecture_after_chapter
+from app.services.story_architecture import sync_character_registry, sync_monster_registry, update_story_architecture_after_chapter
 
 
 @dataclass(slots=True)
@@ -196,6 +196,13 @@ def prepare_finalization_snapshot(
         plan=used_plan,
         summary=summary,
     )
+    sync_monster_registry(
+        db,
+        locked_novel,
+        story_bible=locked_novel.story_bible or {},
+        plan=used_plan,
+        summary=summary,
+    )
     locked_novel = _commit_runtime_snapshot(
         db,
         locked_novel,
@@ -245,7 +252,16 @@ def prepare_finalization_snapshot(
         "scene_handoff_card": scene_handoff_card,
         "unresolved_action_chain": _truncate_list(summary.open_hooks, max_items=3, item_limit=64),
         "carry_over_clues": _truncate_list(summary.new_clues, max_items=3, item_limit=56),
-        "onstage_characters": _truncate_list([locked_novel.protagonist_name, used_plan.get("supporting_character_focus")] + list((summary.character_updates or {}).keys()), max_items=5, item_limit=20),
+        "onstage_characters": _truncate_list(
+            [locked_novel.protagonist_name, used_plan.get("supporting_character_focus")]
+            + [
+                str(key).strip()
+                for key in list((summary.character_updates or {}).keys())
+                if str(key).strip() and str(key).strip() != "notes" and not str(key).strip().startswith("__")
+            ],
+            max_items=5,
+            item_limit=20,
+        ),
         "next_opening_instruction": _truncate_text(used_plan.get("opening_beat") or "下一章开头必须承接这一章最后动作、对话或局势变化。", 72),
         "opening_anchor": _truncate_text((_tail_paragraphs(content, count=1) or [content[-160:]])[-1], 120),
     }

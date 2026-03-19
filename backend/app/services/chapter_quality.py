@@ -996,8 +996,7 @@ def build_quality_feedback(exc: GenerationError) -> dict[str, Any]:
         "paragraphs", "action_hits", "discovery_hits", "hook_hits", "progress_hits", "progress_score",
         "progress_direct_hits", "progress_pattern_hits", "progress_sentence_hits", "progress_plan_cue_hits",
         "progress_ending_hits", "progress_generic_hits", "progress_plan_cues", "progress_evidence",
-        "proactive_hits", "agency_fit_hits", "agency_strength", "passive_drift_hits", "passive_limit",
-        "similarity", "ending_issue", "event_type", "progress_kind", "agency_mode", "agency_mode_label",
+        "proactive_hits", "passive_drift_hits", "similarity", "ending_issue", "event_type", "progress_kind",
         "repeated_sentence_ratio", "repeated_opening_groups", "repeated_opening_hits", "repeated_openings",
         "repeated_ending_groups", "repeated_ending_hits", "repeated_endings", "style_clue_hits",
         "style_clue_total", "style_clue_kinds", "messy_score", "scene_count", "scene_transition_mode",
@@ -1064,7 +1063,7 @@ def build_quality_feedback(exc: GenerationError) -> dict[str, Any]:
                 add_suggestion("允许时间跳转时，前两段要明写时间锚点，并带上上一章留下的关键物或结果。")
             else:
                 add_suggestion("一章内多场景切换时，把过渡写成可见动作链或时间/地点变化，别让场景像被传送。")
-        if details.get("proactive_move") is not None or details.get("agency_mode") is not None:
+        if details.get("proactive_move") is not None:
             add_check("主角主动性不足")
             add_suggestion("前两段先让主角做可见动作、试探、验证、改条件或留后手，不要先站着看。")
             add_suggestion("中段受阻后再追一步，让主角改变局势、信息分布或关系条件。")

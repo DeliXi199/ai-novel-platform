@@ -12,7 +12,6 @@ from pydantic import BaseModel, Field
 from app.core.config import settings
 from app.services.generation_exceptions import ErrorCodes, GenerationError
 from app.services.chapter_quality import _progress_result_is_clear, _weak_ending
-from app.services.agency_modes import AGENCY_MODES
 from app.services.openai_story_engine_selection import (
     ChapterCardSelectionPayload,
     ChapterFrontloadDecisionPayload,
@@ -52,6 +51,14 @@ from app.services.openai_story_engine_review import (
 )
 from app.services.openai_story_engine_bootstrap import (
     ArcOutlinePayload,
+    BootstrapIntentPacket,
+    BootstrapIntentStrategyBundlePayload,
+    BootstrapOutlineAndTitlePayload,
+    BootstrapStoryReviewPayload,
+    BookExecutionProfilePayload,
+    BootstrapStrategyArbitrationPayload,
+    BootstrapStrategyCandidatesPayload,
+    BootstrapTitlePayload,
     ChapterPlan,
     GlobalOutlinePayload,
     ParsedInstructionPayload,
@@ -60,7 +67,6 @@ from app.services.openai_story_engine_bootstrap import (
     StoryEngineDiagnosisPayload,
     StoryEngineStrategyBundlePayload,
     StoryStrategyCardPayload,
-    ThirtyChapterPhase,
     _apply_flow_template_to_chapter,
     _choose_flow_template_for_chapter,
     _enforce_event_type_variety,
@@ -71,12 +77,20 @@ from app.services.openai_story_engine_bootstrap import (
     _infer_progress_kind,
     _infer_proactive_move,
     _keyword_hit_count,
+    arbitrate_bootstrap_strategy_bundle as _bootstrap_arbitrate_bootstrap_strategy_bundle,
     generate_arc_outline as _bootstrap_generate_arc_outline,
+    generate_bootstrap_execution_profile as _bootstrap_generate_bootstrap_execution_profile,
+    generate_bootstrap_intent_packet as _bootstrap_generate_bootstrap_intent_packet,
+    generate_bootstrap_intent_strategy_bundle as _bootstrap_generate_bootstrap_intent_strategy_bundle,
+    generate_bootstrap_outline_and_title as _bootstrap_generate_bootstrap_outline_and_title,
+    generate_bootstrap_strategy_candidates as _bootstrap_generate_bootstrap_strategy_candidates,
+    generate_bootstrap_title as _bootstrap_generate_bootstrap_title,
     generate_global_outline as _bootstrap_generate_global_outline,
     generate_story_engine_diagnosis as _bootstrap_generate_story_engine_diagnosis,
     generate_story_engine_strategy_bundle as _bootstrap_generate_story_engine_strategy_bundle,
     generate_story_strategy_card as _bootstrap_generate_story_strategy_card,
     parse_instruction_with_openai as _bootstrap_parse_instruction_with_openai,
+    review_bootstrap_story_package as _bootstrap_review_bootstrap_story_package,
 )
 from app.services.openai_story_engine_chapter import (
     ChapterDraftPayload,
@@ -333,6 +347,91 @@ def generate_chapter_summary_and_title_package(
         is_openai_enabled_fn=is_openai_enabled,
         provider_name_fn=provider_name,
     )
+
+
+def generate_bootstrap_intent_packet(payload: dict[str, Any], story_bible: dict[str, Any]) -> BootstrapIntentPacket:
+    return _bootstrap_generate_bootstrap_intent_packet(payload=payload, story_bible=story_bible)
+
+
+
+def generate_bootstrap_intent_strategy_bundle(payload: dict[str, Any], story_bible: dict[str, Any]) -> BootstrapIntentStrategyBundlePayload:
+    return _bootstrap_generate_bootstrap_intent_strategy_bundle(payload=payload, story_bible=story_bible)
+
+
+
+def generate_bootstrap_execution_profile(
+    payload: dict[str, Any],
+    story_bible: dict[str, Any],
+    intent_packet: dict[str, Any] | BootstrapIntentPacket,
+    template_pool_profile: dict[str, Any],
+    story_engine_diagnosis: dict[str, Any] | StoryEngineDiagnosisPayload,
+    story_strategy_card: dict[str, Any] | StoryStrategyCardPayload,
+) -> BookExecutionProfilePayload:
+    return _bootstrap_generate_bootstrap_execution_profile(
+        payload=payload,
+        story_bible=story_bible,
+        intent_packet=intent_packet,
+        template_pool_profile=template_pool_profile,
+        story_engine_diagnosis=story_engine_diagnosis,
+        story_strategy_card=story_strategy_card,
+    )
+
+
+
+def generate_bootstrap_strategy_candidates(
+    payload: dict[str, Any],
+    story_bible: dict[str, Any],
+    intent_packet: dict[str, Any] | BootstrapIntentPacket,
+    *,
+    candidate_count: int = 3,
+) -> BootstrapStrategyCandidatesPayload:
+    return _bootstrap_generate_bootstrap_strategy_candidates(
+        payload=payload,
+        story_bible=story_bible,
+        intent_packet=intent_packet,
+        candidate_count=candidate_count,
+    )
+
+
+
+def arbitrate_bootstrap_strategy_bundle(
+    payload: dict[str, Any],
+    story_bible: dict[str, Any],
+    intent_packet: dict[str, Any] | BootstrapIntentPacket,
+    candidates: dict[str, Any] | BootstrapStrategyCandidatesPayload,
+) -> BootstrapStrategyArbitrationPayload:
+    return _bootstrap_arbitrate_bootstrap_strategy_bundle(
+        payload=payload,
+        story_bible=story_bible,
+        intent_packet=intent_packet,
+        candidates=candidates,
+    )
+
+
+
+def review_bootstrap_story_package(
+    payload: dict[str, Any],
+    story_bible: dict[str, Any],
+    global_outline: dict[str, Any],
+    first_arc: dict[str, Any],
+    arc_digest: dict[str, Any] | None = None,
+) -> BootstrapStoryReviewPayload:
+    return _bootstrap_review_bootstrap_story_package(
+        payload=payload,
+        story_bible=story_bible,
+        global_outline=global_outline,
+        first_arc=first_arc,
+        arc_digest=arc_digest,
+    )
+
+
+def generate_bootstrap_outline_and_title(payload: dict[str, Any], story_bible: dict[str, Any], total_acts: int) -> BootstrapOutlineAndTitlePayload:
+    return _bootstrap_generate_bootstrap_outline_and_title(payload=payload, story_bible=story_bible, total_acts=total_acts)
+
+
+
+def generate_bootstrap_title(payload: dict[str, Any], story_bible: dict[str, Any]) -> BootstrapTitlePayload:
+    return _bootstrap_generate_bootstrap_title(payload=payload, story_bible=story_bible)
 
 
 def generate_story_engine_strategy_bundle(payload: dict[str, Any], story_bible: dict[str, Any]) -> StoryEngineStrategyBundlePayload:

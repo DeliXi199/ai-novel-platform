@@ -5,6 +5,9 @@ from copy import deepcopy
 from difflib import SequenceMatcher
 from typing import Any
 
+_SUMMARY_RESERVED_UPDATE_KEYS = {"notes", "__resource_updates__", "__monster_updates__", "__power_progress__"}
+
+
 
 def _text(value: Any, default: str = "") -> str:
     text = str(value or "").strip()
@@ -443,7 +446,11 @@ def build_scene_handoff_card(
     character_updates = getattr(summary, "character_updates", {}) if summary is not None else {}
     carry_over_people = [protagonist_name, plan.get("supporting_character_focus")]
     if isinstance(character_updates, dict):
-        carry_over_people.extend(list(character_updates.keys())[:4])
+        carry_over_people.extend([
+            name
+            for name in list(character_updates.keys())[:4]
+            if _text(name) and _text(name) not in _SUMMARY_RESERVED_UPDATE_KEYS and not _text(name).startswith("__")
+        ])
     carry_over_people = [name for name in carry_over_people if _text(name) and _text(name) != "notes"]
     tail_excerpt = _truncate_text((content or "")[-180:], 180)
     scene_status = _scene_handoff_status(
@@ -973,3 +980,851 @@ def choose_scene_sequence_for_chapter(
             if isinstance(item, dict)
         ],
     }
+
+
+# === Simplified scene continuity overrides (2026-03) ===
+
+
+def _normalize_scene_continuity_cut_plan(*, raw_cut_plan: Any, scene_count: int, fallback: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if scene_count <= 1:
+        return []
+    normalized: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    if isinstance(raw_cut_plan, list):
+        for item in raw_cut_plan:
+            if not isinstance(item, dict):
+                continue
+            try:
+                cut_after = int(item.get("cut_after_scene_no") or 0)
+            except Exception:
+                cut_after = 0
+            if cut_after < 1 or cut_after >= scene_count or cut_after in seen:
+                continue
+            seen.add(cut_after)
+            normalized.append({
+                "cut_after_scene_no": cut_after,
+                "reason": _truncate_text(item.get("reason"), 96),
+                "required_result": _truncate_text(item.get("required_result"), 96),
+                "transition_anchor": _truncate_text(item.get("transition_anchor"), 96),
+            })
+        normalized.sort(key=lambda row: int(row.get("cut_after_scene_no") or 0))
+    if not normalized:
+        return [dict(item) for item in (fallback or [])][: max(scene_count - 1, 0)]
+    if len(normalized) < max(scene_count - 1, 0):
+        existing = {int(item.get("cut_after_scene_no") or 0) for item in normalized}
+        for item in (fallback or []):
+            try:
+                cut_after = int((item or {}).get("cut_after_scene_no") or 0)
+            except Exception:
+                cut_after = 0
+            if cut_after < 1 or cut_after >= scene_count or cut_after in existing:
+                continue
+            normalized.append({
+                "cut_after_scene_no": cut_after,
+                "reason": _truncate_text((item or {}).get("reason"), 96),
+                "required_result": _truncate_text((item or {}).get("required_result"), 96),
+                "transition_anchor": _truncate_text((item or {}).get("transition_anchor"), 96),
+            })
+            existing.add(cut_after)
+            if len(normalized) >= max(scene_count - 1, 0):
+                break
+        normalized.sort(key=lambda row: int(row.get("cut_after_scene_no") or 0))
+    return normalized[: max(scene_count - 1, 0)]
+
+
+def _apply_scene_continuity_review_to_index(*, continuity_index: dict[str, Any], review: dict[str, Any] | None, plan: dict[str, Any], bridge: dict[str, Any]) -> dict[str, Any]:
+    base = dict(continuity_index or {})
+    if not isinstance(review, dict) or not review:
+        raise ValueError("scene_continuity_review is required; local continuity planning has been removed")
+    try:
+        scene_count = int(review.get("recommended_scene_count") or 1)
+    except Exception:
+        scene_count = 1
+    scene_count = max(min(scene_count, 3), 1)
+    must_continue = bool(review.get("must_continue_same_scene"))
+    transition_mode = _text(review.get("transition_mode"), "single_scene")
+    allowed_transition = _text(review.get("allowed_transition"), "stay_in_scene")
+    opening_anchor = _truncate_text(review.get("opening_anchor"), 120)
+    must_carry_over = _dedupe_texts([str(item or "").strip() for item in (review.get("must_carry_over") or [])], limit=5, item_limit=56)
+    cut_plan = _normalize_scene_continuity_cut_plan(raw_cut_plan=review.get("cut_plan"), scene_count=scene_count, fallback=[])
+    raw_outline = review.get("scene_sequence_plan") or []
+    outline: list[dict[str, Any]] = []
+    if isinstance(raw_outline, list):
+        for item in raw_outline:
+            if not isinstance(item, dict):
+                continue
+            outline.append({
+                "scene_no": int(item.get("scene_no") or len(outline) + 1),
+                "scene_name": _truncate_text(item.get("scene_name") or f"第{len(outline)+1}场", 32),
+                "scene_role": _text(item.get("scene_role"), "main"),
+                "purpose": _truncate_text(item.get("purpose"), 120),
+                "transition_in": _truncate_text(item.get("transition_in"), 96),
+                "target_result": _truncate_text(item.get("target_result"), 96),
+                "must_carry_over": must_carry_over[:4],
+            })
+    base.update({
+        "scene_count": scene_count,
+        "must_continue_same_scene": must_continue,
+        "transition_mode": transition_mode,
+        "allowed_transition": allowed_transition,
+        "opening_anchor": opening_anchor,
+        "must_carry_over": must_carry_over,
+        "cut_plan": cut_plan,
+        "scene_sequence_plan": outline,
+        "ai_review": {
+            "review_note": _truncate_text(review.get("review_note"), 120),
+            "recommended_scene_count": scene_count,
+            "must_continue_same_scene": must_continue,
+        },
+    })
+    return base
+
+
+def _continuity_bridge(serialized_last: dict[str, Any] | None) -> dict[str, Any]:
+    return ((serialized_last or {}).get("continuity_bridge") or {}) if isinstance((serialized_last or {}).get("continuity_bridge"), dict) else {}
+
+
+def _scene_cut_plan(*, scene_count: int, must_continue_same_scene: bool, bridge: dict[str, Any], plan: dict[str, Any]) -> list[dict[str, Any]]:
+    cuts: list[dict[str, Any]] = []
+    if scene_count <= 1:
+        return cuts
+    handoff = (bridge.get("scene_handoff_card") or {}) if isinstance(bridge.get("scene_handoff_card"), dict) else {}
+    if must_continue_same_scene:
+        cuts.append({
+            "cut_after_scene_no": 1,
+            "reason": "先吃掉上一章遗留动作/后果，再转入本章主动作。",
+            "required_result": _truncate_text((bridge.get("opening_anchor") or handoff.get("next_opening_anchor") or plan.get("goal")), 96),
+            "transition_anchor": "必须先给出阶段结果或明确动作承接，再允许切场。",
+        })
+    else:
+        cuts.append({
+            "cut_after_scene_no": 1,
+            "reason": "主场阶段目标完成后，才允许自然换场。",
+            "required_result": _truncate_text((plan.get("mid_turn") or plan.get("goal") or plan.get("conflict")), 96),
+            "transition_anchor": "切场前要写出结果、时间锚点、地点锚点或动作延续。",
+        })
+    if scene_count >= 3:
+        cuts.append({
+            "cut_after_scene_no": 2,
+            "reason": "第二场拿到中段结果后，再切入章尾落点。",
+            "required_result": _truncate_text((plan.get("closing_image") or plan.get("ending_hook") or plan.get("conflict")), 96),
+            "transition_anchor": "最后一次切场必须显式带出因果后果。",
+        })
+    return cuts[: max(scene_count - 1, 0)]
+
+
+def _build_scene_outline_from_plan(*, plan: dict[str, Any], bridge: dict[str, Any], scene_count: int, must_continue_same_scene: bool) -> list[dict[str, Any]]:
+    opening_purpose = _text(plan.get("opening_beat"), "承接上一章结尾并把本章动作推起来")
+    if must_continue_same_scene:
+        opening_purpose = _truncate_text(
+            "先续接上一章未收束场景：" + (_text((bridge.get("scene_handoff_card") or {}).get("next_opening_anchor")) or _text(bridge.get("opening_anchor")) or opening_purpose),
+            120,
+        )
+    middle_purpose = _text(plan.get("mid_turn"), _text(plan.get("goal"), "把中段受阻、试探或判断失误写实"))
+    ending_purpose = _text(plan.get("closing_image") or plan.get("ending_hook"), "把结果、后果或下一章入口落到可见画面")
+    items: list[dict[str, Any]] = []
+    if scene_count <= 1:
+        items.append({
+            "scene_no": 1,
+            "scene_name": "主场推进",
+            "scene_role": "main",
+            "purpose": _truncate_text(_text(plan.get("goal")) or opening_purpose, 120),
+            "transition_in": _truncate_text(_text((bridge.get("scene_handoff_card") or {}).get("next_opening_anchor")) or _text(bridge.get("opening_anchor")) or _text(plan.get("main_scene")), 96),
+            "target_result": _truncate_text(_text(plan.get("closing_image") or plan.get("ending_hook") or plan.get("conflict")), 96),
+            "must_carry_over": _dedupe_texts(_safe_list(bridge.get("unresolved_action_chain")) + _safe_list(bridge.get("carry_over_clues")), limit=4, item_limit=56),
+        })
+        return items
+    items.append({
+        "scene_no": 1,
+        "scene_name": "开场承接",
+        "scene_role": "opening",
+        "purpose": _truncate_text(opening_purpose, 120),
+        "transition_in": _truncate_text(_text((bridge.get("scene_handoff_card") or {}).get("next_opening_anchor")) or _text(bridge.get("opening_anchor")) or _text(plan.get("main_scene")), 96),
+        "target_result": _truncate_text(_text(plan.get("goal") or plan.get("conflict")), 96),
+        "must_carry_over": _dedupe_texts(_safe_list(bridge.get("unresolved_action_chain")) + _safe_list(bridge.get("carry_over_clues")), limit=4, item_limit=56),
+    })
+    items.append({
+        "scene_no": 2,
+        "scene_name": "主场推进",
+        "scene_role": "main",
+        "purpose": _truncate_text(middle_purpose, 120),
+        "transition_in": "上一场拿到阶段结果后自然推进。",
+        "target_result": _truncate_text(_text(plan.get("closing_image") or plan.get("ending_hook") or plan.get("goal")), 96),
+        "must_carry_over": _dedupe_texts(_safe_list((bridge.get("scene_handoff_card") or {}).get("carry_over_items")) + _safe_list(bridge.get("carry_over_clues")), limit=4, item_limit=56),
+    })
+    if scene_count >= 3:
+        items.append({
+            "scene_no": 3,
+            "scene_name": "章尾落点",
+            "scene_role": "ending",
+            "purpose": _truncate_text(ending_purpose, 120),
+            "transition_in": "中段拿到结果或触发新压力后再切入章尾。",
+            "target_result": _truncate_text(_text(plan.get("ending_hook") or plan.get("closing_image") or plan.get("conflict")), 96),
+            "must_carry_over": _dedupe_texts(_safe_list((bridge.get("scene_handoff_card") or {}).get("carry_over_items")), limit=4, item_limit=56),
+        })
+    return items[:scene_count]
+
+
+def build_scene_continuity_index(
+    *,
+    story_bible: dict[str, Any],
+    plan: dict[str, Any],
+    serialized_last: dict[str, Any] | None,
+    recent_summaries: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    bridge = _continuity_bridge(serialized_last)
+    handoff = (bridge.get("scene_handoff_card") or {}) if isinstance(bridge.get("scene_handoff_card"), dict) else {}
+    return {
+        "planning_mode": "ai_required",
+        "bridge": {
+            "opening_anchor": _truncate_text(bridge.get("opening_anchor"), 84),
+            "unresolved_action_chain": _safe_list(bridge.get("unresolved_action_chain"))[:4],
+            "carry_over_clues": _safe_list(bridge.get("carry_over_clues"))[:4],
+            "scene_handoff": handoff,
+        },
+        "recent_scene_hints": [
+            _truncate_text((_text(item.get("chapter_title")) + ": " + _text(item.get("event_summary"))), 84)
+            for item in (recent_summaries or [])[-2:]
+            if isinstance(item, dict)
+        ],
+        "scene_templates": [],
+    }
+
+
+def build_scene_template_index(
+    *,
+    story_bible: dict[str, Any],
+    plan: dict[str, Any],
+    serialized_last: dict[str, Any] | None,
+    recent_summaries: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Compatibility alias: scene templates no longer drive chapter structure.
+    The planning layer now only exposes continuity / cut planning information.
+    """
+    return build_scene_continuity_index(
+        story_bible=story_bible,
+        plan=plan,
+        serialized_last=serialized_last,
+        recent_summaries=recent_summaries,
+    )
+
+
+def realize_scene_continuity_plan(
+    *,
+    story_bible: dict[str, Any],
+    plan: dict[str, Any],
+    serialized_last: dict[str, Any] | None,
+    recent_summaries: list[dict[str, Any]] | None,
+    scene_continuity_review: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not isinstance(scene_continuity_review, dict) or not scene_continuity_review:
+        raise ValueError("scene_continuity_review is required; local continuity planning has been removed")
+    bridge = _continuity_bridge(serialized_last)
+    continuity_index = build_scene_continuity_index(
+        story_bible=story_bible,
+        plan=plan,
+        serialized_last=serialized_last,
+        recent_summaries=recent_summaries,
+    )
+    continuity_index = _apply_scene_continuity_review_to_index(
+        continuity_index=continuity_index,
+        review=scene_continuity_review,
+        plan=plan,
+        bridge=bridge,
+    )
+    scene_count = int(continuity_index.get("scene_count") or 1)
+    must_continue_same_scene = bool(continuity_index.get("must_continue_same_scene"))
+    outline = [dict(item) for item in (continuity_index.get("scene_sequence_plan") or []) if isinstance(item, dict)]
+    scene_execution_card = {
+        "scene_count": scene_count,
+        "must_continue_same_scene": must_continue_same_scene,
+        "transition_mode": _text(continuity_index.get("transition_mode"), "single_scene"),
+        "opening_anchor": _text(continuity_index.get("opening_anchor")),
+        "must_carry_over": list(continuity_index.get("must_carry_over") or []),
+        "first_scene_focus": _truncate_text((outline[0].get("scene_name") if outline else plan.get("main_scene")), 28),
+        "allowed_transition": _text(continuity_index.get("allowed_transition"), "stay_in_scene"),
+        "previous_scene_status": _truncate_text(((bridge.get("scene_handoff_card") or {}).get("scene_status_at_end")), 16),
+        "cut_plan": continuity_index.get("cut_plan") or [],
+        "review_note": _truncate_text(((continuity_index.get("ai_review") or {}).get("review_note")), 120),
+        "sequence_note": _truncate_text(
+            f"本章场景连续性完全由 AI 规划：{scene_count} 段场景，按 AI 提供的续场/切场顺序执行。",
+            120,
+        ),
+        "planning_basis": "scene_continuity_ai_only",
+    }
+    return {
+        "scene_sequence_plan": outline,
+        "scene_execution_card": scene_execution_card,
+        "scene_templates_used": [],
+        "recent_scene_hints": list(continuity_index.get("recent_scene_hints") or []),
+        "scene_continuity_index": continuity_index,
+    }
+
+
+def realize_scene_sequence_from_selection(
+    *,
+    story_bible: dict[str, Any],
+    plan: dict[str, Any],
+    serialized_last: dict[str, Any] | None,
+    recent_summaries: list[dict[str, Any]] | None,
+    selected_scene_template_ids: list[str] | None,
+) -> dict[str, Any]:
+    templates = ensure_scene_template_library(story_bible)
+    template_by_id = { _text(item.get("scene_id")): item for item in templates if isinstance(item, dict) and _text(item.get("scene_id")) }
+    bridge = ((serialized_last or {}).get("continuity_bridge") or {}) if isinstance((serialized_last or {}).get("continuity_bridge"), dict) else {}
+    must_continue_same_scene = _continuation_needed(plan, bridge)
+    scene_count = _determine_scene_count(plan, must_continue_same_scene=must_continue_same_scene)
+    normalized_ids = [str(item or "").strip() for item in (selected_scene_template_ids or []) if str(item or "").strip()]
+    scenes: list[dict[str, Any]] = []
+    roles = ["opening", "main", "ending"][:scene_count]
+    for idx, role in enumerate(roles, start=1):
+        template_id = normalized_ids[idx - 1] if idx - 1 < len(normalized_ids) else ""
+        if idx == 1 and template_id == "same_scene_continuation":
+            scenes.append(_build_continuation_scene(bridge))
+            continue
+        template = template_by_id.get(template_id or "")
+        if template is None:
+            fallback_id = "bridge_settlement" if role == "opening" else ("probe_negotiation" if role == "main" else "aftermath_review")
+            template = next((item for item in templates if _text(item.get("scene_id")) == fallback_id), {})
+        scenes.append(_instantiate_scene(template or {}, scene_no=idx, plan=plan, bridge=bridge, role=role))
+    if must_continue_same_scene and scenes and scenes[0].get("scene_template_id") != "same_scene_continuation":
+        scenes[0] = _build_continuation_scene(bridge)
+    handoff = (bridge.get("scene_handoff_card") or {}) if isinstance(bridge.get("scene_handoff_card"), dict) else {}
+    must_carry_over = []
+    must_carry_over.extend(_safe_list(bridge.get("unresolved_action_chain"))[:2])
+    must_carry_over.extend(_safe_list(bridge.get("carry_over_clues"))[:2])
+    must_carry_over.extend(_safe_list(handoff.get("carry_over_items"))[:2])
+    must_carry_over = _dedupe_texts(must_carry_over, limit=4, item_limit=56)
+    transition_mode = "continue_same_scene" if must_continue_same_scene else ("soft_cut" if len(scenes) >= 2 else "single_scene")
+    allowed_transition = "resolve_then_cut" if must_continue_same_scene else ("soft_cut_only" if len(scenes) >= 2 else "stay_in_scene")
+    if _text(handoff.get("allowed_transition")) == "time_skip" and not must_continue_same_scene:
+        allowed_transition = "time_skip_allowed"
+    scene_execution_card = {
+        "scene_count": len(scenes),
+        "must_continue_same_scene": must_continue_same_scene,
+        "transition_mode": transition_mode,
+        "opening_anchor": _truncate_text(handoff.get("next_opening_anchor") or bridge.get("opening_anchor") or plan.get("opening_beat"), 120),
+        "must_carry_over": must_carry_over,
+        "first_scene_focus": _truncate_text((scenes[0].get("scene_name") if scenes else plan.get("main_scene")), 28),
+        "allowed_transition": allowed_transition,
+        "previous_scene_status": _truncate_text(handoff.get("scene_status_at_end"), 16),
+        "sequence_note": _truncate_text(
+            f"本章按 {len(scenes)} 段场景推进：" + " → ".join([_text(item.get('scene_name')) for item in scenes if _text(item.get('scene_name'))]),
+            120,
+        ),
+    }
+    return {
+        "scene_sequence_plan": scenes,
+        "scene_execution_card": scene_execution_card,
+        "scene_templates_used": [
+            {
+                "scene_template_id": _text(item.get("scene_template_id")),
+                "scene_name": _text(item.get("scene_name")),
+                "scene_role": _text(item.get("scene_role")),
+            }
+            for item in scenes
+        ],
+        "recent_scene_hints": [
+            _truncate_text((_text(item.get("chapter_title")) + ": " + _text(item.get("event_summary"))), 84)
+            for item in (recent_summaries or [])[-2:]
+            if isinstance(item, dict)
+        ],
+    }
+
+
+def choose_scene_sequence_for_chapter(
+    *,
+    story_bible: dict[str, Any],
+    plan: dict[str, Any],
+    serialized_last: dict[str, Any] | None,
+    recent_summaries: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    templates = ensure_scene_template_library(story_bible)
+    bridge = ((serialized_last or {}).get("continuity_bridge") or {}) if isinstance((serialized_last or {}).get("continuity_bridge"), dict) else {}
+    must_continue_same_scene = _continuation_needed(plan, bridge)
+    scene_count = _determine_scene_count(plan, must_continue_same_scene=must_continue_same_scene)
+    selected_ids: set[str] = set()
+    scenes: list[dict[str, Any]] = []
+
+    if must_continue_same_scene:
+        first_scene = _build_continuation_scene(bridge)
+        scenes.append(first_scene)
+        selected_ids.add("same_scene_continuation")
+    else:
+        opening_template = _pick_best_scene_template(
+            templates,
+            role="opening",
+            plan=plan,
+            bridge=bridge,
+            selected_ids=selected_ids,
+            fallback_id="bridge_settlement",
+        )
+        scenes.append(_instantiate_scene(opening_template, scene_no=1, plan=plan, bridge=bridge, role="opening"))
+        selected_ids.add(_text(opening_template.get("scene_id")))
+
+    if scene_count >= 2:
+        middle_template = _pick_best_scene_template(
+            templates,
+            role="main",
+            plan=plan,
+            bridge=bridge,
+            selected_ids=selected_ids,
+            fallback_id="probe_negotiation",
+        )
+        scenes.append(_instantiate_scene(middle_template, scene_no=len(scenes) + 1, plan=plan, bridge=bridge, role="main"))
+        selected_ids.add(_text(middle_template.get("scene_id")))
+
+    if scene_count >= 3:
+        ending_template = _pick_best_scene_template(
+            templates,
+            role="ending",
+            plan=plan,
+            bridge=bridge,
+            selected_ids=selected_ids,
+            fallback_id="aftermath_review",
+        )
+        scenes.append(_instantiate_scene(ending_template, scene_no=len(scenes) + 1, plan=plan, bridge=bridge, role="ending"))
+        selected_ids.add(_text(ending_template.get("scene_id")))
+
+    if len(scenes) == 1:
+        scenes[0]["scene_role"] = "main"
+    elif len(scenes) == 2 and scenes[-1].get("scene_role") not in {"ending", "bridge"}:
+        bridge_template = _pick_best_scene_template(
+            templates,
+            role="ending",
+            plan=plan,
+            bridge=bridge,
+            selected_ids=selected_ids,
+            fallback_id="aftermath_review",
+        )
+        scenes[-1] = _instantiate_scene(bridge_template, scene_no=2, plan=plan, bridge=bridge, role="ending")
+
+    handoff = (bridge.get("scene_handoff_card") or {}) if isinstance(bridge.get("scene_handoff_card"), dict) else {}
+    first_focus = _truncate_text((scenes[0].get("scene_name") if scenes else plan.get("main_scene")), 28)
+    must_carry_over = []
+    must_carry_over.extend(_safe_list(bridge.get("unresolved_action_chain"))[:2])
+    must_carry_over.extend(_safe_list(bridge.get("carry_over_clues"))[:2])
+    must_carry_over.extend(_safe_list(handoff.get("carry_over_items"))[:2])
+    must_carry_over = _dedupe_texts(must_carry_over, limit=4, item_limit=56)
+
+    transition_mode = "continue_same_scene" if must_continue_same_scene else ("multi_scene_chain" if len(scenes) >= 2 else "single_scene")
+    if not must_continue_same_scene and len(scenes) >= 2:
+        transition_mode = "soft_cut"
+    allowed_transition = "resolve_then_cut" if must_continue_same_scene else ("soft_cut_only" if len(scenes) >= 2 else "stay_in_scene")
+    if _text(handoff.get("allowed_transition")) == "time_skip" and not must_continue_same_scene:
+        allowed_transition = "time_skip_allowed"
+    scene_execution_card = {
+        "scene_count": len(scenes),
+        "must_continue_same_scene": must_continue_same_scene,
+        "transition_mode": transition_mode,
+        "opening_anchor": _truncate_text(handoff.get("next_opening_anchor") or bridge.get("opening_anchor") or plan.get("opening_beat"), 120),
+        "must_carry_over": must_carry_over,
+        "first_scene_focus": first_focus,
+        "allowed_transition": allowed_transition,
+        "previous_scene_status": _truncate_text(handoff.get("scene_status_at_end"), 16),
+        "sequence_note": _truncate_text(
+            f"本章按 {len(scenes)} 段场景推进：" + " → ".join([_text(item.get('scene_name')) for item in scenes if _text(item.get('scene_name'))]),
+            120,
+        ),
+    }
+    return {
+        "scene_sequence_plan": scenes,
+        "scene_execution_card": scene_execution_card,
+        "scene_templates_used": [
+            {
+                "scene_template_id": _text(item.get("scene_template_id")),
+                "scene_name": _text(item.get("scene_name")),
+                "scene_role": _text(item.get("scene_role")),
+            }
+            for item in scenes
+        ],
+        "recent_scene_hints": [
+            _truncate_text((_text(item.get("chapter_title")) + ": " + _text(item.get("event_summary"))), 84)
+            for item in (recent_summaries or [])[-2:]
+            if isinstance(item, dict)
+        ],
+    }
+
+
+# === Simplified scene continuity overrides (2026-03) ===
+
+
+def _normalize_scene_continuity_cut_plan(*, raw_cut_plan: Any, scene_count: int, fallback: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if scene_count <= 1:
+        return []
+    normalized: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    if isinstance(raw_cut_plan, list):
+        for item in raw_cut_plan:
+            if not isinstance(item, dict):
+                continue
+            try:
+                cut_after = int(item.get("cut_after_scene_no") or 0)
+            except Exception:
+                cut_after = 0
+            if cut_after < 1 or cut_after >= scene_count or cut_after in seen:
+                continue
+            seen.add(cut_after)
+            normalized.append({
+                "cut_after_scene_no": cut_after,
+                "reason": _truncate_text(item.get("reason"), 96),
+                "required_result": _truncate_text(item.get("required_result"), 96),
+                "transition_anchor": _truncate_text(item.get("transition_anchor"), 96),
+            })
+        normalized.sort(key=lambda row: int(row.get("cut_after_scene_no") or 0))
+    if not normalized:
+        return [dict(item) for item in (fallback or [])][: max(scene_count - 1, 0)]
+    if len(normalized) < max(scene_count - 1, 0):
+        existing = {int(item.get("cut_after_scene_no") or 0) for item in normalized}
+        for item in (fallback or []):
+            try:
+                cut_after = int((item or {}).get("cut_after_scene_no") or 0)
+            except Exception:
+                cut_after = 0
+            if cut_after < 1 or cut_after >= scene_count or cut_after in existing:
+                continue
+            normalized.append({
+                "cut_after_scene_no": cut_after,
+                "reason": _truncate_text((item or {}).get("reason"), 96),
+                "required_result": _truncate_text((item or {}).get("required_result"), 96),
+                "transition_anchor": _truncate_text((item or {}).get("transition_anchor"), 96),
+            })
+            existing.add(cut_after)
+            if len(normalized) >= max(scene_count - 1, 0):
+                break
+        normalized.sort(key=lambda row: int(row.get("cut_after_scene_no") or 0))
+    return normalized[: max(scene_count - 1, 0)]
+
+
+def _apply_scene_continuity_review_to_index(*, continuity_index: dict[str, Any], review: dict[str, Any] | None, plan: dict[str, Any], bridge: dict[str, Any]) -> dict[str, Any]:
+    base = dict(continuity_index or {})
+    if not isinstance(review, dict) or not review:
+        raise ValueError("scene_continuity_review is required; local continuity planning has been removed")
+    try:
+        scene_count = int(review.get("recommended_scene_count") or 1)
+    except Exception:
+        scene_count = 1
+    scene_count = max(min(scene_count, 3), 1)
+    must_continue = bool(review.get("must_continue_same_scene"))
+    transition_mode = _text(review.get("transition_mode"), "single_scene")
+    allowed_transition = _text(review.get("allowed_transition"), "stay_in_scene")
+    opening_anchor = _truncate_text(review.get("opening_anchor"), 120)
+    must_carry_over = _dedupe_texts([str(item or "").strip() for item in (review.get("must_carry_over") or [])], limit=5, item_limit=56)
+    cut_plan = _normalize_scene_continuity_cut_plan(raw_cut_plan=review.get("cut_plan"), scene_count=scene_count, fallback=[])
+    raw_outline = review.get("scene_sequence_plan") or []
+    outline: list[dict[str, Any]] = []
+    if isinstance(raw_outline, list):
+        for item in raw_outline:
+            if not isinstance(item, dict):
+                continue
+            outline.append({
+                "scene_no": int(item.get("scene_no") or len(outline) + 1),
+                "scene_name": _truncate_text(item.get("scene_name") or f"第{len(outline)+1}场", 32),
+                "scene_role": _text(item.get("scene_role"), "main"),
+                "purpose": _truncate_text(item.get("purpose"), 120),
+                "transition_in": _truncate_text(item.get("transition_in"), 96),
+                "target_result": _truncate_text(item.get("target_result"), 96),
+                "must_carry_over": must_carry_over[:4],
+            })
+    base.update({
+        "scene_count": scene_count,
+        "must_continue_same_scene": must_continue,
+        "transition_mode": transition_mode,
+        "allowed_transition": allowed_transition,
+        "opening_anchor": opening_anchor,
+        "must_carry_over": must_carry_over,
+        "cut_plan": cut_plan,
+        "scene_sequence_plan": outline,
+        "ai_review": {
+            "review_note": _truncate_text(review.get("review_note"), 120),
+            "recommended_scene_count": scene_count,
+            "must_continue_same_scene": must_continue,
+        },
+    })
+    return base
+
+
+def _continuity_bridge(serialized_last: dict[str, Any] | None) -> dict[str, Any]:
+    return ((serialized_last or {}).get("continuity_bridge") or {}) if isinstance((serialized_last or {}).get("continuity_bridge"), dict) else {}
+
+
+def _scene_cut_plan(*, scene_count: int, must_continue_same_scene: bool, bridge: dict[str, Any], plan: dict[str, Any]) -> list[dict[str, Any]]:
+    cuts: list[dict[str, Any]] = []
+    if scene_count <= 1:
+        return cuts
+    handoff = (bridge.get("scene_handoff_card") or {}) if isinstance(bridge.get("scene_handoff_card"), dict) else {}
+    if must_continue_same_scene:
+        cuts.append({
+            "cut_after_scene_no": 1,
+            "reason": "先吃掉上一章遗留动作/后果，再转入本章主动作。",
+            "required_result": _truncate_text((bridge.get("opening_anchor") or handoff.get("next_opening_anchor") or plan.get("goal")), 96),
+            "transition_anchor": "必须先给出阶段结果或明确动作承接，再允许切场。",
+        })
+    else:
+        cuts.append({
+            "cut_after_scene_no": 1,
+            "reason": "主场阶段目标完成后，才允许自然换场。",
+            "required_result": _truncate_text((plan.get("mid_turn") or plan.get("goal") or plan.get("conflict")), 96),
+            "transition_anchor": "切场前要写出结果、时间锚点、地点锚点或动作延续。",
+        })
+    if scene_count >= 3:
+        cuts.append({
+            "cut_after_scene_no": 2,
+            "reason": "第二场拿到中段结果后，再切入章尾落点。",
+            "required_result": _truncate_text((plan.get("closing_image") or plan.get("ending_hook") or plan.get("conflict")), 96),
+            "transition_anchor": "最后一次切场必须显式带出因果后果。",
+        })
+    return cuts[: max(scene_count - 1, 0)]
+
+
+def _build_scene_outline_from_plan(*, plan: dict[str, Any], bridge: dict[str, Any], scene_count: int, must_continue_same_scene: bool) -> list[dict[str, Any]]:
+    opening_purpose = _text(plan.get("opening_beat"), "承接上一章结尾并把本章动作推起来")
+    if must_continue_same_scene:
+        opening_purpose = _truncate_text(
+            "先续接上一章未收束场景：" + (_text((bridge.get("scene_handoff_card") or {}).get("next_opening_anchor")) or _text(bridge.get("opening_anchor")) or opening_purpose),
+            120,
+        )
+    middle_purpose = _text(plan.get("mid_turn"), _text(plan.get("goal"), "把中段受阻、试探或判断失误写实"))
+    ending_purpose = _text(plan.get("closing_image") or plan.get("ending_hook"), "把结果、后果或下一章入口落到可见画面")
+    items: list[dict[str, Any]] = []
+    if scene_count <= 1:
+        items.append({
+            "scene_no": 1,
+            "scene_name": "主场推进",
+            "scene_role": "main",
+            "purpose": _truncate_text(_text(plan.get("goal")) or opening_purpose, 120),
+            "transition_in": _truncate_text(_text((bridge.get("scene_handoff_card") or {}).get("next_opening_anchor")) or _text(bridge.get("opening_anchor")) or _text(plan.get("main_scene")), 96),
+            "target_result": _truncate_text(_text(plan.get("closing_image") or plan.get("ending_hook") or plan.get("conflict")), 96),
+            "must_carry_over": _dedupe_texts(_safe_list(bridge.get("unresolved_action_chain")) + _safe_list(bridge.get("carry_over_clues")), limit=4, item_limit=56),
+        })
+        return items
+    items.append({
+        "scene_no": 1,
+        "scene_name": "开场承接",
+        "scene_role": "opening",
+        "purpose": _truncate_text(opening_purpose, 120),
+        "transition_in": _truncate_text(_text((bridge.get("scene_handoff_card") or {}).get("next_opening_anchor")) or _text(bridge.get("opening_anchor")) or _text(plan.get("main_scene")), 96),
+        "target_result": _truncate_text(_text(plan.get("goal") or plan.get("conflict")), 96),
+        "must_carry_over": _dedupe_texts(_safe_list(bridge.get("unresolved_action_chain")) + _safe_list(bridge.get("carry_over_clues")), limit=4, item_limit=56),
+    })
+    items.append({
+        "scene_no": 2,
+        "scene_name": "主场推进",
+        "scene_role": "main",
+        "purpose": _truncate_text(middle_purpose, 120),
+        "transition_in": "上一场拿到阶段结果后自然推进。",
+        "target_result": _truncate_text(_text(plan.get("closing_image") or plan.get("ending_hook") or plan.get("goal")), 96),
+        "must_carry_over": _dedupe_texts(_safe_list((bridge.get("scene_handoff_card") or {}).get("carry_over_items")) + _safe_list(bridge.get("carry_over_clues")), limit=4, item_limit=56),
+    })
+    if scene_count >= 3:
+        items.append({
+            "scene_no": 3,
+            "scene_name": "章尾落点",
+            "scene_role": "ending",
+            "purpose": _truncate_text(ending_purpose, 120),
+            "transition_in": "中段拿到结果或触发新压力后再切入章尾。",
+            "target_result": _truncate_text(_text(plan.get("ending_hook") or plan.get("closing_image") or plan.get("conflict")), 96),
+            "must_carry_over": _dedupe_texts(_safe_list((bridge.get("scene_handoff_card") or {}).get("carry_over_items")), limit=4, item_limit=56),
+        })
+    return items[:scene_count]
+
+
+def build_scene_continuity_index(
+    *,
+    story_bible: dict[str, Any],
+    plan: dict[str, Any],
+    serialized_last: dict[str, Any] | None,
+    recent_summaries: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    bridge = _continuity_bridge(serialized_last)
+    handoff = (bridge.get("scene_handoff_card") or {}) if isinstance(bridge.get("scene_handoff_card"), dict) else {}
+    return {
+        "planning_mode": "ai_required",
+        "bridge": {
+            "opening_anchor": _truncate_text(bridge.get("opening_anchor"), 84),
+            "unresolved_action_chain": _safe_list(bridge.get("unresolved_action_chain"))[:4],
+            "carry_over_clues": _safe_list(bridge.get("carry_over_clues"))[:4],
+            "scene_handoff": handoff,
+        },
+        "recent_scene_hints": [
+            _truncate_text((_text(item.get("chapter_title")) + ": " + _text(item.get("event_summary"))), 84)
+            for item in (recent_summaries or [])[-2:]
+            if isinstance(item, dict)
+        ],
+        "scene_templates": [],
+    }
+
+
+def build_scene_template_index(
+    *,
+    story_bible: dict[str, Any],
+    plan: dict[str, Any],
+    serialized_last: dict[str, Any] | None,
+    recent_summaries: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Compatibility alias: scene templates no longer drive chapter structure.
+    The planning layer now only exposes continuity / cut planning information.
+    """
+    return build_scene_continuity_index(
+        story_bible=story_bible,
+        plan=plan,
+        serialized_last=serialized_last,
+        recent_summaries=recent_summaries,
+    )
+
+
+def realize_scene_continuity_plan(
+    *,
+    story_bible: dict[str, Any],
+    plan: dict[str, Any],
+    serialized_last: dict[str, Any] | None,
+    recent_summaries: list[dict[str, Any]] | None,
+    scene_continuity_review: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    bridge = _continuity_bridge(serialized_last)
+    continuity_index = build_scene_continuity_index(
+        story_bible=story_bible,
+        plan=plan,
+        serialized_last=serialized_last,
+        recent_summaries=recent_summaries,
+    )
+    continuity_index = _apply_scene_continuity_review_to_index(
+        continuity_index=continuity_index,
+        review=scene_continuity_review,
+        plan=plan,
+        bridge=bridge,
+    )
+    scene_count = int(continuity_index.get("scene_count") or 1)
+    must_continue_same_scene = bool(continuity_index.get("must_continue_same_scene"))
+    outline = [dict(item) for item in (continuity_index.get("scene_sequence_plan") or []) if isinstance(item, dict)]
+    scene_execution_card = {
+        "scene_count": scene_count,
+        "must_continue_same_scene": must_continue_same_scene,
+        "transition_mode": _text(continuity_index.get("transition_mode"), "single_scene"),
+        "opening_anchor": _text(continuity_index.get("opening_anchor")),
+        "must_carry_over": list(continuity_index.get("must_carry_over") or []),
+        "first_scene_focus": _truncate_text((outline[0].get("scene_name") if outline else plan.get("main_scene")), 28),
+        "allowed_transition": _text(continuity_index.get("allowed_transition"), "stay_in_scene"),
+        "previous_scene_status": _truncate_text(((bridge.get("scene_handoff_card") or {}).get("scene_status_at_end")), 16),
+        "cut_plan": continuity_index.get("cut_plan") or [],
+        "review_note": _truncate_text(((continuity_index.get("ai_review") or {}).get("review_note")), 120),
+        "sequence_note": _truncate_text(
+            f"本章场景连续性完全由 AI 规划：{scene_count} 段场景，按 AI 提供的续场/切场顺序执行。",
+            120,
+        ),
+        "planning_basis": "scene_continuity_ai_only",
+    }
+    return {
+        "scene_sequence_plan": outline,
+        "scene_execution_card": scene_execution_card,
+        "scene_templates_used": [],
+        "recent_scene_hints": list(continuity_index.get("recent_scene_hints") or []),
+        "scene_continuity_index": continuity_index,
+    }
+
+
+def realize_scene_sequence_from_selection(
+    *,
+    story_bible: dict[str, Any],
+    plan: dict[str, Any],
+    serialized_last: dict[str, Any] | None,
+    recent_summaries: list[dict[str, Any]] | None,
+    selected_scene_template_ids: list[str] | None,
+) -> dict[str, Any]:
+    """Compatibility alias: selected_scene_template_ids are ignored.
+    Scene planning is now derived from continuity + cut planning only.
+    """
+    raise ValueError("selected_scene_template_ids are no longer supported; scene continuity must be provided by AI review")
+
+
+def build_scene_handoff_card(
+    *,
+    story_bible: dict[str, Any],
+    plan: dict[str, Any],
+    scene_runtime: dict[str, Any] | None,
+    summary: Any,
+    content: str,
+    protagonist_name: str | None = None,
+) -> dict[str, Any]:
+    runtime = scene_runtime or {}
+    scene_sequence_plan = runtime.get("scene_sequence_plan") or []
+    scene_execution_card = runtime.get("scene_execution_card") or {}
+    final_scene = scene_sequence_plan[-1] if scene_sequence_plan and isinstance(scene_sequence_plan[-1], dict) else {}
+    open_hooks = _safe_list(getattr(summary, "open_hooks", []) if summary is not None else [])
+    new_clues = _safe_list(getattr(summary, "new_clues", []) if summary is not None else [])
+    character_updates = getattr(summary, "character_updates", {}) if summary is not None else {}
+    carry_over_people = [protagonist_name, plan.get("supporting_character_focus")]
+    if isinstance(character_updates, dict):
+        carry_over_people.extend([
+            name
+            for name in list(character_updates.keys())[:4]
+            if _text(name) and _text(name) not in _SUMMARY_RESERVED_UPDATE_KEYS and not _text(name).startswith("__")
+        ])
+    carry_over_people = [name for name in carry_over_people if _text(name) and _text(name) != "notes"]
+    tail_excerpt = _truncate_text((content or "")[-180:], 180)
+    scene_status = _scene_handoff_status(
+        plan=plan,
+        scene_execution_card=scene_execution_card if isinstance(scene_execution_card, dict) else {},
+        final_scene=final_scene if isinstance(final_scene, dict) else {},
+        unresolved=open_hooks,
+        tail_excerpt=tail_excerpt,
+    )
+    allowed_transition = _text(scene_execution_card.get("allowed_transition")) or ("none" if scene_status in {"open", "interrupted"} else "soft_cut_only")
+    must_continue_same_scene = scene_status in {"open", "interrupted"}
+    carry_over_items = _dedupe_texts(
+        _safe_list((final_scene if isinstance(final_scene, dict) else {}).get("must_carry_over")) + open_hooks + new_clues,
+        limit=5,
+        item_limit=56,
+    )
+    unfinished_actions = _dedupe_texts(open_hooks, limit=4, item_limit=64)
+    next_opening_anchor = _truncate_text(
+        tail_excerpt or _text((scene_execution_card or {}).get("opening_anchor")) or _text(plan.get("ending_hook") or plan.get("closing_image")),
+        120,
+    )
+    forbidden_openings: list[str] = []
+    if must_continue_same_scene:
+        forbidden_openings.extend(["直接回家总结", "突然切到第二天日常", "无过渡换到无关新地点"])
+    elif allowed_transition == "time_skip":
+        forbidden_openings.append("不写时间锚点就直接跳到新一天")
+    next_scene_candidates = [
+        {
+            "scene_template_id": "same_scene_continuation",
+            "scene_name": "先续接上一章场景",
+            "reason": "上一章动作链仍未收住。",
+        }
+    ] if must_continue_same_scene else [
+        {
+            "scene_template_id": "soft_cut_after_result",
+            "scene_name": "阶段结果后自然切场",
+            "reason": "允许换场，但必须先写出结果与过渡锚点。",
+        },
+        {
+            "scene_template_id": "time_skip_with_anchor",
+            "scene_name": "带时间锚点切场",
+            "reason": "若要跳时间，开头必须明确写出时间/地点/动作承接。",
+        },
+    ]
+    note_map = {
+        "open": "本章最后一个场景还没收住，下一章第一场应先续接旧动作链。",
+        "interrupted": "本章在外力打断中收尾，下一章应先处理打断后的直接后果。",
+        "soft_closed": "本章主动作已有阶段结果，但余波和后果还要继续带着走。",
+        "closed": "本章最后一个场景已阶段闭合，下一章可以在写出过渡锚点后自由换挡。",
+    }
+    return _compact_scene_handoff_card(
+        {
+            "scene_status_at_end": scene_status,
+            "must_continue_same_scene": must_continue_same_scene,
+            "allowed_transition": allowed_transition,
+            "next_opening_anchor": next_opening_anchor,
+            "final_scene_no": int((final_scene or {}).get("scene_no", len(scene_sequence_plan)) or len(scene_sequence_plan) or 1),
+            "final_scene_template_id": _text((final_scene or {}).get("scene_template_id")) or "scene_continuity_only",
+            "final_scene_name": _text((final_scene or {}).get("scene_name")) or "章尾场景",
+            "final_scene_role": _text((final_scene or {}).get("scene_role")),
+            "carry_over_items": carry_over_items,
+            "carry_over_people": _dedupe_texts(carry_over_people, limit=5, item_limit=20),
+            "unfinished_actions": unfinished_actions,
+            "forbidden_openings": forbidden_openings,
+            "next_scene_candidates": next_scene_candidates,
+            "handoff_note": note_map.get(scene_status, "下一章应先检查上一场是否真正收束。"),
+        }
+    )

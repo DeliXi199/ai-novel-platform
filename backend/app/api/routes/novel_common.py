@@ -24,6 +24,7 @@ from app.services.runtime_snapshot_cache import (
 )
 from app.services.story_architecture import build_story_workspace_snapshot
 from app.services.story_state import get_chapter_card_queue, get_current_pipeline, get_live_runtime, get_planning_status
+from app.services.runtime_diagnostics import build_runtime_diagnostics
 
 
 
@@ -174,8 +175,6 @@ def _compact_scene_debug_payload(story_bible: dict[str, Any] | None) -> dict[str
     workspace_state = payload.get("story_workspace") or {}
     target_chapter_no = int(live_runtime.get("target_chapter_no") or pipeline.get("target_chapter_no") or workspace_state.get("entry_target_chapter_no") or 0)
     current_packet = workspace_state.get("current_execution_packet") if isinstance(workspace_state.get("current_execution_packet"), dict) else {}
-    if not current_packet and isinstance(workspace_state.get("next_chapter_preview_packet"), dict):
-        current_packet = workspace_state.get("next_chapter_preview_packet") or {}
     current_target = int(current_packet.get("for_chapter_no", 0) or 0)
     planning_packet = current_packet if current_packet and (not target_chapter_no or current_target in {0, target_chapter_no}) else {}
     last_completed_packet = workspace_state.get("last_completed_execution_packet") if isinstance(workspace_state.get("last_completed_execution_packet"), dict) else {}
@@ -444,6 +443,7 @@ def build_story_studio_payload(db: Session, novel: Novel, *, desired_chapter_no:
             "chapter_card_queue": snapshot.get("story_workspace", {}).get("chapter_card_queue", []),
             "scene_debug": _compact_scene_debug_payload(synced_story_bible),
             "generation_report": _compact_generation_report_payload(synced_story_bible),
+            "runtime_diagnostics": build_runtime_diagnostics(synced_story_bible, active_tasks=active_tasks, recent_tasks=recent_tasks),
             "ai_policy_audit": ai_policy_audit,
         },
         "interventions": _intervention_payload(novel.id, interventions),
@@ -482,6 +482,7 @@ def build_live_runtime_payload(db: Session, novel: Novel) -> dict:
         "ai_policy_audit": ai_policy_audit,
         "scene_debug": _compact_scene_debug_payload(story_bible),
         "generation_report": _compact_generation_report_payload(story_bible),
+        "runtime_diagnostics": build_runtime_diagnostics(story_bible),
         "planning_status": {
             "planned_until": planning_status.get("planned_until"),
             "ready_chapter_cards": planning_status.get("ready_chapter_cards") or [],

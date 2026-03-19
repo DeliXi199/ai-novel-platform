@@ -35,10 +35,19 @@ _trace_var: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.Co
 _trace_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("llm_trace_id", default=None)
 
 _BOOTSTRAP_STAGE_PREFIXES = (
+    "bootstrap_intent_parse",
+    "bootstrap_intent_strategy_generation",
+    "bootstrap_strategy_candidate_generation",
+    "bootstrap_strategy_arbitration",
+    "bootstrap_story_review",
+    "bootstrap_execution_profile_generation",
+    "bootstrap_outline_title_generation",
+    "bootstrap_title_generation",
     "story_engine_diagnosis",
     "story_strategy_generation",
     "story_engine_strategy_generation",
     "global_outline_generation",
+    "title_generation",
     "arc_outline_generation",
 )
 

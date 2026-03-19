@@ -25,6 +25,9 @@ from app.services.hard_fact_guard_utils import (
 )
 
 
+_SUMMARY_RESERVED_UPDATE_KEYS = {"notes", "__resource_updates__", "__monster_updates__", "__power_progress__"}
+
+
 def _candidate_names(*, protagonist_name: str, plan: dict[str, Any] | None, summary: Any | None, reference_state: dict[str, Any] | None = None) -> list[str]:
     names: list[str] = []
     for candidate in [protagonist_name, (plan or {}).get("supporting_character_focus") if isinstance(plan, dict) else None]:
@@ -35,9 +38,10 @@ def _candidate_names(*, protagonist_name: str, plan: dict[str, Any] | None, summ
         updates = getattr(summary, "character_updates", None) or {}
         if isinstance(updates, dict):
             for key in updates.keys():
-                if key == "notes":
+                clean_key = str(key).strip()
+                if not clean_key or clean_key in _SUMMARY_RESERVED_UPDATE_KEYS or clean_key.startswith("__"):
                     continue
-                text = _clean_text(key, 20)
+                text = _clean_text(clean_key, 20)
                 if text and text not in names:
                     names.append(text)
     if isinstance(reference_state, dict):

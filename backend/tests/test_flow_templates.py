@@ -4,10 +4,10 @@ from app.services.openai_story_engine import ChapterPlan, _apply_flow_template_t
 from app.services.story_blueprint_builders import build_flow_templates, build_template_library
 
 
-def test_build_flow_templates_expanded_to_twenty_with_short_tags() -> None:
+def test_build_flow_templates_expanded_beyond_twenty_with_short_tags() -> None:
     templates = build_flow_templates()
 
-    assert len(templates) == 20
+    assert len(templates) >= 36
     assert all(str(item.get("flow_id") or "").strip() for item in templates)
     assert all(str(item.get("quick_tag") or "").strip() for item in templates)
     assert max(len(str(item.get("quick_tag") or "")) for item in templates) <= 6
@@ -46,6 +46,6 @@ def test_build_template_library_includes_payoff_cards() -> None:
     payload = NovelCreate(genre="凡人修仙", premise="边城求生", protagonist_name="林凡", style_preferences={})
     library = build_template_library(payload)
 
-    assert len(library.get("payoff_cards") or []) >= 20
+    assert len(library.get("payoff_cards") or []) >= 40
     assert library["roadmap"]["current_payoff_card_count"] == len(library.get("payoff_cards") or [])
     assert any((item.get("payoff_mode") == "捡漏反压") for item in (library.get("payoff_cards") or []))

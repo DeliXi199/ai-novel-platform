@@ -9,15 +9,18 @@ from app.models.novel import Novel
 from app.schemas.novel import NovelCreate
 from app.services.generation_exceptions import GenerationError
 from app.services.story_workspace_archive import archive_story_workspace_snapshot
+from app.services.story_blueprint_builders import build_arc_digest, build_bootstrap_foundation_assets
 from app.services.novel_bootstrap import (
+    apply_bootstrap_review_to_arc,
     build_base_story_bible,
     build_story_bible,
     generate_arc_outline_bundle,
-    generate_global_story_outline,
+    generate_bootstrap_design_packet,
+    generate_global_story_outline_and_title,
     generate_story_engine_strategy_bundle,
-    generate_title,
 )
 from app.services.story_architecture import ensure_story_architecture, sync_long_term_state
+from app.services.openai_story_engine import review_bootstrap_story_package
 from app.services.story_state import ensure_workflow_state, workflow_bootstrap_view
 
 
@@ -32,42 +35,35 @@ BOOTSTRAP_STAGE_DEFINITIONS: list[dict[str, Any]] = [
         "label": "初始化底稿",
         "description": "准备基础世界设定、主角信息与风格底稿。",
         "step_index": 1,
-        "step_total": 6,
+        "step_total": 5,
     },
     {
         "stage": "story_engine_strategy_generation",
         "label": "题材推进引擎",
-        "description": "分析题材结构，生成前 30 章推进引擎与策略卡。",
+        "description": "分析题材结构，生成书级长期方向、首个五章开局策略，并为整本书建立书级运行画像。",
         "step_index": 2,
-        "step_total": 6,
+        "step_total": 5,
     },
     {
         "stage": "global_outline_generation",
-        "label": "全书总纲",
-        "description": "生成全书总纲，明确主线、阶段目标与长期矛盾。",
+        "label": "总纲与包装",
+        "description": "同一次生成全书总纲与正式书名，统一作品定位。",
         "step_index": 3,
-        "step_total": 6,
-    },
-    {
-        "stage": "title_generation",
-        "label": "作品包装",
-        "description": "生成书名并校准作品对外包装信息。",
-        "step_index": 4,
-        "step_total": 6,
+        "step_total": 5,
     },
     {
         "stage": "arc_outline_generation",
         "label": "首段剧情弧",
         "description": "生成首个剧情弧与近期章节卡，搭好开局节奏。",
-        "step_index": 5,
-        "step_total": 6,
+        "step_index": 4,
+        "step_total": 5,
     },
     {
         "stage": "story_bible_finalize",
         "label": "Story Bible 收口",
         "description": "整理 Story Bible、长期状态、模板与 Story Workspace 快照。",
-        "step_index": 6,
-        "step_total": 6,
+        "step_index": 5,
+        "step_total": 5,
     },
 ]
 BOOTSTRAP_STAGE_INDEX = {item["stage"]: item for item in BOOTSTRAP_STAGE_DEFINITIONS}
@@ -323,53 +319,55 @@ def run_bootstrap_pipeline(
         db,
         novel=novel,
         stage="story_engine_strategy_generation",
-        message="正在分析题材类型并生成前30章推进引擎。",
+        message="正在分析题材类型、书级长期方向、开局五章策略与书级运行画像。",
         story_bible=base_story_bible,
     )
     _emit_bootstrap_progress(
         progress_callback,
         stage="story_engine_strategy_generation",
-        message="正在分析题材类型并生成前30章推进引擎。",
+        message="正在分析题材类型、书级长期方向、开局五章策略与书级运行画像。",
         novel=novel,
     )
     current_story_bible = deepcopy(novel.story_bible or base_story_bible)
-    story_engine_diagnosis, story_strategy_card = generate_story_engine_strategy_bundle(payload, current_story_bible)
+    bootstrap_design = generate_bootstrap_design_packet(payload, current_story_bible)
+    story_engine_diagnosis = deepcopy(bootstrap_design.get("story_engine_diagnosis") or {})
+    story_strategy_card = deepcopy(bootstrap_design.get("story_strategy_card") or {})
+    project_intent_card = deepcopy(bootstrap_design.get("project_intent_card") or bootstrap_design.get("intent_packet") or {})
+    bootstrap_intent_packet = deepcopy(project_intent_card)
+    template_pool_profile = deepcopy(bootstrap_design.get("template_pool_profile") or {})
+    book_execution_profile = deepcopy(bootstrap_design.get("book_execution_profile") or {})
+    bootstrap_strategy_candidates = deepcopy(bootstrap_design.get("strategy_candidates") or {})
+    bootstrap_strategy_decision = deepcopy(bootstrap_design.get("strategy_arbitration") or {})
+    bootstrap_asset_packet = deepcopy(bootstrap_design.get("bootstrap_asset_packet") or {})
     current_story_bible = build_base_story_bible(
         payload,
         story_engine_diagnosis=story_engine_diagnosis,
         story_strategy_card=story_strategy_card,
+        bootstrap_intent_packet=bootstrap_intent_packet,
+        project_intent_card=project_intent_card,
+        template_pool_profile=template_pool_profile,
+        book_execution_profile=book_execution_profile,
+        bootstrap_strategy_candidates=bootstrap_strategy_candidates,
+        bootstrap_strategy_decision=bootstrap_strategy_decision,
     )
 
     novel = mark_bootstrap_progress(
         db,
         novel=novel,
         stage="global_outline_generation",
-        message="正在生成全书总纲。",
+        message="正在同一次生成全书总纲与正式书名。",
         story_bible=current_story_bible,
     )
     _emit_bootstrap_progress(
         progress_callback,
         stage="global_outline_generation",
-        message="正在生成全书总纲。",
+        message="正在同一次生成全书总纲与正式书名。",
         novel=novel,
     )
     current_story_bible = deepcopy(novel.story_bible or current_story_bible)
-    global_outline = generate_global_story_outline(payload, current_story_bible)
+    global_outline, title, packaging = generate_global_story_outline_and_title(payload, current_story_bible)
     current_story_bible["global_outline"] = global_outline
-    novel = mark_bootstrap_progress(
-        db,
-        novel=novel,
-        stage="title_generation",
-        message="正在生成书名并校准作品包装信息。",
-        story_bible=current_story_bible,
-    )
-    _emit_bootstrap_progress(
-        progress_callback,
-        stage="title_generation",
-        message="正在生成书名并校准作品包装信息。",
-        novel=novel,
-    )
-    title = generate_title(payload)
+    current_story_bible["bootstrap_packaging"] = deepcopy(packaging)
     novel = mark_bootstrap_progress(
         db,
         novel=novel,
@@ -396,6 +394,21 @@ def run_bootstrap_pipeline(
         arc_no=1,
         recent_summaries=[],
     )
+    arc_digest = deepcopy(build_arc_digest(first_arc))
+    current_story_bible["active_arc"] = deepcopy(first_arc)
+    current_story_bible["active_arc_digest"] = deepcopy(arc_digest)
+    bootstrap_review = review_bootstrap_story_package(
+        payload.model_dump(mode="python"),
+        current_story_bible,
+        global_outline,
+        first_arc,
+        arc_digest,
+    ).model_dump(mode="python")
+    first_arc = apply_bootstrap_review_to_arc(first_arc, bootstrap_review)
+    arc_digest = deepcopy(build_arc_digest(first_arc))
+    current_story_bible["bootstrap_review"] = deepcopy(bootstrap_review)
+    current_story_bible["active_arc"] = deepcopy(first_arc)
+    current_story_bible["active_arc_digest"] = deepcopy(arc_digest)
 
     novel = mark_bootstrap_progress(
         db,
@@ -420,11 +433,28 @@ def run_bootstrap_pipeline(
         first_arc,
         story_engine_diagnosis=story_engine_diagnosis,
         story_strategy_card=story_strategy_card,
+        bootstrap_intent_packet=bootstrap_intent_packet,
+        project_intent_card=project_intent_card,
+        template_pool_profile=template_pool_profile,
+        book_execution_profile=book_execution_profile,
+        bootstrap_strategy_candidates=bootstrap_strategy_candidates,
+        bootstrap_strategy_decision=bootstrap_strategy_decision,
+        bootstrap_review=bootstrap_review,
+        foundation_assets=build_bootstrap_foundation_assets(
+            payload,
+            global_outline=global_outline,
+            first_arc=first_arc,
+            template_library=deepcopy((bootstrap_asset_packet.get("template_library") or {})),
+            arc_digest=arc_digest,
+        ),
+        arc_digest=arc_digest,
     )
     story_bible["story_engine_diagnosis"] = story_engine_diagnosis
     story_bible["story_strategy_card"] = story_strategy_card
     story_bible["global_outline"] = global_outline
     story_bible["active_arc"] = first_arc
+    story_bible["active_arc_digest"] = arc_digest
+    story_bible["bootstrap_packaging"] = deepcopy(packaging)
     story_bible["pending_arc"] = None
     story_bible["outline_state"] = {
         "planned_until": first_arc["end_chapter"],

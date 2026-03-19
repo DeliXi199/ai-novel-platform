@@ -6,7 +6,6 @@ from typing import Any
 
 from app.core.config import settings
 from app.models.novel import Novel
-from app.services.agency_modes import apply_agency_mode_to_plan, select_agency_mode
 from app.services.chapter_generation_support import _similarity
 from app.services.chapter_quality import build_quality_feedback, validate_chapter_content
 from app.services.chapter_repair_pipeline import classify_chapter_repair, execute_llm_repair
@@ -69,21 +68,23 @@ def _enrich_plan_agency(
     exclude_modes: set[str] | None = None,
     force: bool = False,
 ) -> dict[str, Any]:
-    mode_spec = select_agency_mode(
-        plan,
-        genre_text=f"{novel.genre} {(novel.style_preferences or {}).get('story_engine', '')}",
-        premise_text=novel.premise or "",
-        style_preferences=novel.style_preferences or {},
-        protagonist_name=novel.protagonist_name or "",
-        recent_plan_meta=recent_plan_meta,
-        preferred_mode=preferred_mode,
-        exclude_modes=exclude_modes,
-    )
-    enriched = apply_agency_mode_to_plan(plan, mode_spec, recent_plan_meta=recent_plan_meta, force=force)
-    plan.clear()
-    plan.update(enriched)
-    return plan
+    """Legacy compatibility wrapper.
 
+    agency mode has been retired; planning now leans on flow cards and writing cards.
+    We keep this function name so the rest of the generation pipeline does not need to know
+    about the old concept. It now only strengthens the plan's visible proactive move.
+    """
+    del novel, recent_plan_meta, preferred_mode, exclude_modes, force
+    current = dict(plan or {})
+    if not str(current.get("proactive_move") or "").strip():
+        current["proactive_move"] = _stronger_proactive_move(current)
+    note = str(current.get("writing_note") or "").strip()
+    flow_name = str(current.get("flow_template_name") or current.get("flow_template_tag") or current.get("flow_template_id") or "当前流程卡").strip()
+    addition = f"本章按流程卡“{flow_name}”推进，主角必须通过可见动作改变局势，不要只观察和承受。"
+    current["writing_note"] = f"{note}；{addition}".strip('；') if note else addition
+    plan.clear()
+    plan.update(current)
+    return plan
 
 
 def _is_agency_failure(exc: GenerationError) -> bool:
@@ -127,16 +128,8 @@ def _make_agency_retry_plan(
     novel: Novel | None = None,
     recent_plan_meta: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    del novel, recent_plan_meta
     retry_plan = dict(plan)
-    current_mode = str(plan.get("agency_mode") or "").strip()
-    if novel is not None:
-        retry_plan = _enrich_plan_agency(
-            novel,
-            retry_plan,
-            recent_plan_meta=recent_plan_meta,
-            exclude_modes={current_mode} if current_mode else None,
-            force=True,
-        )
     proactive_move = _stronger_proactive_move(retry_plan)
     opening = str(retry_plan.get("opening_beat") or "").strip()
     mid_turn = str(retry_plan.get("mid_turn") or "").strip()
@@ -145,12 +138,10 @@ def _make_agency_retry_plan(
     note = (retry_plan.get("writing_note") or "").strip()
     passive_hits = int(((details or {}).get("passive_drift_hits") or 0))
     proactive_hits = int(((details or {}).get("proactive_hits") or 0))
-    agency_fit_hits = int(((details or {}).get("agency_fit_hits") or 0))
-    retry_label = str(retry_plan.get("agency_mode_label") or retry_plan.get("agency_mode") or "新的主动方式")
-    from_label = str(plan.get("agency_mode_label") or plan.get("agency_mode") or "原主动方式")
+    flow_label = str(retry_plan.get("flow_template_name") or retry_plan.get("flow_template_tag") or retry_plan.get("flow_template_id") or "当前流程卡")
     correction = (
-        f"上一版草稿主角主动性不足（proactive_hits={proactive_hits}, passive_drift_hits={passive_hits}, agency_fit_hits={agency_fit_hits}）。"
-        f"这次把本章主动方式切到“{retry_label}”，不要重复上一版“{from_label}”写法。"
+        f"上一版草稿推进偏弱（proactive_hits={proactive_hits}, passive_drift_hits={passive_hits}）。"
+        f"这次直接按流程卡“{flow_label}”重写，强化主角先手和因果链。"
         f"主动作要写实：{proactive_move}。"
         "开头两段内就让主角先动手、先开口、先试探、先验证或先改条件，别先站着看。"
         "中段受阻后，主角必须立刻追加第二个动作，形成‘先手 -> 受阻 -> 调整/加码 -> 结果’的完整链条。"
@@ -162,19 +153,15 @@ def _make_agency_retry_plan(
     retry_plan["discovery"] = (discovery + "；这份发现必须来自主角亲手验证、试出来、逼出来或换出来。").strip('；')
     retry_plan["closing_image"] = (closing + "；收尾落在主角先手后的具体后果、筹码变化、关系变动或对手反应上。").strip('；')
     retry_plan["writing_note"] = f"{note}；{correction}".strip('；') if note else correction
-    retry_plan["retry_focus"] = "agency"
+    retry_plan["retry_focus"] = "proactive_chain"
     retry_plan["retry_feedback"] = {
         "problem": "上一版草稿主角偏被动",
-        "switch_mode_from": from_label,
-        "switch_mode_to": retry_label,
+        "flow_card": flow_label,
         "required_fix": proactive_move,
         "must_have_chain": "主角先手 -> 外界反应 -> 主角调整或加码",
         "forbidden": ["站着听", "只是观察", "压下念头", "没有立刻行动"],
     }
     return retry_plan
-
-
-
 
 
 def _build_attempt_plans(plan: dict[str, Any]) -> list[dict[str, Any]]:

@@ -232,15 +232,7 @@ def apply_agency_mode_to_plan(
     if rotation_note:
         enriched["agency_rotation_note"] = rotation_note
 
-    opening = str(enriched.get("opening_beat") or "").strip()
-    mid = str(enriched.get("mid_turn") or "").strip()
-    discovery = str(enriched.get("discovery") or "").strip()
-    closing = str(enriched.get("closing_image") or enriched.get("ending_hook") or "").strip()
     note = str(enriched.get("writing_note") or "").strip()
-    enriched["opening_beat"] = _append_unique_sentence(opening, str(mode_spec.get("opening") or ""))
-    enriched["mid_turn"] = _append_unique_sentence(mid, str(mode_spec.get("mid") or ""))
-    enriched["discovery"] = _append_unique_sentence(discovery, str(mode_spec.get("discovery") or ""))
-    enriched["closing_image"] = _append_unique_sentence(closing, str(mode_spec.get("closing") or ""))
 
     mode_note = f"本章主动方式采用“{label}”，主动不等于猛冲，而是要让主角主动改变局势、信息差、关系结构或选择条件。"
     if rotation_note:

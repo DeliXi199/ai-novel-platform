@@ -197,6 +197,8 @@ def summarize_story_bible(story_bible: dict[str, Any] | None) -> dict[str, Any]:
             "version",
             "story_engine_diagnosis",
             "story_strategy_card",
+            "project_intent_card",
+            "book_execution_profile",
             "power_system",
             "opening_constraints",
             "planner_state",
@@ -204,10 +206,17 @@ def summarize_story_bible(story_bible: dict[str, Any] | None) -> dict[str, Any]:
             "flow_control",
             "project_card",
             "core_cast_state",
+            "card_system_profile",
         ],
         text_limit=120,
     )
     template_library = bible.get("template_library") or {}
+    template_pool_profile = bible.get("template_pool_profile") or {}
+    workspace_state = bible.get("story_workspace") or {}
+    if workspace_state.get("window_execution_bias"):
+        summary["window_execution_bias"] = compact_data(workspace_state.get("window_execution_bias") or {}, max_depth=2, max_items=8, text_limit=80)
+    if template_pool_profile:
+        summary["template_pool_profile"] = compact_data(template_pool_profile, max_depth=2, max_items=8, text_limit=80)
     if template_library:
         roadmap = template_library.get("roadmap") or {}
         summary["template_library"] = {

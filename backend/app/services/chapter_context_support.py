@@ -41,9 +41,22 @@ from app.services.card_indexing import apply_card_selection_to_packet, build_car
 from app.services.stage_review_support import build_chapter_stage_casting_hint
 from app.services.story_character_support import apply_character_template_defaults, character_template_prompt_brief, pick_character_template
 from app.services import payoff_cards as payoff_cards_module
-from app.services.payoff_cards import build_payoff_candidate_index, realize_payoff_selection_from_index
-from app.services.scene_templates import build_scene_template_index
-from app.services.prompt_strategy_library import build_prompt_bundle_index, build_prompt_strategy_index
+from app.services.payoff_cards import build_payoff_candidate_index, realize_payoff_selection_from_index, select_payoff_card_from_candidate_index
+from app.services.foreshadowing_cards import (
+    build_foreshadowing_candidate_index,
+    build_foreshadowing_child_card_index,
+    build_foreshadowing_parent_card_index,
+    realize_foreshadowing_selection_from_index,
+)
+from app.services.scene_templates import build_scene_continuity_index
+from app.services.prompt_strategy_library import (
+    build_flow_card_index,
+    build_flow_child_card_index,
+    build_prompt_bundle_index,
+    build_prompt_strategy_index,
+    build_writing_card_index,
+    build_writing_child_card_index,
+)
 
 
 
@@ -1443,53 +1456,50 @@ def build_chapter_plan_packet(
         recent_summaries=recent_summaries,
         recent_plan_meta=recent_plan_meta,
     )
-    scene_template_index = build_scene_template_index(
+    foreshadowing_parent_card_index = build_foreshadowing_parent_card_index(story_bible) or []
+    foreshadowing_child_card_index = build_foreshadowing_child_card_index(story_bible) or []
+    foreshadowing_candidate_index = build_foreshadowing_candidate_index(
+        story_bible=story_bible,
+        plan=plan,
+        recent_summaries=recent_summaries,
+    )
+    scene_continuity_index = build_scene_continuity_index(
         story_bible=story_bible,
         plan=plan,
         serialized_last=serialized_last,
         recent_summaries=recent_summaries,
     )
-    flow_template_index = (build_prompt_bundle_index(story_bible) or {}).get("flow_templates") or []
-    prompt_strategy_index = build_prompt_strategy_index()
-    prompt_bundle_index = {
-        "flow_templates": flow_template_index,
-        "prompt_strategies": prompt_strategy_index,
-    }
+    flow_template_index = build_flow_card_index(story_bible) or []
+    prompt_strategy_index = build_writing_card_index()
+    flow_child_card_index = build_flow_child_card_index(story_bible) or []
+    writing_child_card_index = build_writing_child_card_index() or []
+    prompt_bundle_index = build_prompt_bundle_index(story_bible)
     scene_runtime = {
         "scene_sequence_plan": [],
         "scene_execution_card": {
-            "scene_count": int(scene_template_index.get("scene_count", 0) or 0),
-            "must_continue_same_scene": bool(scene_template_index.get("must_continue_same_scene")),
-            "selection_mode": "pending_ai_selection",
+            "scene_count": 0,
+            "must_continue_same_scene": None,
+            "transition_mode": "ai_required",
+            "allowed_transition": "ai_required",
+            "selection_mode": "awaiting_ai_scene_review",
         },
         "scene_templates_used": [],
-        "recent_scene_hints": scene_template_index.get("recent_scene_hints") or [],
+        "recent_scene_hints": scene_continuity_index.get("recent_scene_hints") or [],
     }
 
     payoff_candidates = [item for item in (payoff_candidate_index.get("candidates") or []) if isinstance(item, dict)]
-    selected_payoff_id = _truncate_text((payoff_candidates[0] or {}).get("card_id"), 48) if payoff_candidates else ""
-    payoff_selection_note = "本章爽点由本地短名单先行选定。"
+    selected_payoff_id = ""
+    payoff_selection_note = ""
     payoff_execution_hint = ""
-    payoff_selector_mode = "heuristic_local"
-    payoff_shortlist = payoff_candidates[: max(int(getattr(settings, "payoff_ai_selection_shortlist_limit", 4) or 4), 1)]
-    if payoff_shortlist and bool(getattr(payoff_cards_module, "is_openai_enabled")()):
-        try:
-            ai_payload = payoff_cards_module.call_json_response(
-                stage="payoff_card_selector",
-                system_prompt="",
-                user_prompt="",
-                max_output_tokens=max(int(getattr(settings, "payoff_ai_selection_max_output_tokens", 420) or 420), 220),
-                timeout_seconds=max(int(getattr(settings, "payoff_ai_selection_timeout_seconds", 12) or 12), 8),
-            ) or {}
-            chosen = _truncate_text(ai_payload.get("selected_card_id"), 48)
-            allowed = {_truncate_text(item.get("card_id"), 48) for item in payoff_candidates if _truncate_text(item.get("card_id"), 48)}
-            if chosen in allowed:
-                selected_payoff_id = chosen
-            payoff_selection_note = _truncate_text(ai_payload.get("reason"), 96) or payoff_selection_note
-            payoff_execution_hint = _truncate_text(ai_payload.get("execution_hint"), 96)
-            payoff_selector_mode = "ai_reviewed"
-        except Exception:
-            payoff_selector_mode = "heuristic_local"
+    payoff_selector_mode = "ai_compressed_index"
+    if payoff_candidates:
+        ai_payload = select_payoff_card_from_candidate_index(
+            chapter_plan=plan,
+            payoff_candidate_index=payoff_candidate_index,
+        )
+        selected_payoff_id = _truncate_text(ai_payload.get("selected_card_id"), 48)
+        payoff_selection_note = _truncate_text(ai_payload.get("reason"), 96)
+        payoff_execution_hint = _truncate_text(ai_payload.get("execution_hint"), 96)
     payoff_runtime = realize_payoff_selection_from_index(
         story_bible=story_bible,
         plan=plan,
@@ -1499,6 +1509,15 @@ def build_chapter_plan_packet(
         selection_note=payoff_selection_note,
     )
     payoff_runtime["selector_mode"] = payoff_selector_mode
+    foreshadowing_runtime = {
+        "selected_primary_candidate": {},
+        "selected_supporting_candidates": [],
+        "selected_instance_cards": [],
+        "selection_note": "",
+        "selector_mode": "ai_compressed_index",
+        "candidate_count": len((foreshadowing_candidate_index.get("candidates") or [])),
+        "diagnostics": foreshadowing_candidate_index.get("diagnostics") or {},
+    }
     if payoff_execution_hint and isinstance(payoff_runtime.get("selected_payoff_card"), dict):
         payoff_runtime["selected_payoff_card"]["ai_execution_hint"] = payoff_execution_hint
     payoff_runtime.setdefault("payoff_card_candidates", payoff_candidates)
@@ -1520,6 +1539,7 @@ def build_chapter_plan_packet(
         "opening_anchor": _truncate_text((bridge or {}).get("opening_anchor"), 120),
         "unresolved_action_chain": _truncate_list((bridge or {}).get("unresolved_action_chain"), max_items=3, item_limit=64),
         "carry_over_clues": _truncate_list((bridge or {}).get("carry_over_clues"), max_items=3, item_limit=56),
+        "scene_handoff_card": _compact_value((bridge or {}).get("scene_handoff_card") or {}, text_limit=72),
         "onstage_characters": bridge_characters,
     }
 
@@ -1544,6 +1564,7 @@ def build_chapter_plan_packet(
             "payoff_mode": ((payoff_runtime.get("selected_payoff_card") or {}).get("payoff_mode")),
             "payoff_visibility": ((payoff_runtime.get("selected_payoff_card") or {}).get("payoff_visibility")),
             "payoff_compensation_priority": (((payoff_runtime.get("payoff_compensation") or {}).get("priority")) or ((plan.get("payoff_compensation") or {}).get("priority"))),
+            "foreshadowing_candidate_count": len((foreshadowing_candidate_index.get("candidates") or [])),
             "due_characters": list((character_relation_schedule.get("appearance_schedule") or {}).get("due_characters") or []),
             "due_relations": list((character_relation_schedule.get("relationship_schedule") or {}).get("due_relations") or []),
             "importance_mainline_characters": list(character_selection_lanes.get("selected_by_lane", {}).get("mainline") or []),
@@ -1551,6 +1572,20 @@ def build_chapter_plan_packet(
             "importance_exploration_characters": list(character_selection_lanes.get("selected_by_lane", {}).get("exploration") or []),
             "importance_activation_resources": list(resource_selection_lanes.get("selected_by_lane", {}).get("activation") or []),
             "importance_exploration_resources": list(resource_selection_lanes.get("selected_by_lane", {}).get("exploration") or []),
+        },
+        "book_execution_profile": deepcopy(story_bible.get("book_execution_profile") or {}),
+        "window_execution_bias": deepcopy(((story_bible.get("story_workspace") or {}).get("window_execution_bias") or {})),
+        "window_execution_bias_brief": _compact_value((((story_bible.get("story_workspace") or {}).get("window_execution_bias") or {})), text_limit=48),
+        "card_system_profile": deepcopy(story_bible.get("card_system_profile") or {}),
+        "card_system_profile_brief": _compact_value((story_bible.get("card_system_profile") or {}), text_limit=48),
+        "book_execution_profile_brief": {
+            "positioning_summary": _truncate_text(((story_bible.get("book_execution_profile") or {}).get("positioning_summary")), 96),
+            "flow_family_priority": _compact_value(((story_bible.get("book_execution_profile") or {}).get("flow_family_priority") or {}), text_limit=48),
+            "payoff_priority": _compact_value(((story_bible.get("book_execution_profile") or {}).get("payoff_priority") or {}), text_limit=48),
+            "foreshadowing_priority": _compact_value(((story_bible.get("book_execution_profile") or {}).get("foreshadowing_priority") or {}), text_limit=48),
+            "writing_strategy_priority": _compact_value(((story_bible.get("book_execution_profile") or {}).get("writing_strategy_priority") or {}), text_limit=48),
+            "rhythm_bias": _compact_value(((story_bible.get("book_execution_profile") or {}).get("rhythm_bias") or {}), text_limit=48),
+            "demotion_rules": _truncate_list(((story_bible.get("book_execution_profile") or {}).get("demotion_rules") or []), max_items=4, item_limit=32),
         },
         "core_cast_guidance": core_cast_guidance,
         "chapter_stage_casting_hint": chapter_stage_casting_hint,
@@ -1573,14 +1608,29 @@ def build_chapter_plan_packet(
         "payoff_candidate_index": payoff_candidate_index,
         "payoff_compensation": payoff_runtime.get("payoff_compensation") or plan.get("payoff_compensation") or {},
         "selected_payoff_card": payoff_runtime.get("selected_payoff_card") or {},
+        "foreshadowing_parent_card_index": foreshadowing_parent_card_index,
+        "foreshadowing_child_card_index": foreshadowing_child_card_index,
+        "foreshadowing_candidate_index": foreshadowing_candidate_index,
+        "foreshadowing_runtime": foreshadowing_runtime,
+        "selected_foreshadowing_primary": {},
+        "selected_foreshadowing_supporting": [],
+        "selected_foreshadowing_instance_cards": [],
         "scene_runtime": scene_runtime,
-        "scene_template_index": scene_template_index,
+        "scene_continuity_index": scene_continuity_index,
+        "scene_template_index": scene_continuity_index,
         "scene_sequence_plan": scene_runtime.get("scene_sequence_plan") or [],
         "scene_execution_card": scene_runtime.get("scene_execution_card") or {},
         "flow_template_index": flow_template_index,
+        "flow_card_index": flow_template_index,
+        "flow_child_card_index": flow_child_card_index,
         "prompt_strategy_index": prompt_strategy_index,
+        "writing_card_index": prompt_strategy_index,
+        "writing_child_card_index": writing_child_card_index,
         "prompt_bundle_index": prompt_bundle_index,
+        "writing_card_bundle_index": prompt_bundle_index,
         "selected_prompt_strategies": [],
+        "selected_writing_cards": [],
+        "selected_writing_child_cards": [],
         "resource_plan": resource_plan,
         "resource_capability_plan": resource_capability_plan,
         "resource_capability_runtime": resource_capability_runtime,
@@ -1612,16 +1662,17 @@ def build_chapter_plan_packet(
             item_limit=64,
         ),
         "input_policy": {
-            "write_from": ["chapter_plan", "recent_continuity_plan", "selected_story_cards", "selected_payoff_card", "selected_prompt_strategies", "resource_plan", "resource_capability_plan", "recent_chapter_summaries", "last_chapter_tail_excerpt"],
+            "write_from": ["chapter_plan", "recent_continuity_plan", "selected_story_cards", "selected_payoff_card", "selected_writing_cards", "resource_plan", "resource_capability_plan", "recent_chapter_summaries", "last_chapter_tail_excerpt"],
             "avoid": ["full_card_pool_dump", "whole_book_recap", "detached_scene_reset"],
             "continuity_priority": "先承接上一章末尾，再落实本章拍表，并兼顾最近几章的连续推进。",
             "resource_quantity_rule": "资源若带数量字段，正文必须保持前后数量一致，不得随意改写。",
             "resource_ability_rule": "资源若带能力档案，只能按 resource_capability_plan 和资源卡里的条件/代价/限制来写，不得突然无代价开新功能。",
             "stage_casting_rule": "若 chapter_stage_casting_hint 里的 final_should_execute_planned_action=true，就自然落实补新人或旧人换功能；若 final_do_not_force_action=true，则不要硬塞。",
-            "selector_input_rule": "章节准备阶段的所有筛选输入都应来自压缩索引或压缩摘要；本地只负责压缩、校验和最终拼装。",
+            "selector_input_rule": "章节准备阶段的所有筛选输入都应来自压缩索引或压缩摘要；爽点、伏笔、流程卡、写法卡与场景连续性的续场/切场/场景顺序都必须由 AI 输出，本地不再提供替代规划。",
             "importance_lane_rule": "准备阶段不再用本地推进榜/激活榜做终选；这里只保留 importance 诊断供 AI 看全量压缩候选时参考。",
             "payoff_rule": "若 selected_payoff_card 存在，就把它视为本章爽点执行卡：先让读者拿到可感的回报，再让后患、代价或新压力跟上。",
-            "scene_rule": "若 scene_sequence_plan / scene_execution_card 存在，就把它视为本章场景链：默认按 1 个主场景 + 0~2 个副场景推进；每次切场都要先给出阶段结果或明确过渡，不能突然传送。",
+            "foreshadowing_rule": "若 selected_foreshadowing_instance_cards 存在，就把它视为本章伏笔执行卡：本章只落实 1 条主伏笔动作和 0-2 条辅助动作，明确区分新埋、轻碰、加深、验证或回收，不要什么都碰。",
+            "scene_rule": "场景层现在只负责续场、切场数量与切场过渡约束：是否先续上一章场景、章内是否需要切场、切场前必须先拿到阶段结果，并写出时间/地点/动作锚点。",
         },
     }
     return packet

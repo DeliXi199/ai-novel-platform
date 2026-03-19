@@ -110,8 +110,8 @@ def commit_finalized_chapter(
             "reader_payoff": used_plan.get("reader_payoff"),
             "new_pressure": used_plan.get("new_pressure"),
             "hook_kind": used_plan.get("hook_kind"),
-            "agency_mode": used_plan.get("agency_mode"),
-            "agency_mode_label": used_plan.get("agency_mode_label"),
+            "flow_card": used_plan.get("flow_template_name") or used_plan.get("flow_template_tag") or used_plan.get("flow_template_id"),
+            "writing_card_selection_note": ((used_plan.get("planning_packet") or {}).get("writing_card_selection") or {}).get("selection_note"),
         },
     }
 

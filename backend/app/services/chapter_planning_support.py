@@ -198,8 +198,43 @@ def _run_stage_character_review_if_needed(
         current_chapter_no=current_chapter_no,
         recent_summaries=recent_summaries,
     )
-    review = review_stage_characters(snapshot=snapshot)
-    return store_stage_character_review(story_bible, review.model_dump(mode="python"), current_chapter_no=current_chapter_no)
+    workspace_state = story_bible.setdefault("story_workspace", {}) if isinstance(story_bible, dict) else {}
+    runtime_meta = workspace_state.setdefault("stage_character_review_runtime", {}) if isinstance(workspace_state, dict) else {}
+    try:
+        review = review_stage_characters(snapshot=snapshot)
+    except GenerationError as exc:
+        if bool(getattr(settings, "stage_character_review_soft_fail_enabled", True)) and bool(getattr(exc, "retryable", False)):
+            details = dict(getattr(exc, "details", {}) or {})
+            runtime_meta.update({
+                "status": "soft_failed",
+                "review_chapter": int(current_chapter_no or 0),
+                "stage": str(getattr(exc, "stage", "stage_character_review") or "stage_character_review"),
+                "code": str(getattr(exc, "code", "") or ""),
+                "retryable": bool(getattr(exc, "retryable", False)),
+                "message": _truncate_text(str(getattr(exc, "message", "") or str(exc)), 180),
+                "trace_id": _text(details.get("trace_id")),
+                "provider": _text(getattr(exc, "provider", "")),
+                "soft_fail_enabled": True,
+            })
+            logger.warning(
+                "stage_character_review soft-failed chapter_no=%s stage=%s code=%s retryable=%s",
+                current_chapter_no,
+                getattr(exc, "stage", "stage_character_review"),
+                getattr(exc, "code", ""),
+                getattr(exc, "retryable", False),
+            )
+            return {"status": "soft_failed", **runtime_meta}
+        raise
+    stored = store_stage_character_review(story_bible, review.model_dump(mode="python"), current_chapter_no=current_chapter_no)
+    runtime_meta.update({
+        "status": "success",
+        "review_chapter": int(current_chapter_no or 0),
+        "next_window_start": int((stored or {}).get("next_window_start", 0) or 0),
+        "next_window_end": int((stored or {}).get("next_window_end", 0) or 0),
+        "focus_count": len((stored or {}).get("focus_characters") or []),
+        "source": _text((stored or {}).get("source")),
+    })
+    return stored
 
 
 def prepare_next_planning_window(db: Session, novel: Novel, *, force: bool = False) -> dict[str, Any]:
@@ -335,7 +370,7 @@ def _generate_and_store_pending_arc(
     end = start + settings.arc_outline_size - 1
     arc_no = int(state.get("next_arc_no", 1))
 
-    _run_stage_character_review_if_needed(
+    stage_review_meta = _run_stage_character_review_if_needed(
         story_bible=story_bible,
         current_chapter_no=novel.current_chapter_no,
         recent_summaries=recent_summaries,
@@ -364,6 +399,7 @@ def _generate_and_store_pending_arc(
         "chapter_nos": [int(item.get("chapter_no", 0) or 0) for item in (bundle.get("chapters") or [])],
         "chapter_titles": [_text(item.get("title")) for item in (bundle.get("chapters") or [])[:5] if _text(item.get("title"))],
         "reused_existing": False,
+        "stage_character_review": stage_review_meta,
     }
 
 

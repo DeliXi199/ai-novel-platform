@@ -565,72 +565,40 @@ def test_stage_review_prompt_reads_casting_defer_diagnostics() -> None:
     assert "recent_resolution_history" in prompt
 
 
-
-
-def test_stage_review_uses_single_fixed_timeout_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
-    snapshot = build_stage_character_review_snapshot(_story_bible(), current_chapter_no=5)
-    calls: list[dict[str, int]] = []
-
-    monkeypatch.setattr("app.services.openai_story_engine_review.is_openai_enabled", lambda: True)
-
-    def _fake_call_json_response(**kwargs):
-        calls.append({
-            "timeout_seconds": int(kwargs.get("timeout_seconds") or 0),
-            "max_output_tokens": int(kwargs.get("max_output_tokens") or 0),
-        })
-        return {
-            "focus_characters": ["林秋雨"],
-            "casting_strategy": "prefer_refresh_existing",
-            "max_new_core_entries": 0,
-            "max_role_refreshes": 1,
-            "should_introduce_character": False,
-            "candidate_slot_ids": [],
-            "should_refresh_role_functions": True,
-            "role_refresh_targets": ["林秋雨"],
-            "role_refresh_suggestions": [{"character": "林秋雨", "suggested_function": "行动搭档", "reason": "别再只做提醒位"}],
-            "next_window_tasks": ["抬旧人顶功能"],
-            "watchouts": ["别把人物池塞太满"],
-            "review_note": "下一窗口先抬旧人。",
-        }
-
-    monkeypatch.setattr("app.services.openai_story_engine_review.call_json_response", _fake_call_json_response)
-
-    payload = review_stage_characters(snapshot=snapshot)
-
-    assert payload.focus_characters == ["林秋雨"]
-    assert len(calls) == 1
-    assert calls[0]["timeout_seconds"] == 60
-    assert calls[0]["max_output_tokens"] == 520
-
-
-def test_stage_review_raises_after_single_timeout_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.services.generation_exceptions import ErrorCodes, GenerationError
-
-    snapshot = build_stage_character_review_snapshot(_story_bible(), current_chapter_no=5)
-    calls = {"count": 0}
-
-    monkeypatch.setattr("app.services.openai_story_engine_review.is_openai_enabled", lambda: True)
-
-    def _always_timeout(**kwargs):
-        calls["count"] += 1
-        raise GenerationError(
-            code=ErrorCodes.API_TIMEOUT,
-            message="timeout",
-            stage="stage_character_review",
-            retryable=True,
-            http_status=503,
-            provider="deepseek",
-        )
-
-    monkeypatch.setattr("app.services.openai_story_engine_review.call_json_response", _always_timeout)
-
-    with pytest.raises(GenerationError) as exc_info:
-        review_stage_characters(snapshot=snapshot)
-
-    assert exc_info.value.code == ErrorCodes.API_TIMEOUT
-    assert calls["count"] == 1
-
 @pytest.fixture(autouse=True)
 def _mock_stage_review_ai(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.services.openai_story_engine.is_openai_enabled", lambda: True)
     monkeypatch.setattr("app.services.openai_story_engine.call_json_response", lambda **kwargs: {})
+
+
+
+def test_stage_review_soft_fails_when_retryable_timeout(monkeypatch) -> None:
+    from app.services import chapter_planning_support as cps
+    from app.services.generation_exceptions import GenerationError
+
+    def fake_review_stage_characters(*, snapshot):
+        raise GenerationError(
+            code="API_TIMEOUT",
+            message="阶段性人物复盘失败，已停止生成",
+            stage="stage_character_review",
+            retryable=True,
+            http_status=503,
+            provider="deepseek",
+            details={"trace_id": "trace-soft-fail"},
+        )
+
+    story_bible = _story_bible()
+    monkeypatch.setattr(cps, "review_stage_characters", fake_review_stage_characters)
+    monkeypatch.setattr(cps.settings, "stage_character_review_soft_fail_enabled", True, raising=False)
+
+    result = cps._run_stage_character_review_if_needed(
+        story_bible=story_bible,
+        current_chapter_no=5,
+        recent_summaries=[{"chapter_no": 5, "title": "压境", "event_summary": "周执事重新压上来"}],
+    )
+
+    assert result and result["status"] == "soft_failed"
+    runtime = story_bible["story_workspace"]["stage_character_review_runtime"]
+    assert runtime["status"] == "soft_failed"
+    assert runtime["trace_id"] == "trace-soft-fail"
+    assert story_bible["retrospective_state"].get("last_stage_review_chapter", 0) != 5

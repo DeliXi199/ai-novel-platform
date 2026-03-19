@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+
+_SUMMARY_RESERVED_UPDATE_KEYS = {"notes", "__resource_updates__", "__monster_updates__", "__power_progress__"}
+
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -92,9 +95,12 @@ def _extract_chapter_fact_entries(
     character_updates = getattr(summary, "character_updates", None) or {}
     if isinstance(character_updates, dict):
         for name, state in list(character_updates.items())[:4]:
+            clean_name = str(name).strip()
+            if not clean_name or clean_name in _SUMMARY_RESERVED_UPDATE_KEYS or clean_name.startswith("__"):
+                continue
             state_text = _compact_fact_text(state, "")
             if state_text:
-                entries.append(_chapter_fact_entry(chapter_no=chapter_no, chapter_title=chapter_title, kind="character_state", fact=f"{name}: {state_text}", source=source))
+                entries.append(_chapter_fact_entry(chapter_no=chapter_no, chapter_title=chapter_title, kind="character_state", fact=f"{clean_name}: {state_text}", source=source))
 
     if not entries:
         fallback = _compact_fact_text(fallback_content, f"第{chapter_no}章《{chapter_title}》已发生新的推进。")

@@ -28,6 +28,9 @@ from app.services.hard_fact_guard import compact_hard_fact_guard
 from app.services.story_architecture import ensure_story_architecture
 
 
+_SUMMARY_RESERVED_UPDATE_KEYS = {"notes", "__resource_updates__", "__monster_updates__", "__power_progress__"}
+
+
 def _serialize_recent_summaries(db: Session, novel_id: int) -> list[dict]:
     rows = (
         db.query(Chapter, ChapterSummary)
@@ -135,9 +138,10 @@ def _extract_continuity_bridge(last_chapter: Chapter, protagonist_name: str | No
         character_updates = getattr(summary, "character_updates", None) or {}
         if isinstance(character_updates, dict):
             for name in list(character_updates.keys())[:4]:
-                if str(name).strip() == "notes":
+                clean_name = str(name).strip()
+                if not clean_name or clean_name in _SUMMARY_RESERVED_UPDATE_KEYS or clean_name.startswith("__"):
                     continue
-                text_value = _truncate_text(name, 20)
+                text_value = _truncate_text(clean_name, 20)
                 if text_value and text_value not in onstage_characters:
                     onstage_characters.append(text_value)
     unresolved = _truncate_list(getattr(summary, "open_hooks", []) if summary is not None else [], max_items=3, item_limit=64)
@@ -234,6 +238,10 @@ def _serialize_novel_context(novel: Novel, next_no: int, recent_summaries: list[
     style_preferences = _compact_value(novel.style_preferences or {}, text_limit=50)
     global_direction = _select_outline_window(story_bible.get("global_outline", {}), next_no)
     active_arc = _compact_arc(story_bible.get("active_arc"))
+    active_arc_digest = _compact_value(
+        story_bible.get("active_arc_digest") or ((story_bible.get("story_workspace") or {}).get("active_arc_digest") or {}),
+        text_limit=72,
+    )
     live_hooks = _collect_live_hooks(recent_summaries)
     workspace_state = story_bible.get("story_workspace") or {}
     protagonist_profile = _compact_value(workspace_state.get("protagonist_profile", {}), text_limit=56)
@@ -262,6 +270,28 @@ def _serialize_novel_context(novel: Novel, next_no: int, recent_summaries: list[
                 }
             )
     foreshadowing = _compact_value([item for item in (workspace_state.get("foreshadowing") or []) if item.get("status") != "closed"][:6], text_limit=64)
+    monster_cards = workspace_state.get("monster_cards") or {}
+    monster_roster = []
+    if isinstance(monster_cards, dict):
+        for idx, card in enumerate(monster_cards.values()):
+            if idx >= 4 or not isinstance(card, dict):
+                break
+            monster_roster.append(
+                {
+                    "name": _truncate_text(card.get("name"), 16),
+                    "species_type": _truncate_text(card.get("species_type"), 16),
+                    "current_realm": _truncate_text(card.get("current_realm") or card.get("threat_level"), 16),
+                    "threat_note": _truncate_text(card.get("threat_note"), 42),
+                }
+            )
+    power_system_snapshot = _compact_value(
+        {
+            "strength_rank_table": (((story_bible.get("power_system") or {}).get("strength_rank_table")) or {}),
+            "resource_quality_table": (((story_bible.get("power_system") or {}).get("resource_quality_table")) or {}),
+            "power_ledger": workspace_state.get("power_ledger") or {},
+        },
+        text_limit=72,
+    )
     daily_workbench = _compact_value(workspace_state.get("daily_workbench", {}), text_limit=72)
     release_state = _compact_value((((story_bible.get("long_term_state") or {}).get("chapter_release_state") or {})), text_limit=64)
     serial_rules = _compact_value((story_bible.get("serial_rules") or {}), text_limit=64)
@@ -292,6 +322,7 @@ def _serialize_novel_context(novel: Novel, next_no: int, recent_summaries: list[
             "ending_rules": _truncate_list(story_bible.get("ending_rules"), max_items=4, item_limit=42),
             "global_direction": global_direction,
             "active_arc": active_arc,
+            "active_arc_digest": active_arc_digest,
             "live_hooks": live_hooks,
             "project_card": project_card,
             "current_volume_card": current_volume,
@@ -301,6 +332,8 @@ def _serialize_novel_context(novel: Novel, next_no: int, recent_summaries: list[
             "recent_retrospectives": recent_retrospectives,
             "latest_stage_character_review": latest_stage_review,
             "character_roster": character_roster,
+            "monster_roster": monster_roster,
+            "power_system_snapshot": power_system_snapshot,
             "foreshadowing": foreshadowing,
             "daily_workbench": daily_workbench,
             "serial_rules": serial_rules,
@@ -308,6 +341,9 @@ def _serialize_novel_context(novel: Novel, next_no: int, recent_summaries: list[
             "hard_fact_guard": hard_fact_guard,
             "opening_reveal_guidance": opening_reveal_guidance,
             "chapter_release_state": release_state,
+            "book_execution_profile": _compact_value((story_bible.get("book_execution_profile") or {}), text_limit=72),
+            "window_execution_bias": _compact_value((((story_bible.get("story_workspace") or {}).get("window_execution_bias") or {})), text_limit=72),
+            "card_system_profile": _compact_value((story_bible.get("card_system_profile") or {}), text_limit=72),
             "workflow_runtime": {
                 "stage": _truncate_text((((story_bible.get("workflow_state") or {}).get("live_runtime") or {}).get("stage")), 24),
                 "note": _truncate_text((((story_bible.get("workflow_state") or {}).get("live_runtime") or {}).get("note")), 72),
@@ -325,6 +361,7 @@ def _pick_story_memory(base_story_memory: dict[str, Any]) -> dict[str, Any]:
         "project_card",
         "current_volume_card",
         "protagonist_profile",
+        "foreshadowing",
         "recent_retrospectives",
         "hard_fact_guard",
         "opening_reveal_guidance",
@@ -332,6 +369,11 @@ def _pick_story_memory(base_story_memory: dict[str, Any]) -> dict[str, Any]:
         "continuity_rules",
         "fact_ledger",
         "chapter_release_state",
+        "book_execution_profile",
+        "window_execution_bias",
+        "card_system_profile",
+        "monster_roster",
+        "power_system_snapshot",
     }
     return {key: value for key, value in (base_story_memory or {}).items() if key in keep_keys and value not in (None, "", [], {})}
 

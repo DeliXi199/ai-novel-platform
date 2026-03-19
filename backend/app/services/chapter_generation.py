@@ -73,7 +73,7 @@ from app.services.chapter_generation_support import (
     _validate_required_planning_docs,
     prepare_next_planning_window,
 )
-from app.services.chapter_quality import assess_payoff_delivery, review_payoff_delivery_with_ai
+from app.services.chapter_quality import assess_payoff_delivery
 from app.services.chapter_retry_support import (
     _attempt_generate_validated_chapter,
     _build_attempt_plans,
@@ -131,9 +131,6 @@ import app.services.chapter_generation_draft as _cg_draft_module
 import app.services.chapter_generation_finalize_prepare as _cg_finalize_prepare_module
 import app.services.chapter_generation_finalize_commit as _cg_finalize_commit_module
 import app.services.chapter_context_support as _cg_context_support_module
-import app.services.resource_card_support as _cg_resource_card_support_module
-import app.services.openai_story_engine_selection as _cg_selection_boundary_module
-import app.services.openai_story_engine_summary as _cg_summary_module
 
 logger = logging.getLogger(__name__)
 
@@ -203,80 +200,8 @@ def summarize_chapter(title: str, content: str, request_timeout_seconds: int | N
     return _summarize_chapter_impl(title=title, content=content, request_timeout_seconds=request_timeout_seconds)
 
 
-def _run_constraint_reasoning_for_generation(original_fn: Callable[..., dict[str, Any]], *args, **kwargs) -> dict[str, Any]:
-    filtered_kwargs = {key: value for key, value in kwargs.items() if key != "allow_ai"}
-    if bool(_llm_is_openai_enabled()):
-        return original_fn(*args, allow_ai=True, **filtered_kwargs)
-    baseline_builder = filtered_kwargs.get("baseline_builder")
-    packet = {
-        "task_type": filtered_kwargs.get("task_type"),
-        "scope": filtered_kwargs.get("scope"),
-        "chapter_no": int(filtered_kwargs.get("chapter_no", 0) or 0),
-        "local_context": filtered_kwargs.get("local_context") or {},
-        "hard_constraints": list(filtered_kwargs.get("hard_constraints") or []),
-        "soft_goals": list(filtered_kwargs.get("soft_goals") or []),
-        "output_contract": filtered_kwargs.get("output_contract") or {},
-    }
-    baseline_result = baseline_builder(packet) if callable(baseline_builder) else {}
-    return {
-        "result": baseline_result or {},
-        "used_ai": False,
-        "reason": "generation_compat_baseline",
-        "confidence": "fallback",
-        "constraint_checks": ["generation_compat_baseline"],
-    }
 
 
-def _heuristic_run_chapter_preparation_selection(*, chapter_plan: dict[str, Any], planning_packet: dict[str, Any], request_timeout_seconds: int | None = None):
-    schedule_review = _cg_selection_boundary_module.review_character_relation_schedule(chapter_plan=chapter_plan, planning_packet=planning_packet)
-    card_ids = [
-        str(item.get("card_id") or "").strip()
-        for item in (((planning_packet or {}).get("card_index") or {}).get("entries") or [])
-        if isinstance(item, dict) and str(item.get("card_id") or "").strip()
-    ][:12]
-    payoff_candidates = [item for item in (((planning_packet or {}).get("payoff_candidate_index") or {}).get("candidates") or []) if isinstance(item, dict)]
-    payoff_id = str((payoff_candidates[0] or {}).get("card_id") or "").strip() if payoff_candidates else None
-    scene_candidates = [item for item in (((planning_packet or {}).get("scene_template_index") or {}).get("candidates") or []) if isinstance(item, dict)]
-    if not scene_candidates:
-        raw_templates = ((planning_packet or {}).get("scene_template_index") or {}).get("templates") or []
-        scene_candidates = [item for item in raw_templates if isinstance(item, dict)]
-    scene_ids = [str(item.get("template_id") or item.get("scene_template_id") or item.get("id") or "").strip() for item in scene_candidates if str(item.get("template_id") or item.get("scene_template_id") or item.get("id") or "").strip()][:3]
-    flow_templates = [item for item in ((planning_packet or {}).get("flow_template_index") or []) if isinstance(item, dict)]
-    flow_id = str(chapter_plan.get("flow_template_id") or (flow_templates[0].get("template_id") if flow_templates else "") or "").strip() or None
-    prompt_strategies = [item for item in ((planning_packet or {}).get("prompt_strategy_index") or []) if isinstance(item, dict)]
-    strategy_ids = [str(item.get("strategy_id") or item.get("id") or "").strip() for item in prompt_strategies if str(item.get("strategy_id") or item.get("id") or "").strip()][:3]
-    return _cg_selection_boundary_module.ChapterPreparationSelectionResult(
-        schedule_review=schedule_review,
-        card_selection=_cg_selection_boundary_module.ChapterCardSelectionPayload(selected_card_ids=card_ids, selection_note="AI 不可用，已使用兼容启发式选卡。"),
-        payoff_selection=_cg_selection_boundary_module.PayoffSelectionPayload(selected_card_id=payoff_id, selection_note="AI 不可用，已使用兼容启发式爽点选卡。"),
-        scene_selection=_cg_selection_boundary_module.SceneTemplateSelectionPayload(selected_scene_template_ids=scene_ids, selection_note="AI 不可用，已使用兼容启发式场景链。"),
-        prompt_strategy_selection=_cg_selection_boundary_module.PromptStrategySelectionPayload(selected_flow_template_id=flow_id, selected_strategy_ids=strategy_ids, selection_note="AI 不可用，已使用兼容启发式 prompt 策略。"),
-        selection_trace={"selection_scope": {"mode": "generation_compat_heuristic", "request_timeout_seconds": request_timeout_seconds}},
-    )
-
-
-def _review_payoff_delivery_for_generation(*, title: str, content: str, chapter_plan: dict[str, Any], local_review: dict[str, Any]) -> dict[str, Any]:
-    if bool(_llm_is_openai_enabled()):
-        return _cg_draft_module.review_payoff_delivery_with_ai(title=title, content=content, chapter_plan=chapter_plan, local_review=local_review)
-    return dict(local_review or {})
-
-
-def _summary_title_package_for_generation(**kwargs):
-    if bool(_llm_is_openai_enabled()):
-        return _cg_summary_module.generate_chapter_summary_and_title_package(**kwargs)
-    summary_obj = summarize_chapter(kwargs.get("title") or "", kwargs.get("content") or "", request_timeout_seconds=kwargs.get("request_timeout_seconds"))
-    if hasattr(summary_obj, "model_dump"):
-        summary_data = summary_obj.model_dump(mode="python")
-    elif hasattr(summary_obj, "dict"):
-        summary_data = summary_obj.dict()
-    elif hasattr(summary_obj, "__dict__"):
-        summary_data = dict(summary_obj.__dict__)
-    else:
-        summary_data = dict(summary_obj or {})
-    summary = _cg_summary_module.ChapterSummaryPayload.model_validate(summary_data)
-    title_text = str(kwargs.get("title") or (kwargs.get("chapter_plan") or {}).get("title") or "未命名章节").strip() or "未命名章节"
-    refinement = _cg_summary_module.ChapterTitleRefinementPayload(recommended_title=title_text, candidates=[])
-    return _cg_summary_module.ChapterSummaryTitlePackagePayload(summary=summary, title_refinement=refinement)
 
 
 def _runtime_stage_casting_extra(execution_brief: dict[str, Any] | None) -> dict[str, Any]:
@@ -506,62 +431,20 @@ def _sync_split_generation_compat() -> None:
 def generate_next_chapter(db: Session, novel: Novel | int) -> Chapter:
     _sync_split_generation_compat()
     original_allow_ai = getattr(_cg_context_support_module, "_planning_importance_allow_ai", None)
-    original_constraint_reasoning = getattr(_cg_resource_card_support_module, "run_local_constraint_reasoning", None)
-    original_selection_runner = getattr(_cg_prepare_module, "run_chapter_preparation_selection", None)
-    original_payoff_review = getattr(_cg_draft_module, "review_payoff_delivery_with_ai", None)
-    original_summary_package = getattr(_cg_finalize_prepare_module, "generate_chapter_summary_and_title_package", None)
     _cg_context_support_module._planning_importance_allow_ai = lambda story_bible, *, chapter_no: bool(_llm_is_openai_enabled())
-    if original_constraint_reasoning is not None:
-        _cg_resource_card_support_module.run_local_constraint_reasoning = lambda *args, **kwargs: _run_constraint_reasoning_for_generation(original_constraint_reasoning, *args, **kwargs)
-    if not bool(_llm_is_openai_enabled()):
-        if original_selection_runner is not None:
-            _cg_prepare_module.run_chapter_preparation_selection = _heuristic_run_chapter_preparation_selection
-        if original_payoff_review is not None:
-            _cg_draft_module.review_payoff_delivery_with_ai = _review_payoff_delivery_for_generation
-        if original_summary_package is not None and getattr(original_summary_package, "__module__", "").startswith("app.services.openai_story_engine"):
-            _cg_finalize_prepare_module.generate_chapter_summary_and_title_package = _summary_title_package_for_generation
     try:
         return _entry_generate_next_chapter(db, novel)
     finally:
         if original_allow_ai is not None:
             _cg_context_support_module._planning_importance_allow_ai = original_allow_ai
-        if original_constraint_reasoning is not None:
-            _cg_resource_card_support_module.run_local_constraint_reasoning = original_constraint_reasoning
-        if original_selection_runner is not None:
-            _cg_prepare_module.run_chapter_preparation_selection = original_selection_runner
-        if original_payoff_review is not None:
-            _cg_draft_module.review_payoff_delivery_with_ai = original_payoff_review
-        if original_summary_package is not None:
-            _cg_finalize_prepare_module.generate_chapter_summary_and_title_package = original_summary_package
 
 
 def generate_next_chapters_batch(db: Session, novel: Novel | int, *, count: int = 1) -> list[Chapter]:
     _sync_split_generation_compat()
     original_allow_ai = getattr(_cg_context_support_module, "_planning_importance_allow_ai", None)
-    original_constraint_reasoning = getattr(_cg_resource_card_support_module, "run_local_constraint_reasoning", None)
-    original_selection_runner = getattr(_cg_prepare_module, "run_chapter_preparation_selection", None)
-    original_payoff_review = getattr(_cg_draft_module, "review_payoff_delivery_with_ai", None)
-    original_summary_package = getattr(_cg_finalize_prepare_module, "generate_chapter_summary_and_title_package", None)
     _cg_context_support_module._planning_importance_allow_ai = lambda story_bible, *, chapter_no: bool(_llm_is_openai_enabled())
-    if original_constraint_reasoning is not None:
-        _cg_resource_card_support_module.run_local_constraint_reasoning = lambda *args, **kwargs: _run_constraint_reasoning_for_generation(original_constraint_reasoning, *args, **kwargs)
-    if not bool(_llm_is_openai_enabled()):
-        if original_selection_runner is not None:
-            _cg_prepare_module.run_chapter_preparation_selection = _heuristic_run_chapter_preparation_selection
-        if original_payoff_review is not None:
-            _cg_draft_module.review_payoff_delivery_with_ai = _review_payoff_delivery_for_generation
-        if original_summary_package is not None and getattr(original_summary_package, "__module__", "").startswith("app.services.openai_story_engine"):
-            _cg_finalize_prepare_module.generate_chapter_summary_and_title_package = _summary_title_package_for_generation
     try:
         return _entry_generate_next_chapters_batch(db, novel, count=count)
     finally:
         if original_allow_ai is not None:
             _cg_context_support_module._planning_importance_allow_ai = original_allow_ai
-        if original_constraint_reasoning is not None:
-            _cg_resource_card_support_module.run_local_constraint_reasoning = original_constraint_reasoning
-        if original_selection_runner is not None:
-            _cg_prepare_module.run_chapter_preparation_selection = original_selection_runner
-        if original_payoff_review is not None:
-            _cg_draft_module.review_payoff_delivery_with_ai = original_payoff_review
-        if original_summary_package is not None:
-            _cg_finalize_prepare_module.generate_chapter_summary_and_title_package = original_summary_package

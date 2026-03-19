@@ -57,6 +57,103 @@ export function renderBookshelf({ onSelectNovel }) {
   });
 }
 
+function sortTaskEventsDesc(events = []) {
+  return [...events].sort((a, b) => {
+    const at = Date.parse(a?.created_at || 0) || 0;
+    const bt = Date.parse(b?.created_at || 0) || 0;
+    return bt - at;
+  });
+}
+
+function collectCurrentNovelTasks() {
+  const currentNovelId = state.selectedNovelId || state.pendingCreateTask?.novel_id || null;
+  const map = new Map();
+
+  const pushTask = (task) => {
+    if (!task || !task.id) return;
+    if (currentNovelId && task.novel_id !== currentNovelId) return;
+    if (!map.has(task.id)) map.set(task.id, task);
+  };
+
+  pushTask(state.pendingCreateTask);
+  (Array.isArray(state.recentTasks) ? state.recentTasks : []).forEach(pushTask);
+
+  return [...map.values()];
+}
+
+function getTaskProgressStage(task) {
+  const progress = task?.progress_payload || {};
+  return (
+    progress.stage_description ||
+    progress.stage_label ||
+    progress.stage_name ||
+    progress.stage ||
+    ""
+  );
+}
+
+function getTaskDisplayMessage(task) {
+  if (!task) return "";
+
+  const events = task?.id
+    ? sortTaskEventsDesc(state.taskEventCache?.[task.id] || [])
+    : [];
+
+  const latestEventWithMessage = events.find((event) => event?.message);
+  if (latestEventWithMessage?.message) return latestEventWithMessage.message;
+
+  return (
+    task.progress_message ||
+    getTaskProgressStage(task) ||
+    ""
+  );
+}
+
+function resolvePlanningRuntimeView(liveRuntime = {}) {
+  const activeTasks = collectCurrentNovelTasks().filter((task) =>
+    ["queued", "running"].includes(task?.status)
+  );
+
+  const bootstrapTask = activeTasks.find((task) => task.task_type === "bootstrap_novel");
+  if (bootstrapTask) {
+    return {
+      source: "bootstrap_task",
+      task: bootstrapTask,
+      statusLabel: "初始化中",
+      stage: getTaskProgressStage(bootstrapTask) || liveRuntime.stage || "",
+      note: getTaskDisplayMessage(bootstrapTask) || "正在初始化小说。",
+    };
+  }
+
+  const chapterTask = activeTasks.find((task) =>
+    task.task_type === "generate_next_chapter" ||
+    task.task_type === "generate_next_chapters_batch"
+  );
+  if (chapterTask) {
+    return {
+      source: "chapter_task",
+      task: chapterTask,
+      statusLabel: chapterTask.task_type === "generate_next_chapters_batch" ? "批量生成中" : "生成中",
+      stage: getTaskProgressStage(chapterTask) || liveRuntime.stage || "",
+      note: getTaskDisplayMessage(chapterTask) || liveRuntime.note || "正在生成章节。",
+    };
+  }
+
+  return {
+    source: "live_runtime",
+    task: null,
+    statusLabel: "",
+    stage: liveRuntime.stage || "",
+    note: liveRuntime.note || "",
+  };
+}
+
+function buildPlanningStatusText(runtimeView, fallbackText) {
+  if (!runtimeView?.note) return fallbackText;
+  if (!runtimeView.task) return runtimeView.note;
+  return `${runtimeView.note}`;
+}
+
 export function renderMetrics() {
   if (!refs.metricNovelTitle) return;
   if (!state.selectedNovel) {
@@ -74,13 +171,30 @@ export function renderMetrics() {
   const queue = state.planningData?.chapter_card_queue || [];
   const planningStatus = state.planningData?.planning_status || {};
   const liveRuntime = state.planningData?.planning_state?.live_runtime || {};
-  const plannedRange = planningStatus?.planned_until || state.planningData?.planning_state?.planned_until || liveRuntime?.planned_until || "—";
+  const runtimeView = resolvePlanningRuntimeView(liveRuntime);
+
+  const plannedRange =
+    planningStatus?.planned_until ||
+    state.planningData?.planning_state?.planned_until ||
+    liveRuntime?.planned_until ||
+    "—";
+
   refs.metricNovelTitle.textContent = state.selectedNovel.title;
   refs.metricNovelMeta.textContent = `${state.selectedNovel.genre} · 主角 ${state.selectedNovel.protagonist_name}`;
   refs.metricChapterNo.textContent = `第 ${state.selectedNovel.current_chapter_no} 章`;
-  refs.metricStatus.textContent = `状态：${state.selectedNovel.status}${liveRuntime.stage ? ` · ${liveRuntime.stage}` : ""}`;
-  refs.metricPlanningWindow.textContent = plannedRange === "—" ? "—" : `已规划至 ${plannedRange}`;
-  refs.metricPlanningState.textContent = liveRuntime.note || (queue.length ? `待写 chapter card：${queue.length}` : "目录与规划已同步");
+
+  refs.metricStatus.textContent = runtimeView.statusLabel
+    ? `状态：${runtimeView.statusLabel}${runtimeView.stage ? ` · ${runtimeView.stage}` : ""}`
+    : `状态：${state.selectedNovel.status}${runtimeView.stage ? ` · ${runtimeView.stage}` : ""}`;
+
+  refs.metricPlanningWindow.textContent =
+    plannedRange === "—" ? "—" : `已规划至 ${plannedRange}`;
+
+  refs.metricPlanningState.textContent = buildPlanningStatusText(
+    runtimeView,
+    queue.length ? `待写 chapter card：${queue.length}` : "目录与规划已同步"
+  );
+
   refs.metricUpdatedAt.textContent = fmtDate(state.selectedNovel.updated_at);
   refs.metricCreatedAt.textContent = `创建于 ${fmtDate(state.selectedNovel.created_at)}`;
 }
@@ -290,8 +404,8 @@ function summarizeGenerationSelectors(report) {
   const prep = Array.isArray(report.preparation_summary) ? report.preparation_summary.filter(Boolean) : [];
   if (!prep.length && !Object.keys(selected).length) return null;
   const lines = [...prep];
-  lines.push(`人物/关系卡：${selected.selected_cards || 0} · 场景模板：${selected.selected_scene_templates || 0} · prompt 策略：${selected.selected_prompt_strategies || 0}`);
-  if (selected.selected_flow_template) lines.push(`流程模板：${selected.selected_flow_template}`);
+  lines.push(`人物/关系卡：${selected.selected_cards || 0} · 场景连续性：AI 直判 · 写法母卡：${selected.selected_writing_cards || selected.selected_prompt_strategies || 0}${selected.selected_writing_child_cards ? ` · 写法子卡：${selected.selected_writing_child_cards}` : ""}`);
+  if (selected.selected_flow_card || selected.selected_flow_template) lines.push(`流程母卡：${selected.selected_flow_card || selected.selected_flow_template}${selected.selected_flow_child_card ? ` · 流程子卡：${selected.selected_flow_child_card}` : ""}`);
   if (selected.selected_payoff_card) lines.push(`爽点卡：${selected.selected_payoff_card}`);
   return { title: "章节准备筛选", body: lines.join("\n"), lines };
 }
@@ -337,7 +451,7 @@ function summarizeGenerationTrends(report) {
   lines.push(`兑现趋势：${delivery.latest_level || "—"}${delivery.latest_score ? `/${delivery.latest_score}` : ""} · 分数 ${formatTrendDirection(delivery.direction)} · 等级 ${formatTrendDirection(delivery.level_direction)}`);
   lines.push(`性能趋势：耗时 ${formatTrendDirection(performance.duration_direction)} · 调用 ${formatTrendDirection(performance.llm_calls_direction)}`);
   lines.push(`上下文压力：平均 ${formatPercent(context.avg_utilization_ratio)} · 高压 ${context.high_pressure_count || 0}/${window}`);
-  lines.push(`筛选规模：平均用卡 ${selection.avg_selected_cards || 0} · 平均 prompt 策略 ${selection.avg_prompt_strategies || 0}`);
+  lines.push(`筛选规模：平均用卡 ${selection.avg_selected_cards || 0} · 平均写法母卡 ${selection.avg_prompt_strategies || 0}`);
   if (delivery.low_count) lines.push(`低兑现章节：${delivery.low_count}/${window}`);
   return { title: "最近趋势面板", body: lines.join("\n"), lines };
 }
@@ -389,11 +503,15 @@ export function renderPlanning() {
   const planningState = planning.planning_state || {};
   const planningStatus = planning.planning_status || {};
   const liveRuntime = planningState.live_runtime || {};
+  const runtimeView = resolvePlanningRuntimeView(liveRuntime);
   const currentPipeline = planningState.current_pipeline || {};
   const workspace = storyStudioData.story_workspace || {};
-  const executionPacket = workspace.current_execution_packet || workspace.next_chapter_preview_packet || {};
+  const currentExecutionPacket = workspace.current_execution_packet || {};
+  const previewExecutionPacket = workspace.next_chapter_preview_packet || {};
+  const executionPacket = currentExecutionPacket;
   const executionCard = executionPacket.chapter_execution_card || {};
-  const dailyWorkbench = executionPacket.daily_workbench || workspace.daily_workbench || {};
+  const dailyWorkbench = executionPacket.daily_workbench || {};
+  const previewDailyWorkbench = previewExecutionPacket.daily_workbench || workspace.daily_workbench || {};
   const activeArcFromWorkspace = workspace.active_arc || {};
   const activeArcFromPlanning = planningStatus.active_arc || {};
   const activeArc = { ...activeArcFromPlanning, ...activeArcFromWorkspace };
@@ -406,7 +524,10 @@ export function renderPlanning() {
   const summaryCards = [
     {
       title: "自动规划",
-      body: liveRuntime.note || "生成章节时会自动补齐后续规划，无需手动点击。手动按钮仅用于强制重算。",
+      body: buildPlanningStatusText(
+        runtimeView,
+        "生成章节时会自动补齐后续规划，无需手动点击。手动按钮仅用于强制重算。"
+      ),
     },
     {
       title: "规划窗口",
@@ -489,11 +610,16 @@ export function renderPlanning() {
       : []),
     {
       title: "当前执行意图卡",
-      list: [
-        ...describeExecutionIntent(executionPacket, dailyWorkbench, sceneDebug),
-        ...(stageCastingRuntimeLines.length ? stageCastingRuntimeLines.slice(0, 2) : []),
-      ],
+      list: Object.keys(executionPacket).length
+        ? [
+            ...describeExecutionIntent(executionPacket, dailyWorkbench, sceneDebug),
+            ...(stageCastingRuntimeLines.length ? stageCastingRuntimeLines.slice(0, 2) : []),
+          ]
+        : ["当前章执行卡暂未落地。这里不再用下一章预览冒充当前执行卡。"],
     },
+    ...(Object.keys(previewExecutionPacket).length
+      ? [{ title: "下一章预览卡", list: describeExecutionIntent(previewExecutionPacket, previewDailyWorkbench, sceneDebug) }]
+      : []),
     ...(realizedSceneSummary ? [{ title: "上章实绩场景卡", list: realizedSceneSummary.split("\n").filter(Boolean) }] : []),
     ...(stageCastingRuntimeLines.length
       ? [{ title: "人物投放执行提示", list: stageCastingRuntimeLines }]
@@ -565,7 +691,7 @@ export function renderCatalog({ onSelectChapter, onOpenReader, onDeleteTailFrom 
   refs.chapterCountText.textContent = `${state.chapters.length} 章`;
   refs.chapterManageHint.textContent = state.managementMode
     ? "管理删除模式已开启：只能从某一章开始，连续删到最后一章。"
-    : "普通模式：点“预览”在工作台查看，点“沉浸阅读”在新界面打开。";
+    : "普通模式：目录中保留章节预览摘要，点“沉浸阅读”在新界面打开。";
 
   if (!items.length) {
     refs.chapterList.innerHTML = '<div class="panel-muted subtle-text">还没有符合条件的章节。</div>';

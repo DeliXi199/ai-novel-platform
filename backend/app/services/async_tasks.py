@@ -36,6 +36,7 @@ from app.services.novel_lifecycle import (
     run_bootstrap_pipeline,
 )
 from app.services.story_state import ensure_workflow_state, workflow_bootstrap_view
+from app.services.runtime_diagnostics import build_runtime_diagnostics_brief
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,9 @@ def _chapter_task_progress_payload(
         "title": novel.title,
         "target_chapter_no": target_chapter_no,
     }
+    diagnostics = build_runtime_diagnostics_brief(novel.story_bible or {})
+    if diagnostics:
+        payload["runtime_diagnostics"] = diagnostics
     if extra:
         payload.update(extra)
     return payload

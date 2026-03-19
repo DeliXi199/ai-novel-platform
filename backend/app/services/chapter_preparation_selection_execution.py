@@ -27,6 +27,7 @@ def selector_trace_package(trace: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [dict(item) for item in (trace or [])]
 
 
+
 def normalize_preselection_payload(payload: selection_engine.ChapterPreparationShortlistPayload, planning_packet: dict[str, Any]) -> selection_engine.ChapterPreparationShortlistPayload:
     schedule_index = (planning_packet or {}).get('schedule_candidate_index') or {}
     appearance = schedule_index.get('appearance_candidates') or []
@@ -37,18 +38,30 @@ def normalize_preselection_payload(payload: selection_engine.ChapterPreparationS
     valid_card_ids = {str(item.get('card_id') or '').strip() for item in card_entries if isinstance(item, dict) and str(item.get('card_id') or '').strip()}
     payoff_entries = (((planning_packet or {}).get('payoff_candidate_index') or {}).get('candidates') or [])
     valid_payoff_ids = {str(item.get('card_id') or '').strip() for item in payoff_entries if isinstance(item, dict) and str(item.get('card_id') or '').strip()}
-    scene_entries = (((planning_packet or {}).get('scene_template_index') or {}).get('scene_templates') or [])
-    valid_scene_ids = {str(item.get('scene_template_id') or '').strip() for item in scene_entries if isinstance(item, dict) and str(item.get('scene_template_id') or '').strip()}
+    foreshadowing_index = ((planning_packet or {}).get('foreshadowing_candidate_index') or {})
+    foreshadowing_parent_entries = (foreshadowing_index.get('parent_cards') or [])
+    foreshadowing_child_entries = (foreshadowing_index.get('child_cards') or [])
+    foreshadowing_candidate_entries = (foreshadowing_index.get('candidates') or [])
+    valid_foreshadowing_parent_ids = {str(item.get('card_id') or '').strip() for item in foreshadowing_parent_entries if isinstance(item, dict) and str(item.get('card_id') or '').strip()}
+    valid_foreshadowing_child_ids = {str(item.get('child_id') or '').strip() for item in foreshadowing_child_entries if isinstance(item, dict) and str(item.get('child_id') or '').strip()}
+    valid_foreshadowing_candidate_ids = {str(item.get('candidate_id') or '').strip() for item in foreshadowing_candidate_entries if isinstance(item, dict) and str(item.get('candidate_id') or '').strip()}
     prompt_entries = (planning_packet or {}).get('prompt_strategy_index') or []
     valid_prompt_ids = {str(item.get('strategy_id') or '').strip() for item in prompt_entries if isinstance(item, dict) and str(item.get('strategy_id') or '').strip()}
     flow_entries = (planning_packet or {}).get('flow_template_index') or []
     valid_flow_ids = {str(item.get('flow_id') or '').strip() for item in flow_entries if isinstance(item, dict) and str(item.get('flow_id') or '').strip()}
+    prompt_bundle = ((planning_packet or {}).get('prompt_bundle_index') or {}) if isinstance((planning_packet or {}).get('prompt_bundle_index') or {}, dict) else {}
+    valid_flow_child_ids = {str(item.get('child_id') or item.get('card_id') or '').strip() for item in (prompt_bundle.get('flow_child_cards') or []) if isinstance(item, dict) and str(item.get('child_id') or item.get('card_id') or '').strip()}
+    valid_writing_child_ids = {str(item.get('child_id') or item.get('card_id') or '').strip() for item in (prompt_bundle.get('writing_child_cards') or []) if isinstance(item, dict) and str(item.get('child_id') or item.get('card_id') or '').strip()}
 
-    def _dedupe_keep(items: list[str], allowed: set[str], limit: int) -> list[str]:
+    def _dedupe_keep(items: list[str], allowed: set[str], limit: int, *, resolver=None) -> list[str]:
         out = []
         seen = set()
         for item in items or []:
-            clean = str(item or '').strip()
+            raw = str(item or '').strip()
+            if not raw:
+                continue
+            clean = resolver(raw) if resolver else raw
+            clean = str(clean or '').strip()
             if not clean or clean in seen or clean not in allowed:
                 continue
             seen.add(clean)
@@ -61,10 +74,15 @@ def normalize_preselection_payload(payload: selection_engine.ChapterPreparationS
         focus_characters=_dedupe_keep(payload.focus_characters, valid_characters, 4),
         main_relation_ids=_dedupe_keep(payload.main_relation_ids, valid_relation_ids, 3),
         card_candidate_ids=_dedupe_keep(payload.card_candidate_ids, valid_card_ids, 16),
-        payoff_candidate_ids=_dedupe_keep(payload.payoff_candidate_ids, valid_payoff_ids, 3),
-        scene_template_ids=_dedupe_keep(payload.scene_template_ids, valid_scene_ids, 5),
+        payoff_candidate_ids=_dedupe_keep(payload.payoff_candidate_ids, valid_payoff_ids, 3, resolver=lambda raw: selection_engine._resolve_selector_reference(raw, [item for item in payoff_entries if isinstance(item, dict)], primary_keys=['card_id'], prefix='payoff', name_keys=['name'])),
+        foreshadowing_parent_card_ids=_dedupe_keep(payload.foreshadowing_parent_card_ids, valid_foreshadowing_parent_ids, 4),
+        foreshadowing_child_card_ids=_dedupe_keep(payload.foreshadowing_child_card_ids, valid_foreshadowing_child_ids, 6),
+        foreshadowing_candidate_ids=_dedupe_keep(payload.foreshadowing_candidate_ids, valid_foreshadowing_candidate_ids, 6, resolver=lambda raw: selection_engine._resolve_selector_reference(raw, [item for item in foreshadowing_candidate_entries if isinstance(item, dict)], primary_keys=['candidate_id'], prefix='foreshadow', name_keys=['display_label', 'selector_label', 'legacy_candidate_id', 'source_hook', 'child_card_name'])),
+        scene_template_ids=[],
         flow_template_ids=_dedupe_keep(payload.flow_template_ids, valid_flow_ids, 4),
+        flow_child_card_ids=_dedupe_keep(payload.flow_child_card_ids, valid_flow_child_ids, 6),
         prompt_strategy_ids=_dedupe_keep(payload.prompt_strategy_ids, valid_prompt_ids, 6),
+        writing_child_card_ids=_dedupe_keep(payload.writing_child_card_ids, valid_writing_child_ids, 6),
         shortlist_note=str(payload.shortlist_note or '').strip() or 'AI 已基于全部压缩索引完成预筛。',
     )
 
@@ -174,6 +192,7 @@ def run_selector_task(
                 'schedule': selection_engine.CharacterRelationScheduleReviewPayload,
                 'cards': selection_engine.ChapterCardSelectionPayload,
                 'payoff': selection_engine.PayoffSelectionPayload,
+                'foreshadowing': selection_engine.ForeshadowingSelectionPayload,
                 'scene': selection_engine.SceneTemplateSelectionPayload,
                 'prompt': selection_engine.PromptStrategySelectionPayload,
             }[spec.name]
@@ -233,8 +252,8 @@ def normalize_selector_output(name: str, payload: Any, *, chapter_plan: dict[str
         )
     if name == 'payoff':
         return selection_engine._normalize_payoff_selection_payload(payload, planning_packet, shortlist)
-    if name == 'scene':
-        return selection_engine._normalize_scene_selection_payload(payload, planning_packet, shortlist)
+    if name == 'foreshadowing':
+        return selection_engine._normalize_foreshadowing_selection_payload(payload, planning_packet, shortlist)
     if name == 'prompt':
         return selection_engine._normalize_prompt_strategy_selection_payload(payload, planning_packet, shortlist)
     return payload
@@ -246,22 +265,36 @@ def run_parallel_preparation_selectors(
     planning_packet: dict[str, Any],
     request_timeout_seconds: int | None,
     shortlist: dict[str, Any] | None,
+    precomputed_selector_payloads: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     specs = [
         selection_engine.SelectorTaskSpec(name='schedule', stage='chapter_prepare_schedule_selector', system_prompt=selector_system_prompt('schedule'), output_tokens=420, timeout_floor=max(min((request_timeout_seconds or 14), 18), 10), timeout_cap=max(int(getattr(settings, 'chapter_frontload_decision_max_timeout_seconds', 42) or 42) - 8, 18)),
         selection_engine.SelectorTaskSpec(name='cards', stage='chapter_prepare_card_selector', system_prompt=selector_system_prompt('cards'), output_tokens=340, timeout_floor=max(min((request_timeout_seconds or 14), 18), 10), timeout_cap=max(int(getattr(settings, 'chapter_frontload_decision_max_timeout_seconds', 42) or 42) - 8, 18)),
         selection_engine.SelectorTaskSpec(name='payoff', stage='chapter_prepare_payoff_selector', system_prompt=selector_system_prompt('payoff'), output_tokens=260, timeout_floor=max(min((request_timeout_seconds or 14), 18), 10), timeout_cap=max(int(getattr(settings, 'chapter_frontload_decision_max_timeout_seconds', 42) or 42) - 10, 16)),
-        selection_engine.SelectorTaskSpec(name='scene', stage='chapter_prepare_scene_selector', system_prompt=selector_system_prompt('scene'), output_tokens=320, timeout_floor=max(min((request_timeout_seconds or 14), 18), 10), timeout_cap=max(int(getattr(settings, 'chapter_frontload_decision_max_timeout_seconds', 42) or 42) - 8, 18)),
+        selection_engine.SelectorTaskSpec(name='foreshadowing', stage='chapter_prepare_foreshadowing_selector', system_prompt=selector_system_prompt('foreshadowing'), output_tokens=max(int(getattr(settings, 'foreshadowing_selector_max_output_tokens', 320) or 320), 220), timeout_floor=max(min((request_timeout_seconds or 16), 20), 12), timeout_cap=max(int(getattr(settings, 'chapter_frontload_decision_max_timeout_seconds', 42) or 42) - 8, 18)),
         selection_engine.SelectorTaskSpec(name='prompt', stage='chapter_prepare_prompt_selector', system_prompt=selector_system_prompt('prompt'), output_tokens=240, timeout_floor=max(min((request_timeout_seconds or 14), 18), 10), timeout_cap=max(int(getattr(settings, 'chapter_frontload_decision_max_timeout_seconds', 42) or 42) - 12, 16)),
     ]
+    precomputed_selector_payloads = dict(precomputed_selector_payloads or {})
+    specs = [spec for spec in specs if spec.name not in precomputed_selector_payloads]
     max_workers = max(int(getattr(settings, 'chapter_preparation_parallel_max_workers', 4) or 4), 1)
     enabled = bool(getattr(settings, 'chapter_preparation_parallel_selection_enabled', True))
     worker_count = min(max_workers, len(specs)) if enabled else 1
     results: dict[str, Any] = {}
     trace: dict[str, Any] = {'mode': 'parallel_ai_selectors', 'parallel_enabled': enabled, 'worker_count': worker_count, 'selectors': {}}
 
+    for name, payload in precomputed_selector_payloads.items():
+        results[name] = normalize_selector_output(name, payload, chapter_plan=chapter_plan, planning_packet=planning_packet, shortlist=shortlist)
+        trace['selectors'][name] = {
+            'skipped': True,
+            'reason': 'single_candidate_auto_select',
+            'candidate_count': 1,
+        }
+
     def _run_with_context(spec: selection_engine.SelectorTaskSpec) -> dict[str, Any]:
         return run_selector_task(spec, chapter_plan=chapter_plan, planning_packet=planning_packet, request_timeout_seconds=request_timeout_seconds, shortlist=shortlist)
+
+    if not specs:
+        return {'results': results, 'trace': trace}
 
     if worker_count <= 1:
         for spec in specs:
@@ -339,7 +372,8 @@ def merge_parallel_preparation_selection(
                 schedule_review=selection_engine._normalize_schedule_review_payload(payload.schedule_review, planning_packet),
                 card_selection=normalize_selector_output('cards', payload.card_selection, chapter_plan=chapter_plan, planning_packet=planning_packet, shortlist=shortlist),
                 payoff_selection=normalize_selector_output('payoff', payload.payoff_selection, chapter_plan=chapter_plan, planning_packet=planning_packet, shortlist=shortlist),
-                scene_selection=normalize_selector_output('scene', payload.scene_selection, chapter_plan=chapter_plan, planning_packet=planning_packet, shortlist=shortlist),
+                foreshadowing_selection=normalize_selector_output('foreshadowing', payload.foreshadowing_selection, chapter_plan=chapter_plan, planning_packet=planning_packet, shortlist=shortlist),
+                scene_selection=selection_engine.SceneTemplateSelectionPayload(),
                 prompt_strategy_selection=normalize_selector_output('prompt', payload.prompt_strategy_selection, chapter_plan=chapter_plan, planning_packet=planning_packet, shortlist=shortlist),
                 selection_trace={},
             )

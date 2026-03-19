@@ -2,7 +2,7 @@ from sqlalchemy import inspect, text
 
 from app.db.base import Base
 from app.db.session import get_engine
-from app.models import AsyncTask, AsyncTaskEvent, Character, Chapter, ChapterSummary, Intervention, Novel  # noqa: F401
+from app.models import AsyncTask, AsyncTaskEvent, Character, Chapter, ChapterSummary, Intervention, Monster, Novel  # noqa: F401
 
 
 SERIAL_CHAPTER_COLUMN_DDL = {

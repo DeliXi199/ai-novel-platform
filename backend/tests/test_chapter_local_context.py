@@ -221,7 +221,7 @@ def test_build_chapter_plan_packet_uses_ai_payoff_selector_only_on_shortlist(mon
             {"chapter_no": 2, "event_summary": "林凡被人压了一手，没有真正回收局面。", "open_hooks": ["黑市有人也在查古镜"]},
         ],
     )
-    assert packet["payoff_runtime"]["selector_mode"] == "ai_reviewed"
+    assert packet["payoff_runtime"]["selector_mode"] == "ai_compressed_index"
     assert packet["selected_payoff_card"]["card_id"] == "payoff_small_win_mine"
     assert packet["selected_payoff_card"]["ai_execution_hint"].startswith("先让林凡拿到可感信息")
     assert packet["payoff_compensation"]["priority"] == "high"

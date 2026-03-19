@@ -99,10 +99,13 @@ class Settings(BaseSettings):
     chapter_scene_continuity_check_enabled: bool = True
     chapter_scene_continuity_retry_attempts: int = 1
     chapter_scene_continuity_retry_delay_ms: int = 800
+    scene_continuity_ai_enabled: bool = True
+    scene_continuity_ai_timeout_seconds: int = 26
+    scene_continuity_ai_max_output_tokens: int = 560
     chapter_too_messy_retry_attempts: int = 1
     chapter_too_messy_retry_delay_ms: int = 900
     chapter_messy_ai_review_enabled: bool = True
-    chapter_messy_ai_timeout_seconds: int = 18
+    chapter_messy_ai_timeout_seconds: int = 24
     chapter_messy_ai_max_output_tokens: int = 700
     chapter_weak_ending_retry_delay_ms: int = 900
     chapter_generation_wall_clock_limit_seconds: int = 600
@@ -115,28 +118,23 @@ class Settings(BaseSettings):
     chapter_summary_max_output_tokens: int = 320
     chapter_summary_mode: str = "llm"
     chapter_summary_title_package_enabled: bool = True
-    chapter_summary_title_package_timeout_seconds: int = 24
+    chapter_summary_title_package_timeout_seconds: int = 40
     chapter_summary_title_package_max_output_tokens: int = 1200
-    stage_character_review_timeout_seconds: int = 60
-    stage_character_review_max_output_tokens: int = 520
-    stage_character_review_retry_attempts: int = 1
-    stage_character_review_retry_backoff_ms: int = 1200
-    stage_character_review_retry_timeout_increment_seconds: int = 0
     chapter_title_refinement_enabled: bool = True
     chapter_title_recent_window: int = 20
     chapter_title_similarity_threshold: float = 0.72
     chapter_title_refinement_candidate_count: int = 5
-    chapter_title_timeout_seconds: int = 18
+    chapter_title_timeout_seconds: int = 24
     chapter_title_max_output_tokens: int = 900
     payoff_ai_selection_enabled: bool = True
-    payoff_ai_selection_timeout_seconds: int = 12
+    payoff_ai_selection_timeout_seconds: int = 20
     payoff_ai_selection_max_output_tokens: int = 420
     payoff_ai_selection_score_gap_threshold: float = 4.0
     payoff_ai_delivery_review_enabled: bool = True
-    payoff_ai_delivery_review_timeout_seconds: int = 14
+    payoff_ai_delivery_review_timeout_seconds: int = 22
     payoff_ai_delivery_review_max_output_tokens: int = 520
     hard_fact_llm_review_enabled: bool = True
-    hard_fact_llm_timeout_seconds: int = 25
+    hard_fact_llm_timeout_seconds: int = 34
     hard_fact_llm_max_output_tokens: int = 700
     hard_fact_llm_max_conflicts_per_review: int = 4
     hard_fact_llm_context_chars: int = 2200
@@ -146,13 +144,13 @@ class Settings(BaseSettings):
     return_draft_payload_in_meta: bool = False
 
     importance_eval_ai_enabled: bool = True
-    importance_eval_timeout_seconds: int = 20
+    importance_eval_timeout_seconds: int = 28
     importance_eval_max_output_tokens: int = 360
     importance_eval_summary_card_limit: int = 16
     importance_eval_summary_budget_chars: int = 3000
     importance_eval_force_keep_limit: int = 4
     importance_eval_detail_review_limit: int = 3
-    importance_eval_detail_timeout_seconds: int = 26
+    importance_eval_detail_timeout_seconds: int = 36
     importance_eval_detail_max_output_tokens: int = 480
     importance_eval_planning_ai_interval_chapters: int = 2
     importance_eval_post_chapter_ai_interval_chapters: int = 3
@@ -185,18 +183,32 @@ class Settings(BaseSettings):
     local_constraint_reasoning_retry_backoff_ms: int = 600
     local_constraint_reasoning_retry_timeout_increment_seconds: int = 10
 
-    chapter_frontload_decision_timeout_seconds: int = 22
+    chapter_frontload_decision_timeout_seconds: int = 28
     chapter_frontload_decision_retry_attempts: int = 2
     chapter_frontload_decision_retry_backoff_ms: int = 800
     chapter_frontload_decision_retry_timeout_increment_seconds: int = 10
     chapter_frontload_decision_prompt_compact_after_attempt: int = 2
     chapter_frontload_decision_compact_prompt_threshold_chars: int = 7000
-    chapter_frontload_decision_max_timeout_seconds: int = 42
+    chapter_frontload_decision_max_timeout_seconds: int = 54
+
+    foreshadowing_selector_timeout_seconds: int = 22
+    foreshadowing_selector_max_output_tokens: int = 320
     chapter_preparation_parallel_selection_enabled: bool = True
-    chapter_preparation_parallel_max_workers: int = 4
-    chapter_preparation_merge_timeout_seconds: int = 24
-    chapter_preparation_merge_max_timeout_seconds: int = 46
+    chapter_preparation_parallel_max_workers: int = 3
+    chapter_preparation_merge_timeout_seconds: int = 32
+    chapter_preparation_merge_max_timeout_seconds: int = 54
     chapter_preparation_merge_max_output_tokens: int = 720
+
+    execution_card_ai_enabled: bool = True
+    execution_card_ai_timeout_seconds: int = 24
+    execution_card_ai_max_output_tokens: int = 520
+    execution_card_ai_soft_fail_enabled: bool = True
+
+    stage_character_review_timeout_seconds: int = 30
+    stage_character_review_max_output_tokens: int = 520
+    stage_character_review_soft_fail_enabled: bool = True
+    character_relation_schedule_review_timeout_seconds: int = 18
+    character_relation_schedule_review_max_output_tokens: int = 420
 
     # Dynamic length targets
     chapter_probe_target_min_visible_chars: int = 1000

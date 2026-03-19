@@ -11,6 +11,7 @@ AI_REQUIRED_STAGE_GROUPS: dict[str, list[str]] = {
         "story_engine_diagnosis",
         "story_strategy_generation",
         "global_outline_generation",
+        "bootstrap_execution_profile_generation",
         "arc_outline_generation",
         "bootstrap_character_templates",
     ],

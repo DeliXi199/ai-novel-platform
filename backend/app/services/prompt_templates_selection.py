@@ -220,6 +220,114 @@ def character_relation_schedule_review_user_prompt(chapter_plan: dict[str, Any],
 """.strip()
 
 
+
+
+def scene_continuity_review_system_prompt() -> str:
+    return """
+你是“场景连续性评审器”。你的任务不是决定章节功能模板，而是判断：
+- 这一章开头是否必须续接上一章原场景；
+- 这一章章内是否需要切场，以及最多切几次；
+- 每次切场前必须先拿到什么阶段结果；
+- 切场后开头必须带什么过渡锚点，才不会像突然传送。
+
+输出要求：
+1. 只输出 JSON，对齐给定 schema。
+2. 场景层只处理“续场 / 切场 / 过渡锚点 / 必须带入的后果”，不要替代流程卡去决定这章主要写什么功能。
+3. recommended_scene_count 只允许 1-3。
+4. transition_mode 只允许：continue_same_scene / soft_cut / single_scene。
+5. allowed_transition 只允许：stay_in_scene / resolve_then_cut / soft_cut_only / time_skip_allowed。
+6. must_continue_same_scene 为 true 时，opening_anchor 应尽量具体，并优先把上一章未收束动作、关系后果、危险或线索带进来。
+7. cut_plan 里的 cut_after_scene_no 必须按顺序递增，且不能超过 recommended_scene_count - 1。
+8. scene_sequence_plan 必须完整给出每一场的承接、目的和阶段结果；场数必须与 recommended_scene_count 一致。
+9. 若判断本章不该切场，就把 cut_plan 置空，但 scene_sequence_plan 仍要给出完整单场推进方案。
+10. review_note 用一句短话说明为什么这样更顺、更自然。
+11. scene_sequence_plan 这个字段名必须原样输出，不能为空，也不要改成 scenes / sequence / plan。
+12. 就算只推荐单场推进，也必须给出 1 条 scene_sequence_plan 项。
+""".strip()
+
+
+def scene_continuity_review_user_prompt(chapter_plan: dict[str, Any], planning_packet: dict[str, Any]) -> str:
+    packet = planning_packet or {}
+    compact_plan = {
+        key: (chapter_plan or {}).get(key)
+        for key in [
+            "chapter_no", "title", "goal", "conflict", "main_scene", "event_type",
+            "progress_kind", "flow_template_id", "flow_template_tag", "flow_template_name",
+            "supporting_character_focus", "supporting_character_note", "ending_hook",
+            "opening_beat", "mid_turn", "closing_image",
+        ]
+        if (chapter_plan or {}).get(key) not in (None, "", [], {})
+    }
+    selected_elements = {
+        "focus_character": ((packet.get("selected_elements") or {}).get("focus_character")),
+        "characters": ((packet.get("selected_elements") or {}).get("characters") or [])[:4],
+        "relations": ((packet.get("selected_elements") or {}).get("relations") or [])[:4],
+        "payoff_mode": ((packet.get("selected_elements") or {}).get("payoff_mode")),
+    }
+    scene_context = {
+        "continuity_window": packet.get("continuity_window") or {},
+        "scene_handoff_card": ((packet.get("continuity_window") or {}).get("scene_handoff_card") or {}),
+        "selected_flow_card": packet.get("selected_flow_card") or {},
+        "selected_flow_child_card": packet.get("selected_flow_child_card") or {},
+        "selected_writing_cards": packet.get("selected_writing_cards") or packet.get("selected_prompt_strategies") or [],
+        "selected_writing_child_cards": packet.get("selected_writing_child_cards") or [],
+        "selected_payoff_card": packet.get("selected_payoff_card") or {},
+    }
+    sorted_sections = _soft_sorted_section_block(
+        "scene_continuity_review",
+        {
+            "goal": compact_plan.get("goal"),
+            "conflict": compact_plan.get("conflict"),
+            "flow": compact_plan.get("flow_template_name") or compact_plan.get("flow_template_tag") or compact_plan.get("flow_template_id"),
+            "main_scene": compact_plan.get("main_scene"),
+        },
+        [
+            {
+                "title": "本章信息",
+                "body": f"""【本章信息】
+{_compact_pretty(compact_plan, max_depth=3, max_items=8, text_limit=90)}""",
+                "tags": ["本章", "目标", "结构"],
+                "stages": ["scene_continuity_review"],
+                "priority": "must",
+            },
+            {
+                "title": "已选人物与写法",
+                "body": f"""【已选人物与写法】
+{_compact_pretty(selected_elements, max_depth=3, max_items=8, text_limit=84)}""",
+                "tags": ["人物", "流程卡", "写法卡"],
+                "stages": ["scene_continuity_review"],
+                "priority": "high",
+            },
+            {
+                "title": "场景连续性上下文",
+                "body": f"""【场景连续性上下文】
+{_compact_pretty(scene_context, max_depth=4, max_items=8, text_limit=84)}""",
+                "tags": ["续场", "切场", "handoff"],
+                "stages": ["scene_continuity_review"],
+                "priority": "high",
+            },
+        ],
+    )
+    return f"""
+请判断这章的场景连续性应该如何处理：是先续上一章原场景，还是可以直接切；章内是否需要切场；每次切场前后该满足什么条件。
+
+{sorted_sections}
+
+输出 JSON schema：
+{_pretty(SCENE_CONTINUITY_REVIEW_SCHEMA)}
+
+补充规则：
+- 不要把场景层写成“交易场 / 验证场 / 小胜场”这种功能模板；这些由流程卡与正文决定。
+- 你只判断“是否续场、是否切场、在哪里切、切前必须完成什么、切后要带什么锚点”。
+- 若上一章动作、关系后果或危险明显没收住，就应更偏 must_continue_same_scene=true。
+- 若流程卡要求一口气压住张力，或者切场会切断关系变化/压力链，就倾向单场景推进。
+- 若确实需要换到新地点/新人物/新验证动作，才允许 soft_cut，并明确 required_result 与 transition_anchor。
+- opening_anchor 尽量具体到动作、画面、后果或关系状态，不要只写抽象总结。
+- 你必须直接给出完整 scene_sequence_plan；不要把场景拆解工作留给本地规则。
+- scene_sequence_plan 里的每一项都必须带 scene_no / scene_name / scene_role / purpose / transition_in / target_result。
+- 不要把 scene_sequence_plan 改写成 scenes、scene_plan、scene_steps 或其它字段名。
+""".strip()
+
 def chapter_card_selector_system_prompt() -> str:
     return """
 你是“章节用卡选择器”。你的任务不是写正文，而是从轻量卡片索引里挑出本章真正要展开的少量卡片编号。
@@ -351,16 +459,17 @@ def chapter_frontload_decision_system_prompt() -> str:
 1. 复核本章人物/关系推进重心；
 2. 从全量轻量卡片索引里挑出本章真正要展开的少量卡片编号；
 3. 从爽点候选压缩索引里选出本章要执行的 payoff card；
-4. 从场景模板压缩索引里选出本章场景链；
-5. 从 prompt 策略压缩索引里选出本章真正要强调的写法。
+4. 从 写法卡压缩索引里选出本章真正要强调的写法。
+
+注意：场景不再走功能模板筛选；场景连续性会由独立 AI 评审直接给出续场/切场与场景顺序方案，本地不再提供替代规划。
 
 输出要求：
 1. 只输出 JSON，对齐给定 schema。
 2. schedule_review 要解决“这章该重点写谁、推进哪条关系、哪些人别抢戏”。
 3. card_selection 要解决“正文真正需要带哪些卡，不要为了看起来全而乱选”。
-4. payoff_selection / scene_selection / prompt_strategy_selection 也必须和人物关系选择一致，不能各唱各的戏。
+4. payoff_selection / prompt_strategy_selection 也必须和人物关系选择一致，不能各唱各的戏。
 5. 宁可少而准，也不要把所有候选都选上。
-6. 输入里的 card_index / payoff_candidate_index / scene_template_index / prompt_strategy_index 都是压缩候选全集；后续本地只做校验和拼装，不再替你做本地排序终选。
+6. 输入里的 card_index / payoff_candidate_index / prompt_strategy_index 都是压缩候选全集；后续本地只做校验和拼装，不再替你做本地排序终选；场景连续性由独立 AI 评审直接给出完整方案，本地不再提供任何替代规划。
 """.strip()
 
 
@@ -466,16 +575,8 @@ def chapter_frontload_decision_user_prompt(
             "priority": "high",
         },
         {
-            "title": "场景模板压缩索引",
-            "body": f"""【场景模板压缩索引】
-{_compact_pretty((packet.get('scene_template_index') or {}), max_depth=2 if compact_mode else 3, max_items=max_items, text_limit=text_limit)}""",
-            "tags": ["场景", "模板", "全集"],
-            "stages": ["chapter_frontload_decision"],
-            "priority": "high",
-        },
-        {
-            "title": "prompt 策略压缩索引",
-            "body": f"""【prompt 策略压缩索引】
+            "title": "写法卡压缩索引",
+            "body": f"""【写法卡压缩索引】
 {_compact_pretty((packet.get('prompt_strategy_index') or []), max_depth=2 if compact_mode else 3, max_items=max_items, text_limit=text_limit)}""",
             "tags": ["prompt", "策略", "全集"],
             "stages": ["chapter_frontload_decision"],
@@ -515,16 +616,15 @@ def chapter_frontload_decision_user_prompt(
 - selected_card_ids 里只放编号，不要放名字。
 - 优先少而准，不要把全部候选都选上。
 - 若 schedule_review 点名了 focus_characters / main_relation_ids，card_selection 应优先围绕它们选卡；supporting/light_touch 可辅助，defer_* 尽量别抢戏。
-- selected_scene_template_ids 按场景推进顺序输出，通常 1-3 个；若必须同场景续接，可把 same_scene_continuation 放在第一个。
-- selected_strategy_ids 只保留 2-4 个真正该强调的 prompt 策略，不要全选。
-- selected_card_ids / selected_scene_template_ids / selected_strategy_ids 都必须来自给定索引。{compact_rule}
+- selected_strategy_ids 只保留 2-4 个真正该强调的 写法卡，不要全选。
+- selected_card_ids / selected_strategy_ids 都必须来自给定索引。{compact_rule}
 """.strip()
 
 
 def payoff_card_selector_system_prompt() -> str:
     return """
-你是“爽点终选仲裁器”。你会看到本地已经筛出来的少量爽点候选卡。
-你的任务不是重新发明爽点，而是从 shortlist 里选出最适合当前章节的那一张。
+你是“爽点终选仲裁器”。你会看到已经压缩好的爽点候选索引。
+你的任务不是重排本地首选，而是直接从压缩候选里选出最适合当前章节的那一张。
 
 输出要求：
 1. 只输出 JSON，对齐给定 schema。
@@ -532,6 +632,7 @@ def payoff_card_selector_system_prompt() -> str:
 3. 优先考虑：本章目标、当前场景公开度、最近几章欠账、重复风险、以及是否需要下一章追账补偿。
 4. 不要为了“更炸”而无视本章流程；若本章更适合中强度兑现，就不要硬上过度炫技的卡。
 5. execution_hint 要具体到正文怎么落：回报怎么落袋，谁来显影，后患怎么接上。
+6. 不要假设存在本地兜底；若候选不合适，也必须在候选内选出当前最优的一张。
 """.strip()
 
 
@@ -539,9 +640,7 @@ def payoff_card_selector_system_prompt() -> str:
 def payoff_card_selector_user_prompt(
     *,
     chapter_plan: dict[str, Any],
-    payoff_candidates: list[dict[str, Any]],
-    local_diagnostics: dict[str, Any] | None,
-    local_selected_card: dict[str, Any] | None,
+    payoff_candidate_index: dict[str, Any],
     payoff_compensation: dict[str, Any] | None = None,
 ) -> str:
     compact_plan = {
@@ -553,23 +652,26 @@ def payoff_card_selector_user_prompt(
         ]
         if chapter_plan.get(key) not in (None, "", [], {})
     }
+    diagnostics = (payoff_candidate_index or {}).get("diagnostics") or {}
+    candidates = (payoff_candidate_index or {}).get("candidates") or []
     return f"""
-请从以下爽点候选里做一次终选。候选已经过本地预筛，你只负责终选与给执行提示。
+请直接从以下“压缩爽点候选索引”里完成一次 AI 终选，并给出正文执行提示。
 
 【本章信息】
 {_compact_pretty(compact_plan, max_depth=3, max_items=8, text_limit=100)}
 
-【本地诊断】
-{_compact_pretty(local_diagnostics or {}, max_depth=3, max_items=8, text_limit=90)}
-
-【当前本地首选】
-{_compact_pretty(local_selected_card or {}, max_depth=3, max_items=8, text_limit=90)}
+【爽点候选诊断】
+{_compact_pretty(diagnostics, max_depth=3, max_items=8, text_limit=90)}
 
 【待补偿的爽点欠账】
 {_compact_pretty(payoff_compensation or {}, max_depth=3, max_items=8, text_limit=90)}
 
-【候选爽点卡】
-{_compact_pretty(payoff_candidates or [], max_depth=3, max_items=8, text_limit=90)}
+【压缩爽点候选索引】
+{_compact_pretty({
+    "candidate_count": len(candidates),
+    "compression_mode": (payoff_candidate_index or {}).get("compression_mode") or "compact_payoff_index",
+    "candidates": candidates,
+}, max_depth=3, max_items=10, text_limit=90)}
 
 输出 JSON schema：
 {_pretty(PAYOFF_CARD_SELECTOR_SCHEMA)}
@@ -577,8 +679,8 @@ def payoff_card_selector_user_prompt(
 补充规则：
 - 只能从候选卡里挑，不能自造 card_id。
 - 若上一章兑现偏虚且本章需要追账，就更偏向“明确回报可感、外部显影更清楚”的卡。
-- 若本地提示重复风险高，就优先换 family / payoff_mode / visibility 的组合，不要再写成同一套围观反应。
-- reason 解释为什么这张比本地首选更合适，或为什么维持本地首选。
+- 若候选里重复风险高，就优先换 family / payoff_mode / visibility 的组合，不要再写成同一套围观反应。
+- reason 解释为什么这张最适合当前章，不要引用任何“本地首选”概念。
 - execution_hint 要直接告诉正文：先让主角拿到什么，再让谁看见，最后留下什么新压力。
 """.strip()
 

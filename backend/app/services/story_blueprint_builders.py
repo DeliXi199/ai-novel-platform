@@ -8,7 +8,8 @@ from app.services.scene_templates import build_scene_templates
 
 from app.schemas.novel import NovelCreate
 from app.services.generation_exceptions import ErrorCodes, GenerationError
-from app.services.resource_card_support import build_resource_card, normalize_resource_refs
+from app.services.resource_card_support import build_resource_card, infer_resource_quality, normalize_resource_refs
+from app.services.monster_card_support import build_monster_card, ensure_monster_card_structure
 from app.services.core_cast_support import build_core_cast_state
 from app.services.story_character_support import _safe_list, _text
 
@@ -132,6 +133,100 @@ def build_volume_cards(global_outline: dict[str, Any], first_arc: dict[str, Any]
 
 
 
+def _minor_realm_stages() -> list[str]:
+    return ["一层", "二层", "三层", "四层", "五层", "六层", "七层", "八层", "九层"]
+
+
+
+def _build_strength_rank_table(payload: NovelCreate, cultivation_system: dict[str, Any] | None = None) -> dict[str, Any]:
+    cultivation = cultivation_system or _default_cultivation_system(payload)
+    realms = [str(item).strip() for item in _safe_list(cultivation.get("realms")) if str(item).strip()]
+    minor_stages = [str(item).strip() for item in _safe_list(cultivation.get("minor_realm_stages")) if str(item).strip()] or _minor_realm_stages()
+    rank_cards: list[dict[str, Any]] = []
+    order = 1
+    for realm_index, realm in enumerate(realms, start=1):
+        for stage_index, stage in enumerate(minor_stages, start=1):
+            display_name = f"{realm}{stage}"
+            lower = "凡俗/未入门" if realm_index == 1 and stage_index == 1 else (f"{realm}{minor_stages[max(stage_index - 2, 0)]}" if stage_index > 1 else realms[max(realm_index - 2, 0)])
+            rank_cards.append(
+                {
+                    "rank_key": f"{realm}_{stage_index}",
+                    "display_name": display_name,
+                    "realm": realm,
+                    "minor_stage": stage,
+                    "realm_order": realm_index,
+                    "minor_stage_order": stage_index,
+                    "order": order,
+                    "pressure_hint": f"{display_name}比{lower}更稳、更快、更有压迫感，不能只写成数字涨点。",
+                    "first_appearance_hint": f"角色或怪兽第一次完整出场时，尽量让读者感到其接近{display_name}这一层位的压迫、代价或资源门槛。",
+                    "breakthrough_hint": f"若有人突破到{display_name}，要写出运转、受阻、稳住或反噬过程，并点清突破后的新上限。",
+                }
+            )
+            order += 1
+    starting_rank = rank_cards[0]["display_name"] if rank_cards else "低阶求生阶段"
+    return {
+        "system_name": _text(payload.style_preferences.get("power_system_name"), "修炼实力等级表"),
+        "realm_sequence": realms,
+        "minor_stage_sequence": minor_stages,
+        "starting_rank": _text(payload.style_preferences.get("initial_realm"), starting_rank),
+        "rank_cards": rank_cards,
+        "display_rule": "新角色、怪兽、法器或关键资源第一次完整出场时，尽量顺手让读者知道其大致等级/品质/威胁层位。",
+        "upgrade_rule": "实力提升不能只写结果，要写修炼、历练、试错、稳固或代价。",
+        "monster_scale_note": "怪兽默认和人物共用一套大境界尺度，但显影方式更偏压迫感、体魄与凶性。",
+    }
+
+
+
+def _build_resource_quality_table(payload: NovelCreate) -> dict[str, Any]:
+    tiers = [str(item).strip() for item in _safe_list((payload.style_preferences or {}).get("resource_quality_tiers")) if str(item).strip()]
+    if not tiers:
+        tiers = ["凡品", "下品", "中品", "上品", "极品", "地阶", "天阶"]
+    return {
+        "tiers": tiers,
+        "display_rule": "关键资源第一次完整出现时，尽量顺手点出品质；若品质会影响疗效、威力、价值或争夺热度，更要写出来。",
+        "upgrade_rule": "资源品质变化、炼化提纯、换得更高阶材料，都属于可见成长，正文不要一笔带过。",
+    }
+
+
+
+def _seed_monster_cards(payload: NovelCreate, cultivation_system: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
+    style = payload.style_preferences or {}
+    initial_monsters = _safe_list(style.get("initial_monsters"))
+    default_realm = _text(style.get("initial_monster_realm"), (_safe_list((cultivation_system or _default_cultivation_system(payload)).get("realms")) or ["炼气"])[0])
+    monsters: dict[str, dict[str, Any]] = {}
+    for item in initial_monsters:
+        if isinstance(item, dict):
+            raw_name = _text(item.get("name"))
+            if not raw_name:
+                continue
+            name, card = build_monster_card(
+                raw_name,
+                current_realm=_text(item.get("current_realm"), default_realm),
+                species_type=_text(item.get("species_type")),
+                hostility=_text(item.get("hostility"), "待观察"),
+                status=_text(item.get("status"), "active"),
+                first_seen_chapter=int(item.get("first_seen_chapter", 0) or 0),
+                narrative_role=_text(item.get("narrative_role"), "初始化怪物档案。"),
+                threat_note=_text(item.get("threat_note"), "初始化怪物档案。"),
+                signature_traits=_safe_list(item.get("signature_traits")),
+                source="story_domain_seed",
+            )
+        else:
+            raw_name = _text(item)
+            if not raw_name:
+                continue
+            name, card = build_monster_card(
+                raw_name,
+                current_realm=default_realm,
+                narrative_role="初始化怪物档案。",
+                threat_note="首次登场时要写清它的威胁层位和攻击方式。",
+                source="story_domain_seed",
+            )
+        if name:
+            monsters[name] = ensure_monster_card_structure(card, fallback_name=name, default_realm=default_realm)
+    return monsters
+
+
 def _default_world_bible(payload: NovelCreate) -> dict[str, Any]:
     return {
         "world_scale": _text(payload.style_preferences.get("world_scale"), "先以当前活动区域为主，逐步扩展到更高层地图。"),
@@ -146,10 +241,15 @@ def _default_world_bible(payload: NovelCreate) -> dict[str, Any]:
 def _default_cultivation_system(payload: NovelCreate) -> dict[str, Any]:
     return {
         "realms": _safe_list(payload.style_preferences.get("realms")) or ["炼气", "筑基", "金丹", "元婴"],
+        "minor_realm_stages": _safe_list(payload.style_preferences.get("minor_realm_stages")) or _minor_realm_stages(),
         "gap_rules": _text(payload.style_preferences.get("gap_rules"), "小境界可凭准备、地形、信息差与底牌拉扯；大境界压制原则上不可硬跨。"),
         "breakthrough_conditions": _text(payload.style_preferences.get("breakthrough_conditions"), "需要资源、时机、心境与风险承受能力，不是纯数字累加。"),
         "combat_styles": _text(payload.style_preferences.get("combat_styles"), "不同境界不仅数值更高，还体现在信息掌控、法器质量、持续力与战斗方式差异上。"),
         "cross_realm_rule": _text(payload.style_preferences.get("cross_realm_rule"), "越阶战必须靠准备、代价、环境和对手失误成立，不能常态化。"),
+        "strength_rank_display_rule": _text(payload.style_preferences.get("strength_rank_display_rule"), "角色、怪兽和关键对手第一次完整登场时，尽量顺手写出其境界或足以映照层位的强弱信息。"),
+        "breakthrough_display_rule": _text(payload.style_preferences.get("breakthrough_display_rule"), "实力提升要写过程：运转、受阻、稳住、领悟、反噬或代价，最后再落到明确层级结果。"),
+        "resource_quality_tiers": _safe_list(payload.style_preferences.get("resource_quality_tiers")) or ["凡品", "下品", "中品", "上品", "极品", "地阶", "天阶"],
+        "monster_power_uses_same_scale": True,
     }
 
 
@@ -173,6 +273,8 @@ def build_power_system(payload: NovelCreate, cultivation_system: dict[str, Any] 
                 "next_realm_hint": upper,
             }
         )
+    strength_rank_table = _build_strength_rank_table(payload, cultivation)
+    resource_quality_table = _build_resource_quality_table(payload)
     return {
         "system_name": _text(payload.style_preferences.get("power_system_name"), "主修力量体系"),
         "realm_system": {
@@ -180,10 +282,13 @@ def build_power_system(payload: NovelCreate, cultivation_system: dict[str, Any] 
             "realm_cards": realm_cards,
             "current_reference_realm": _text(payload.style_preferences.get("initial_realm"), realms[0] if realms else "低阶求生阶段"),
         },
+        "strength_rank_table": strength_rank_table,
+        "resource_quality_table": resource_quality_table,
         "power_rules": {
             "gap_rules": _text(cultivation.get("gap_rules")),
             "breakthrough_conditions": _text(cultivation.get("breakthrough_conditions")),
             "cross_realm_rule": _text(cultivation.get("cross_realm_rule")),
+            "breakthrough_display_rule": _text(cultivation.get("breakthrough_display_rule")),
             "core_limitations": [
                 "高阶压制长期有效，不能写成只有开局有用。",
                 "负伤、消耗、底牌损耗必须在后续状态里留下痕迹。",
@@ -197,9 +302,75 @@ def build_power_system(payload: NovelCreate, cultivation_system: dict[str, Any] 
                 "不能把大境界差距写成一两句狠话就抹平。",
                 "不能连续多次靠同一种临时爆种硬吃更高位敌人。",
             ],
+            "monster_note": "怪兽与异类威胁首次完整登场时，尽量通过扑压、气息、体魄或旁人反应映照其境界层位。",
         },
     }
 
+
+def build_arc_digest(first_arc: dict[str, Any] | None) -> dict[str, Any]:
+    arc = first_arc or {}
+    chapters = []
+    for item in _safe_list(arc.get("chapters")):
+        if not isinstance(item, dict):
+            continue
+        chapter_no = int(item.get("chapter_no", 0) or 0)
+        chapters.append(
+            {
+                "chapter_no": chapter_no,
+                "title": _text(item.get("title"), f"第{chapter_no}章" if chapter_no else "未命名章节"),
+                "chapter_role": _text(item.get("chapter_type") or item.get("event_type"), "progress"),
+                "goal": _text(item.get("goal"), "推进当前主线"),
+                "main_conflict": _text(item.get("conflict"), "推进目标时遇到新的阻力。"),
+                "payoff_or_pressure": _text(item.get("payoff_or_pressure"), "给出回报或抬高压力。"),
+                "ending_hook": _text(item.get("ending_hook"), "新的问题浮出。"),
+                "character_focus": [
+                    _text(item.get("supporting_character_focus"))
+                ] if _text(item.get("supporting_character_focus")) else [],
+                "power_focus": _text(item.get("power_focus") or item.get("power_progress") or item.get("realm_progress") or item.get("breakthrough_note")),
+                "breakthrough_flag": bool(item.get("breakthrough_flag") or item.get("realm_up") or item.get("breakthrough")),
+                "monster_focus": _text(item.get("monster_focus") or item.get("monster_name") or item.get("monster_hint")),
+                "resource_focus": _text(item.get("resource_focus") or (", ".join([_text(name) for name in _safe_list(item.get("new_resources")) if _text(name)]) if _safe_list(item.get("new_resources")) else "")),
+                "resource_quality_focus": _text(item.get("resource_quality_focus") or item.get("resource_quality") or item.get("quality_tier")),
+                "cultivation_mode": _text(item.get("cultivation_mode") or item.get("training_mode") or item.get("growth_mode")),
+            }
+        )
+    return {
+        "arc_no": int(arc.get("arc_no", 0) or 0),
+        "start_chapter": int(arc.get("start_chapter", 0) or 0),
+        "end_chapter": int(arc.get("end_chapter", 0) or 0),
+        "focus": _text(arc.get("focus"), "稳定推进当前阶段主线。"),
+        "bridge_note": _text(arc.get("bridge_note"), "先稳住承接，再抬高下一轮压力。"),
+        "chapters": chapters,
+    }
+
+
+def build_bootstrap_foundation_assets(
+    payload: NovelCreate,
+    *,
+    global_outline: dict[str, Any] | None = None,
+    first_arc: dict[str, Any] | None = None,
+    template_library: dict[str, Any] | None = None,
+    arc_digest: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    world_bible = _default_world_bible(payload)
+    cultivation_system = _default_cultivation_system(payload)
+    digest = arc_digest or build_arc_digest(first_arc)
+    return {
+        "world_bible": world_bible,
+        "cultivation_system": cultivation_system,
+        "story_domains": build_story_domains(
+            payload,
+            first_arc=first_arc,
+            world_bible=world_bible,
+            cultivation_system=cultivation_system,
+        ),
+        "power_system": build_power_system(payload, cultivation_system),
+        "opening_constraints": build_opening_constraints(payload, global_outline or {}),
+        "template_library": template_library or build_template_library(payload),
+        "core_cast_state": build_core_cast_state_payload(payload),
+        "story_workspace": build_story_workspace(payload, first_arc, arc_digest=digest),
+        "active_arc_digest": digest,
+    }
 
 
 def build_opening_constraints(payload: NovelCreate, global_outline: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1147,6 +1318,295 @@ def build_flow_templates() -> list[dict[str, Any]]:
             "closing_feel": "原计划得推翻重来。",
             "variation_notes": "反转要建立在前文线索上，别硬拐。",
         },
+
+        {
+            "flow_id": "verify_then_strike",
+            "quick_tag": "证后出手",
+            "name": "验证后出手",
+            "family": "反制",
+            "when_to_use": "先确认关键事实，再据此反打或逼人表态。",
+            "applicable_scenes": ["信息半明半暗", "不能贸然动手", "要先坐实再下手"],
+            "sequence": ["先找可验证点", "验证成立", "顺势出手或改价", "对方被迫应对"],
+            "turning_points": ["前半先证一条", "中段证据坐实", "后半拿证据改局"],
+            "resource_nodes": ["证据链", "可验证线索"],
+            "relation_nodes": ["旁人改口", "对手失去主动"],
+            "preferred_event_types": ["发现类", "反制类", "交易类"],
+            "preferred_progress_kinds": ["信息推进", "风险升级"],
+            "preferred_hook_styles": ["信息反转", "人物选择"],
+            "keyword_hints": ["验证", "坐实", "证据", "再出手", "改局"],
+            "closing_feel": "不是空猜到了，而是能据此做事了。",
+            "variation_notes": "先证后动，别跳过验证直接喊翻盘。",
+        },
+        {
+            "flow_id": "debt_collect",
+            "quick_tag": "追旧账",
+            "name": "追账回收",
+            "family": "回收",
+            "when_to_use": "前文已经挂了承诺、人情、赌约或旧事，这章需要收回一部分。",
+            "applicable_scenes": ["旧承诺兑现", "人情到账", "旧账回收"],
+            "sequence": ["先接旧账", "兑现一部分", "回收后露出新代价"],
+            "turning_points": ["前半接上旧钩子", "中段回收阶段结果", "结尾露出新账"],
+            "resource_nodes": ["旧筹码", "人情回报"],
+            "relation_nodes": ["关系重新记账", "旧承诺转新绑定"],
+            "preferred_event_types": ["关系推进类", "交易类", "资源获取类"],
+            "preferred_progress_kinds": ["资源推进", "关系推进"],
+            "preferred_hook_styles": ["余味收束", "危险逼近"],
+            "keyword_hints": ["旧账", "兑现", "回收", "人情", "承诺"],
+            "closing_feel": "账收回来一部分，但关系和局势都被改写了。",
+            "variation_notes": "回收要真落袋，不能只是口头提起旧账。",
+        },
+        {
+            "flow_id": "false_safe_window",
+            "quick_tag": "假稳期",
+            "name": "假稳藏险",
+            "family": "铺垫",
+            "when_to_use": "表面暂时平稳，但真正的风险正在安静积累。",
+            "applicable_scenes": ["表面缓和", "短暂休整", "以为能喘口气"],
+            "sequence": ["先出现平稳窗口", "小事里露风险", "结尾确认这份平稳不真"],
+            "turning_points": ["开场像能缓一缓", "中段从细节里露不对", "尾部确认是假稳"],
+            "resource_nodes": ["缓冲时间", "临时退路"],
+            "relation_nodes": ["有人放松", "有人更警觉"],
+            "preferred_event_types": ["发现类", "日常类", "危机爆发"],
+            "preferred_progress_kinds": ["信息推进", "风险升级"],
+            "preferred_hook_styles": ["余味收束", "危险逼近"],
+            "keyword_hints": ["平稳", "缓一缓", "假象", "不对", "藏险"],
+            "closing_feel": "表面没炸，心里却知道这口气续不久。",
+            "variation_notes": "别写成纯水日常，至少要有一根可追的针。",
+        },
+        {
+            "flow_id": "authority_collision",
+            "quick_tag": "撞权威",
+            "name": "权威碰撞",
+            "family": "冲突",
+            "when_to_use": "主角或关键配角需要与更高位的规则、身份或权威正面摩擦。",
+            "applicable_scenes": ["顶上位者", "规矩压人", "身份碰撞"],
+            "sequence": ["权威压下来", "主角试探边界", "双方重新定价", "后续记账"],
+            "turning_points": ["前半先受压", "中段顶回或借规矩回击", "尾部双方重新记住彼此"],
+            "resource_nodes": ["名分", "规矩", "话语权"],
+            "relation_nodes": ["上下位重排", "有人开始忌惮"],
+            "preferred_event_types": ["冲突类", "交易类", "关系推进类"],
+            "preferred_progress_kinds": ["关系推进", "风险升级"],
+            "preferred_hook_styles": ["人物选择", "危险逼近"],
+            "keyword_hints": ["权威", "上位者", "规矩", "碰撞", "顶回去"],
+            "closing_feel": "眼前未必赢透，但权力关系已不再原样。",
+            "variation_notes": "不要写成单纯吵架，要写清权威凭什么压、主角凭什么顶。",
+        },
+        {
+            "flow_id": "split_route_parallel",
+            "quick_tag": "分路走",
+            "name": "分路并进",
+            "family": "关系",
+            "when_to_use": "需要两条小行动线并行，彼此互补或互相拖累。",
+            "applicable_scenes": ["分头探查", "一明一暗", "有人前台有人后台"],
+            "sequence": ["先分路", "两边各拿一格结果", "结果重新合流", "合流后局势升级"],
+            "turning_points": ["前半分工清楚", "中段两边出现不同收获", "尾部合流时暴露新的难题"],
+            "resource_nodes": ["分工资源", "并行线索"],
+            "relation_nodes": ["互信测试", "分工关系重排"],
+            "preferred_event_types": ["外部任务类", "发现类", "关系推进类"],
+            "preferred_progress_kinds": ["信息推进", "关系推进"],
+            "preferred_hook_styles": ["信息反转", "平稳过渡"],
+            "keyword_hints": ["分头", "两路", "并进", "合流", "前台后台"],
+            "closing_feel": "两路都没白走，但真正的问题在合流后才亮出来。",
+            "variation_notes": "分路不等于散写，最后必须合回同一推进目标。",
+        },
+        {
+            "flow_id": "rescue_under_cost",
+            "quick_tag": "带价救",
+            "name": "带价救场",
+            "family": "危机",
+            "when_to_use": "需要通过救人、托底、补位来立人物，同时留下明确代价。",
+            "applicable_scenes": ["临时救场", "替人背一下", "冒险托底"],
+            "sequence": ["局势要失控", "主角或配角出手托底", "场面被救住", "代价开始追来"],
+            "turning_points": ["前半确认谁快撑不住", "中段出手托底", "结尾代价开始追上来"],
+            "resource_nodes": ["临时底牌", "托底成本"],
+            "relation_nodes": ["被救者立场改变", "旁人重新记账"],
+            "preferred_event_types": ["危机爆发", "关系推进类", "反制类"],
+            "preferred_progress_kinds": ["关系推进", "风险升级"],
+            "preferred_hook_styles": ["危险逼近", "余味收束"],
+            "keyword_hints": ["救场", "托底", "补位", "带价", "撑住"],
+            "closing_feel": "人是救住了，但这口代价已经咽下去了。",
+            "variation_notes": "救场不能白送，要让代价、欠账或暴露真实生效。",
+        },
+        {
+            "flow_id": "bait_then_capture",
+            "quick_tag": "丢饵钓",
+            "name": "放饵钓线",
+            "family": "探查",
+            "when_to_use": "直接找答案太难时，先丢一点可控信息或动作，引对方露反应。",
+            "applicable_scenes": ["放消息钓人", "故意露破绽", "以小动换大反应"],
+            "sequence": ["先放诱饵", "等反应出现", "顺着反应抓真线", "确认还有更大鱼"],
+            "turning_points": ["前半丢出可控诱饵", "中段有人上钩或起反应", "尾部顺线抓到更大问题"],
+            "resource_nodes": ["可控情报", "诱饵成本"],
+            "relation_nodes": ["对手或旁人露真实立场", "同伴开始理解主角打法"],
+            "preferred_event_types": ["发现类", "反制类", "潜入类"],
+            "preferred_progress_kinds": ["信息推进", "风险升级"],
+            "preferred_hook_styles": ["信息反转", "危险逼近"],
+            "keyword_hints": ["诱饵", "放消息", "上钩", "试探反应", "钓线"],
+            "closing_feel": "真正值钱的不是诱饵本身，而是被它钓出来的东西。",
+            "variation_notes": "诱饵必须可控，别写成主角白送自己。",
+        },
+        {
+            "flow_id": "hidden_alliance_shift",
+            "quick_tag": "暗盟换",
+            "name": "暗盟换位",
+            "family": "关系",
+            "when_to_use": "表面关系不变，但暗地里盟友、同路人或利益边界已经重新站位。",
+            "applicable_scenes": ["私下谈定", "默契升格", "旧盟失衡新盟成形"],
+            "sequence": ["先表面维持", "私下换位", "对外仍旧装作原样", "结尾留下暗中联动"],
+            "turning_points": ["前半维持表面秩序", "中段在私下完成换位", "尾部确认外人还没看透"],
+            "resource_nodes": ["私下约定", "暗中通路"],
+            "relation_nodes": ["新盟形成", "旧关系失衡"],
+            "preferred_event_types": ["关系推进类", "交易类", "发现类"],
+            "preferred_progress_kinds": ["关系推进", "信息推进"],
+            "preferred_hook_styles": ["余味收束", "信息反转"],
+            "keyword_hints": ["暗盟", "私下", "换位", "默契", "同路"],
+            "closing_feel": "明面上什么都没改，底下站位却已经换了。",
+            "variation_notes": "换位要通过具体承诺、通路或站位体现，别只写心照不宣。",
+        },
+        {
+            "flow_id": "rumor_turn_real",
+            "quick_tag": "流言成真",
+            "name": "流言坐实",
+            "family": "发现",
+            "when_to_use": "一条原本像传闻、闲话或模糊猜测的东西，需要在本章被部分坐实。",
+            "applicable_scenes": ["街谈巷议", "传闻照进现实", "闲话背后有真货"],
+            "sequence": ["先听到流言", "找到对照细节", "流言被部分坐实", "引出更大问题"],
+            "turning_points": ["前半流言看似不可靠", "中段出现印证", "尾部确认这不是空穴来风"],
+            "resource_nodes": ["二手消息", "旁证细节"],
+            "relation_nodes": ["说话人可信度变化", "旁人开始重新判断局势"],
+            "preferred_event_types": ["发现类", "关系推进类"],
+            "preferred_progress_kinds": ["信息推进"],
+            "preferred_hook_styles": ["信息反转", "危险逼近"],
+            "keyword_hints": ["流言", "传闻", "坐实", "不是空话", "对上了"],
+            "closing_feel": "原本模糊的东西突然有了抓手。",
+            "variation_notes": "不要让流言一下全真，先坐实一半更有后劲。",
+        },
+        {
+            "flow_id": "rescue_deadline_push",
+            "quick_tag": "限时救",
+            "name": "时限救援",
+            "family": "危机",
+            "when_to_use": "主角必须在时限内救人、补位或赶在坏结果前完成动作。",
+            "applicable_scenes": ["人快出事", "窗口快关", "救援和时限绑定"],
+            "sequence": ["确认时限", "冒险救援", "局部成功", "新压力跟上"],
+            "turning_points": ["开场先钉时限", "中段为抢时间必须付代价", "结尾就算救下也会留下新账"],
+            "resource_nodes": ["时间", "救援代价", "临时通路"],
+            "relation_nodes": ["被救者立场变化", "旁人重新记主角的账"],
+            "preferred_event_types": ["危机爆发", "关系推进类"],
+            "preferred_progress_kinds": ["风险升级", "关系推进"],
+            "preferred_hook_styles": ["危险逼近", "余味收束"],
+            "keyword_hints": ["时限", "赶上", "救援", "窗口", "来不及"],
+            "closing_feel": "不是救完就轻松，而是把更难的账接到了自己身上。",
+            "variation_notes": "时限一定要具体，不要写成泛泛着急。",
+        },
+        {
+            "flow_id": "lure_enemy_exposure",
+            "quick_tag": "诱敌露",
+            "name": "诱敌露面",
+            "family": "反制",
+            "when_to_use": "主角先不急着赢，而是故意逼敌手、暗线或盯梢者先露出来。",
+            "applicable_scenes": ["反跟踪", "钓暗手", "逼对方先动"],
+            "sequence": ["先露一点口子", "敌手做反应", "主角抓住露面点", "确认后续追法"],
+            "turning_points": ["前半故意留缝", "中段对方果然冒头", "尾部确定这条线能顺着追"],
+            "resource_nodes": ["诱饵成本", "反制条件"],
+            "relation_nodes": ["同伴看懂或看不懂主角打法", "敌手开始忌惮"],
+            "preferred_event_types": ["反制类", "发现类", "潜入类"],
+            "preferred_progress_kinds": ["信息推进", "风险升级"],
+            "preferred_hook_styles": ["信息反转", "危险逼近"],
+            "keyword_hints": ["诱敌", "露面", "冒头", "上钩", "逼动"],
+            "closing_feel": "真正值钱的不是这一手，而是终于看见了藏在后面的那个人。",
+            "variation_notes": "诱敌要可控，别写成主角真把自己送进去。",
+        },
+        {
+            "flow_id": "favor_exchange_entry",
+            "quick_tag": "借情进",
+            "name": "人情开门",
+            "family": "关系",
+            "when_to_use": "靠人情、旧识、欠账或替人办事，换一个原本进不去的入口。",
+            "applicable_scenes": ["借关系开路", "旧识搭桥", "欠账换门"],
+            "sequence": ["先确认门槛", "拿人情换入口", "入口到手", "人情新账挂起"],
+            "turning_points": ["前半门是关的", "中段靠关系撬开", "尾部确认这门不是白开的"],
+            "resource_nodes": ["人情", "门路", "旧账"],
+            "relation_nodes": ["关系价格改变", "旧识重新上线"],
+            "preferred_event_types": ["交易类", "关系推进类", "外部任务类"],
+            "preferred_progress_kinds": ["关系推进", "资源推进"],
+            "preferred_hook_styles": ["余味收束", "人物选择"],
+            "keyword_hints": ["人情", "开门", "门路", "旧识", "欠账"],
+            "closing_feel": "路是进去了，但以后怎么还这份人情已经写上账本。",
+            "variation_notes": "人情不能空讲，必须真换到一个可用入口。",
+        },
+        {
+            "flow_id": "fail_forward_clue",
+            "quick_tag": "失中得线",
+            "name": "失手得线",
+            "family": "成长",
+            "when_to_use": "这章表面没赢成，但一次失手反而逼出了更值钱的线索或判断。",
+            "applicable_scenes": ["打草惊蛇", "试错后明白方向", "输了这手却看懂了局"],
+            "sequence": ["先尝试", "出现失手", "失手带出真线", "主角调整打法"],
+            "turning_points": ["前半想做成一件事", "中段失手或被挡", "尾部确认这次失手不是白亏"],
+            "resource_nodes": ["损失成本", "新线索"],
+            "relation_nodes": ["旁人看法改变", "对手暴露习惯"],
+            "preferred_event_types": ["试探类", "发现类", "危机爆发"],
+            "preferred_progress_kinds": ["信息推进", "风险升级"],
+            "preferred_hook_styles": ["信息反转", "余味收束"],
+            "keyword_hints": ["失手", "没成", "却看懂了", "新线", "不白亏"],
+            "closing_feel": "表面输了这一手，心里却第一次摸到对的方向。",
+            "variation_notes": "别把失手写成纯倒霉，要让失手逼出收获。",
+        },
+        {
+            "flow_id": "retreat_for_better_position",
+            "quick_tag": "退换位",
+            "name": "退一步换局",
+            "family": "抉择",
+            "when_to_use": "当正面硬推不划算时，先退一步、先认一口、先绕一下，再换更好位置。",
+            "applicable_scenes": ["暂退", "换位", "避锋转势"],
+            "sequence": ["先正面不顺", "决定后撤/绕开", "换到更好位置", "新局面开始生效"],
+            "turning_points": ["前半确认正推不值", "中段主动退一步", "尾部新位置产生新机会"],
+            "resource_nodes": ["退路", "新站位"],
+            "relation_nodes": ["旁人误判主角退让", "真正懂的人开始起疑"],
+            "preferred_event_types": ["交易类", "关系推进类", "反制类"],
+            "preferred_progress_kinds": ["信息推进", "关系推进"],
+            "preferred_hook_styles": ["人物选择", "信息反转"],
+            "keyword_hints": ["退一步", "绕开", "换位", "避锋", "转势"],
+            "closing_feel": "表面像退，实际上局面开始往更有利的位置滑。",
+            "variation_notes": "退一定要换来东西，不能写成单纯认输。",
+        },
+        {
+            "flow_id": "witness_reversal",
+            "quick_tag": "旁证翻",
+            "name": "旁证翻案",
+            "family": "反制",
+            "when_to_use": "关键判断或站位靠旁证、见证者或旧物反过来坐实，扭转原本说法。",
+            "applicable_scenes": ["证人改口", "旧物作证", "第三方打脸原说法"],
+            "sequence": ["旧说法占上风", "旁证出现", "原说法被顶翻", "局面改写"],
+            "turning_points": ["前半原有说法压着人", "中段旁证入场", "尾部局面因此翻过来"],
+            "resource_nodes": ["证人", "旧物", "旁证材料"],
+            "relation_nodes": ["围观者改口", "权威判断动摇"],
+            "preferred_event_types": ["发现类", "冲突类", "交易类"],
+            "preferred_progress_kinds": ["信息推进", "关系推进"],
+            "preferred_hook_styles": ["信息反转", "余味收束"],
+            "keyword_hints": ["旁证", "翻案", "改口", "证人", "旧物作证"],
+            "closing_feel": "不是主角喊赢了，而是局面自己翻了过去。",
+            "variation_notes": "旁证要提前埋得住，别像空降救场。",
+        },
+        {
+            "flow_id": "status_probe",
+            "quick_tag": "试权位",
+            "name": "借位试权",
+            "family": "关系",
+            "when_to_use": "主角通过一次试探性越位、借位或代行，测试自己在局中的真实份量。",
+            "applicable_scenes": ["借名发话", "代行一格", "试试自己能压到哪"],
+            "sequence": ["先借一个位置", "试探发力", "得到回应", "确认真实权重"],
+            "turning_points": ["前半先借位", "中段试一手", "尾部确认谁真的买账"],
+            "resource_nodes": ["名分", "临时权限"],
+            "relation_nodes": ["谁服谁不服变清楚", "人位重新摆"],
+            "preferred_event_types": ["关系推进类", "交易类", "冲突类"],
+            "preferred_progress_kinds": ["关系推进", "风险升级"],
+            "preferred_hook_styles": ["人物选择", "余味收束"],
+            "keyword_hints": ["借位", "试权", "代行", "买账", "份量"],
+            "closing_feel": "这一下试出来了，自己到底在这局里值几分。",
+            "variation_notes": "试权不能只靠气势，要有人真实给反应。",
+        },
     ]
 
 
@@ -1163,8 +1623,8 @@ def build_template_library(payload: NovelCreate) -> dict[str, Any]:
         "scene_templates": scene_templates,
         "roadmap": {
             "character_template_target_count": 40,
-            "flow_template_target_count": 20,
-            "payoff_card_target_count": 20,
+            "flow_template_target_count": 36,
+            "payoff_card_target_count": 40,
             "scene_template_target_count": 20,
             "current_character_template_count": len(character_templates),
             "current_flow_template_count": len(flow_templates),
@@ -1193,6 +1653,7 @@ def build_story_domains(
     protagonist_goal = _text(active_arc.get("focus"), "确认线索、避免暴露、拿到小资源。")
     protagonist_resource_inputs = [str(item).strip() for item in _safe_list(style.get("current_resources")) if str(item).strip()]
     protagonist_resources = normalize_resource_refs(protagonist_resource_inputs)
+    monsters = _seed_monster_cards(payload, cultivation_system=cultivation)
 
     characters = {
         protagonist_name: {
@@ -1202,7 +1663,10 @@ def build_story_domains(
             "importance_tier": "核心主角",
             "protagonist_relation_level": "self",
             "narrative_priority": 100,
+            "current_realm": protagonist_realm,
             "current_strength": protagonist_realm,
+            "strength_label": protagonist_realm,
+            "first_appearance_rule": "角色第一次完整出场时，尽量让读者知道其大致境界或强弱层位。",
             "current_goal": protagonist_goal,
             "core_desire": _text(style.get("core_desire"), "活下去并掌握主动权。"),
             "core_fear": _text(style.get("core_fear"), "秘密暴露、失去退路、被更高位者盯上。"),
@@ -1224,6 +1688,7 @@ def build_story_domains(
             resource_type="初始资源",
             status="持有中",
             rarity="普通/待判定",
+            quality=infer_resource_quality(raw_name, rarity="普通/待判定", resource_type="初始资源"),
             exposure_risk="低到中，取决于是否被外界注意。",
             narrative_role="主角当前立足资源。",
             recent_change="初始化写入。",
@@ -1267,6 +1732,7 @@ def build_story_domains(
     return {
         "characters": characters,
         "resources": resources,
+        "monsters": monsters,
         "relations": {},
         "factions": factions,
     }
@@ -1326,18 +1792,21 @@ def build_entity_registry() -> dict[str, Any]:
         "by_type": {
             "character": [],
             "resource": [],
+            "monster": [],
             "relation": [],
             "faction": [],
         },
         "card_ids": {
             "character": {},
             "resource": {},
+            "monster": {},
             "relation": {},
             "faction": {},
         },
         "next_seq": {
             "character": 1,
             "resource": 1,
+            "monster": 1,
             "relation": 1,
             "faction": 1,
         },
@@ -1356,7 +1825,7 @@ def build_project_card(
     diagnosis = _require_creation_ai_payload(payload_name="story_engine_diagnosis", value=story_engine_diagnosis)
     strategy = _require_creation_ai_payload(payload_name="story_strategy_card", value=story_strategy_card)
     style_preferences = payload.style_preferences or {}
-    first_30_summary = _text(strategy.get("first_30_mainline_summary"), _text(style_preferences.get("first_30_chapter_mainline"), "前30章围绕立足、关系绑定、阶段破局与更大局势展开。"))
+    opening_summary = _text(strategy.get("opening_five_summary"), _text(strategy.get("first_30_mainline_summary"), _text(style_preferences.get("opening_five_mainline"), "开局五章围绕立足、关系绑定、阶段破局与第一次明确破局展开。")))
     protagonist_defaults = {
         "name": _text(payload.protagonist_name),
         "core_desire": _text(style_preferences.get("core_desire"), "先活下去，再争取更稳的立足点与主动权。"),
@@ -1373,16 +1842,19 @@ def build_project_card(
         "protagonist": protagonist_defaults,
         "golden_finger": _golden_finger(payload),
         "story_engine_profile": diagnosis,
+        "opening_strategy": strategy,
+        "opening_mainline": opening_summary,
         "first_30_chapter_engine": strategy,
-        "first_30_chapter_mainline": first_30_summary,
+        "first_30_chapter_mainline": opening_summary,
         "mid_term_direction": _mid_term_direction(global_outline),
         "endgame_direction": _endgame_direction(global_outline, payload),
     }
 
 
-def build_story_workspace(payload: NovelCreate, first_arc: dict[str, Any] | None = None) -> dict[str, Any]:
+def build_story_workspace(payload: NovelCreate, first_arc: dict[str, Any] | None = None, *, arc_digest: dict[str, Any] | None = None) -> dict[str, Any]:
     protagonist_name = _text(payload.protagonist_name)
     active_arc = first_arc or {}
+    digest = arc_digest or build_arc_digest(active_arc)
     near_window = []
     for chapter in _safe_list(active_arc.get("chapters"))[:7]:
         near_window.append(
@@ -1398,6 +1870,10 @@ def build_story_workspace(payload: NovelCreate, first_arc: dict[str, Any] | None
     return {
         "protagonist_profile": {
             "current_realm": _text(payload.style_preferences.get("initial_realm"), "未显明确高阶境界，处于低阶求生阶段"),
+            "visible_strength_label": _text(payload.style_preferences.get("initial_realm"), "低阶求生阶段"),
+            "cultivation_route": _text(payload.style_preferences.get("cultivation_route"), "修炼 + 历练双线提升"),
+            "recent_cultivation_focus": _text(payload.style_preferences.get("recent_cultivation_focus"), "先稳境界与保命手段，再争取下一次可见提升。"),
+            "breakthrough_rule": _text(payload.style_preferences.get("breakthrough_display_rule"), "若本章出现突破或实力提升，要把修炼/历练过程和提升结果写出来。"),
             "combat_positioning": _text(payload.style_preferences.get("initial_combat_positioning"), "偏弱但谨慎，有特定场景下的应对手段。"),
             "main_skill": _text(payload.style_preferences.get("main_skill"), "观察、试探、藏拙、借力打力"),
             "core_methods": _safe_list(payload.style_preferences.get("core_methods")) or ["观察", "试探", "遮掩", "反击"],
@@ -1412,6 +1888,9 @@ def build_story_workspace(payload: NovelCreate, first_arc: dict[str, Any] | None
         },
         "power_ledger": {
             "realm_weight_notes": "每个境界都要长期保持压迫感，不能前重后轻。",
+            "strength_rank_table": _build_strength_rank_table(payload),
+            "resource_quality_table": _build_resource_quality_table(payload),
+            "display_rule": "新角色、怪兽和关键资源首次完整登场时，尽量点明等级/威胁/品质。",
             "same_realm_layers": "同境界内也分准备充分者、普通者、老手与天才。",
             "cross_realm_rules": _text(payload.style_preferences.get("cross_realm_rule"), "越阶战只能靠情报差、环境、代价与一次性底牌成立。"),
             "hard_no_cross_lines": ["大境界碾压不可常态硬跨", "受伤与消耗不能写了就忘"],
@@ -1422,7 +1901,9 @@ def build_story_workspace(payload: NovelCreate, first_arc: dict[str, Any] | None
                 "name": protagonist_name,
                 "role_type": "protagonist",
                 "camp": "主角阵营",
+                "current_realm": _text(payload.style_preferences.get("initial_realm"), "低阶求生阶段"),
                 "current_strength": _text(payload.style_preferences.get("initial_realm"), "低阶求生阶段"),
+                "first_appearance_rule": "角色第一次完整登场时，尽量让读者知道其大致境界或强弱层位。",
                 "core_desire": _text(payload.style_preferences.get("core_desire"), "活下去并掌握主动权。"),
                 "core_fear": _text(payload.style_preferences.get("core_fear"), "秘密暴露、连累自己或身边人。"),
                 "temperament": _text(payload.style_preferences.get("temperament"), "克制、警醒、耐心。"),
@@ -1439,13 +1920,22 @@ def build_story_workspace(payload: NovelCreate, first_arc: dict[str, Any] | None
                 "do_not_break": ["谨慎不等于停滞", "关键抉择时必须体现主动判断"],
             }
         },
+        "monster_cards": _seed_monster_cards(payload),
+        "power_progress_journal": [],
         "relationship_journal": [],
         "foreshadowing": [],
         "timeline": [],
+        "active_arc_digest": digest,
         "near_7_chapter_outline": near_window,
+        "near_window_progress": {
+            "current_position": "开书区 / 首个五章窗口",
+            "current_volume_gap": "还在建立立足点、修炼入口与第一次上瘾点。",
+            "next_big_payoff": _text((active_arc or {}).get("focus"), "第一次关键破局。"),
+            "next_twist": _text((active_arc or {}).get("bridge_note"), "线索会把主角引向更危险的边缘试探。"),
+        },
         "near_30_progress": {
-            "current_position": "开书区 / 前30章",
-            "current_volume_gap": "还在建立立足点与第一次上瘾点。",
+            "current_position": "开书区 / 首个五章窗口",
+            "current_volume_gap": "还在建立立足点、修炼入口与第一次上瘾点。",
             "next_big_payoff": _text((active_arc or {}).get("focus"), "第一次关键破局。"),
             "next_twist": _text((active_arc or {}).get("bridge_note"), "线索会把主角引向更危险的边缘试探。"),
         },
